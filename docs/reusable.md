@@ -93,27 +93,92 @@ key, no indexer), `NtorrentRef`.
 LeaseSet2, datagrams, reseed); `I2pWorker` runs it on its own isolate;
 `SwarmStore` is the BitTorrent-style collective download over it.
 
-## Seams and small utilities
+## The host seams (`platform/`)
+
+### `CoreHost` — the one place the core asks its host for anything
+
+`platform/core_host.dart`. A static field per need (keep-alive, preferences,
+keychain, assets, battery, radio, notifications, location, USB serial, ...),
+each with a default that is right for a program that has none of it. Before
+adding a field: is there already one that answers the question? Reuse it
+(the flasher's directory and the media cache both ask `appSupportDir`). A new
+one is the calls actually made and nothing more, with a headless default; the
+app's answer goes in `xprs/lib/boot/`. README.md has the table.
+
+### Interfaces with a stand-in, for tests and the server
+
+- `KeyValueStore` / `MemoryKeyValueStore` — settings (a test seeds the map).
+- `SecureStore` / `NoSecureStore`, `AssetSource` / `NoAssets`.
+- `BatterySource` / `NoBattery` — passes the RAW condition through, so each
+  reader keeps its own "on mains" rule; folding states in a seam would have
+  silently changed one of three.
+- `AdvertRadio` / `NoAdvertRadio`, `BleRnsRadio`, `UsbSerialHost`.
+
+### Stand-ins for what Flutter used to provide
+
+- `Observable<T>` (`util/observable.dart`) — ValueNotifier's API in plain
+  Dart. A widget watches one through `.listenable`
+  (`xprs/lib/util/observable_listenable.dart`, one cached adapter per value).
+- `offThread(fn, arg)` (`platform/off_thread.dart`) — `compute`: Isolate.run
+  natively, a microtask on the web. One-shot only; a stream of items wants a
+  long-lived worker (performance.md 8.1).
+- `kIsWeb`, `setEquals` (`util/compat.dart`).
+- `platform/os.dart` — OS checks, paths, subprocesses, locale (import as
+  `platform`); `platform/fs.dart` — the file system, native or browser.
+
+### Host-registered counters — `CoreHost.perfSources`
+
+A subsystem the core does not own (the USB flasher's session counters) adds
+`name -> drain()` and TaskMonitorService prints it in its once-a-minute
+`perf:` lines. Use it instead of teaching the core about the subsystem.
+
+## Deciding for the caller
+
+### Intent in, lanes chosen here — `RnsService.react`, `addNostrLane`
+
+A screen asks for the effect ("like this post"); the core picks the lanes and
+their order (Reticulum first, then every NOSTR lane a host registered with
+`addNostrLane`, best-effort). Copy the shape for any "send this" whose lanes
+used to be picked by the caller.
+
+### One verdict, read by everyone — `RnsService.inReach`
+
+The presence dot's verdict (heard on the air OR reachable over the internet)
+is computed here once; screens read it. A second place that combines the same
+sources is the bug "Who is on the mesh, decided once" (architecture.md) names.
+
+### Notifications by topic — `XprsNotification.withSource`
+
+The core raises `core:<topic>` (`core:nostr`, `core:archiver`); the host maps a
+topic to the wapp that shows it (`routeCoreNotification`,
+`xprs/lib/boot/core_host_app.dart`). Never `source: 'wapp:<name>'` here.
+
+## Small utilities
 
 - `NostrSigner` / `LocalSigner` — "this program can sign as you" without
   holding the key; take a signer, not an nsec.
-- `LogService` — the in-memory ring buffer behind `/api/log`.
+- `LogService` — the in-memory ring behind `/api/log` (never a person's words).
 - `db_bytes` — the size of a sqlite database, on every platform.
 - `geohash`, `nostr_imeta` (NIP-92), `note_text` (`NoteMention`).
+- `ActivityArchive` (`services/storage/`) — a time-ordered feed store; one
+  SQLite file per owner.
 
 ## Moving code here from the app
 
-The pattern used for the first 47 files, to repeat for the rest:
+1. Cut the edges first: a file moves when nothing it imports is Flutter, a
+   plugin or the app's UI. Replace what it borrowed with a `CoreHost` seam or
+   a stand-in above.
+2. Move with the app's path kept under `lib/src/`, leaving
+   `export 'package:xprs_core/src/<path>';` at the old path; imports between
+   moved files stay relative, imports of a shim become the package it
+   re-exports.
+3. Move the tests that only touch moved files (`flutter_test` -> `test`).
+4. Check: the app's analyzer reports nothing new; `dart tool/arch_guard.dart`
+   is clean and the baseline only shrinks (a moved violation reappears under
+   `../core/` with the same line: that is the one allowed re-baseline); both
+   test suites pass.
 
-1. Move only a set closed under its own imports, with no Flutter or app
-   service in it. Keep the app's path under `lib/src/` so relative imports
-   hold.
-2. Leave a one-line export shim at the old app path:
-   `export 'package:xprs_core/src/<path>';`
-3. Move the tests that only touch moved files; `flutter_test` becomes `test`.
-4. Re-run the app's analyzer (no new errors) and `dart tool/arch_guard.dart`
-   (it scans this repo with the app's rules).
-
-What blocks the next files is listed in the README. It's mostly
-`xprs_sig.dart`'s reach into the app's `ProfileService`, which wants a
-`NostrSigner`-style seam.
+The tooling used for the November 2026 move (import-closure scan, the move
+script that rewrites imports and refuses a file importing app-only code, the
+re-baseline that refuses to hide a new violation) is described in
+`docs/audit-2026-11-04.md`, "How the move was done".

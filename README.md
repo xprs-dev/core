@@ -1,38 +1,75 @@
 # core
 
-The XPRS core: the code every XPRS program shares, in plain Dart.
+The XPRS core: the code every XPRS program runs, in plain Dart.
 
 The [app](https://github.com/xprs-dev/app) (phones and desktops, Flutter) and
-the server edition (Linux, no GUI) run the same implementation of the protocol,
-so a fix to a bearer rule, a callsign or the mesh session lands everywhere at
-once. Nothing here imports Flutter: a `dart` program can use all of it.
+the server edition (Linux, no screen) run this one implementation of the
+protocol, so a fix to a bearer rule, a callsign or the courier lands everywhere
+at once. Nothing here imports Flutter: a `dart` program can use all of it.
 
 ```
-  app (Flutter)          server (dart)
-        \                  /
-         xprs_core  (this repo)       XPRS packets, policy, mesh, folders, I2P
-              |
-         reticulum  (xprs-dev/reticulum-dart)   Reticulum, LXMF, NOSTR, DHT, files
+  app (Flutter)            server (dart)          tests (dart test)
+        \                       |                       /
+         \__ CoreHost answers __|__ CoreHost answers __/
+                                |
+                    xprs_core  (this repo)
+          identity, transports, delivery, storage, the receive door
+                                |
+              reticulum  (xprs-dev/reticulum-dart)
+          Reticulum, LXMF, NOSTR, DHT, files, XprsCrypto
 ```
 
 ## What is here
 
-| Area | Files (`lib/src/…`) | What it does |
+Everything `docs/architecture.md` (in the app repo) calls the core:
+
+| Area | Where (`lib/src/…`) |
+|---|---|
+| **Identity and keys** | `profile/` (ProfileService, the profile database, encryption, the device key store, identity backup), `services/xprs/xprs_sig.dart`, `xprs_self.dart` |
+| **Settings and words** | `services/preferences_service.dart`, `services/i18n/` (CoreI18n, `tr()`) |
+| **The receive door** | `services/receive/` (PacketGateway, CoreState, WappDelivery) |
+| **Transports** | `services/reticulum/rns_service.dart` (the Reticulum node, LXMF, NOSTR, folders, hub role, station lane), `services/mesh/` (BLE street mesh), `services/xprs/xprs_lan.dart`, `xprs_tcp.dart`, `services/i2p/`, `services/flash/` (the USB cable) |
+| **Delivery** | MeshCourier and custody, XprsPublisher, XprsSend, XprsMailbox, XprsForwarder, XprsCommandCourier, XprsCatchup, XprsFetch, the inline file lane |
+| **Storage** | XprsArchive (the packet spool), XprsGossip, the mesh store and bulk spool, ObservedStore, WappMailbox, `services/storage/activity_archive.dart`, folders, `packages/encrypted_archive` |
+| **Policy** | station and archive policy, digipeat, gateway dedup, airtime, presence, PowerState and the power tier, the capacity governor |
+| **Plumbing** | BackgroundService, TaskMonitorService, the event bus and topic broker, LogService |
+
+One barrel exports the first files that moved: `package:xprs_core/xprs_core.dart`.
+The rest is imported by path (`package:xprs_core/src/…`), the way the app
+imports `package:reticulum/src/…`.
+
+## What the host provides: `CoreHost`
+
+The core never imports its host. What only the host program can provide is
+one registry, `lib/src/platform/core_host.dart`, each entry with a default
+right for a program that has none of it:
+
+| seam | the app's answer | default |
 |---|---|---|
-| XPRS packets | `services/xprs/xprs_packet`, `xprs_vocab`, `xprs_id`, `xprs_callsign` | the wire grammar and vocabulary (spec XPRS.md), packet ids, the shape of a callsign |
-| Station policy | `xprs_station_policy`, `xprs_owned_stations`, `xprs_archive_policy`, `xprs_archiver_choice`, `xprs_cadence` | what a station keeps and for whom, which archiver it leans on, how often it asks |
-| Relaying | `xprs_digipeat`, `xprs_gateway_dedup`, `xprs_airtime`, `xprs_presence`, `xprs_mailbox` | repeating what was heard, one message however many gateways carry it, one airtime budget across bearers, who is reachable, held mail |
-| Mesh | `services/mesh/*` | the Mesh Session Protocol (MSP), frames, route beacons and bloom digests, neighbour table, custodian choice, xblob |
-| Folders | `services/folders/*` | mutable folders as signed NOSTR events, their state reducer, peer discovery, ntorrent refs |
-| I2P | `services/i2p/*` | a pure-Dart I2P node: NTCP2, tunnels, leasesets, datagrams, swarm |
-| Identity seam | `services/nostr/nostr_signer` | "this program can sign as you" without holding the key |
-| Utilities | `services/log_service`, `services/db_bytes`, `util/geohash`, `util/nostr_imeta`, `services/social/note_text` | log ring buffer, sqlite size, geohash, NIP-92 imeta, mentions |
+| `keepAlive` | Android foreground service, native heartbeat | none |
+| `anyoneLooking`, `hasView` | launcher visibility, Flutter's views | no |
+| `notify` | NotificationService (routes `core:<topic>` to a wapp) | dropped |
+| `openPreferences` | shared_preferences | memory (`MemoryKeyValueStore`) |
+| `secureStore` | flutter_secure_storage | none |
+| `assets` | the Flutter asset bundle | none |
+| `appSupportDir` | path_provider | home directory |
+| `prepareSqlite` | SQLCipher on Android | system SQLite |
+| `hasAllFilesAccess` | Android all-files permission | yes |
+| `mediaArchive` | the shared media store | none |
+| `battery`, `pushPowerTier` | battery_plus; the native service | on mains |
+| `radio` | Ble5Bus + BleService (`AdvertRadio`) | no radio |
+| `newBle5RnsRadio`, `newGattRnsRadio` | the BLE radios Reticulum runs over | none |
+| `openFile`, `openFolder` | the system viewer / file manager | nothing |
+| `locationFix` | the GPS fix for a peer who asks | none |
+| `usbSerial` | Android's USB host (`UsbSerialHost`) | none (Linux opens ttys itself) |
+| `perfSources` | the host's own `perf:` counters | empty |
 
-Import everything through one barrel:
-
-```dart
-import 'package:xprs_core/xprs_core.dart';
-```
+Plain-Dart stand-ins for what the core used to borrow from Flutter:
+`util/observable.dart` (`Observable<T>`, Flutter's `ValueNotifier`),
+`platform/off_thread.dart` (`offThread`, Flutter's `compute`),
+`util/compat.dart` (`kIsWeb`, `setEquals`), `platform/os.dart` (OS checks,
+paths, subprocesses, locale), `platform/fs.dart` (the file system, native or
+in the browser).
 
 ## Use it
 
@@ -41,9 +78,7 @@ import 'package:xprs_core/xprs_core.dart';
 
 ```
 code/
-  app/  or  xprs/       the Flutter app
-  core/                 this repo
-  reticulum-dart/       its dependency
+  xprs/ (the app)    core/ (this repo)    reticulum-dart/
 ```
 
 ```yaml
@@ -51,6 +86,9 @@ dependencies:
   xprs_core:
     path: ../core
 ```
+
+A host wires `CoreHost` once at start, before any core service runs (the
+app: `lib/boot/core_host_app.dart`).
 
 ## Develop
 
@@ -60,22 +98,16 @@ dart analyze
 dart test
 ```
 
-The app's architecture guard (`tool/arch_guard.dart` in the app repo) scans
-this repo with the app's own rules, so code that moved here is held to the same
-standard it was in the app. Run it from the app before committing here.
+Read `CLAUDE.md` before changing anything: the rules for this repo are short
+and they are enforced. The app's architecture guard (`dart tool/arch_guard.dart`
+in the app repo) scans this repo with the app's rules.
 
 ## Where it came from
 
-These files moved out of the app's `lib/` unchanged, keeping the app's directory
-layout under `lib/src/` so their relative imports still hold. The app keeps a
-one-line export shim at each old path, so nothing in the app had to change but
-the dependency. Their earlier history is in the app repository.
-
-The rest of the XPRS core (the archive, ingest, the bridge, the LAN and TCP
-bearers, the web chat API) still lives in the app: it depends on app services
-(the profile, preferences, the mesh and Reticulum services) that have to become
-interfaces first. That is the next stage; see `docs/reusable.md` for what is
-already shareable.
+All of it was moved out of the app's `lib/` in November 2026, keeping the
+app's directory layout under `lib/src/` so relative imports held; the app
+keeps an export shim at each old path. Earlier history is in the app repo.
+`docs/audit-2026-11-04.md` is the audit that started it and what is left.
 
 ## License
 
