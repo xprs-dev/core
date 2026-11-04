@@ -16,7 +16,11 @@
 import 'package:reticulum/src/util/media_archive.dart' show MediaArchive;
 
 import '../services/notifications/notification.dart';
+import 'advert_radio.dart';
 import 'asset_source.dart';
+import 'battery.dart';
+import 'ble_rns_radio.dart';
+import 'package:reticulum/src/services/reticulum/rns_ble_interface.dart' show RnsBleRadio;
 import 'key_value_store.dart';
 import 'secure_store.dart';
 
@@ -98,4 +102,41 @@ class CoreHost {
   /// "all files access", needed to keep an identity backup outside the app's
   /// own folder)? Default: yes — a program with no such gate.
   static Future<bool> Function() hasAllFilesAccess = () async => true;
+
+  /// The battery. Default: none, on mains.
+  static BatterySource battery = const NoBattery();
+
+  /// Tell the host the power tier changed (Android retunes its heartbeat and
+  /// wake locks from it, docs/performance.md 8.11). Default: nobody to tell.
+  static Future<void> Function(String tier) pushPowerTier = (_) async {};
+
+  /// The BLE5 advert radio. Default: none.
+  static AdvertRadio radio = const NoAdvertRadio();
+
+  /// A new Reticulum radio over BLE5 adverts (chunking), or null when the
+  /// program has no Bluetooth. Default: none.
+  static BleRnsRadio? Function() newBle5RnsRadio = () => null;
+
+  /// A new Reticulum radio over the BLE GATT service, or null. Default: none.
+  static RnsBleRadio? Function() newGattRnsRadio = () => null;
+
+  /// Hand a file, or a folder, to the system to open (a viewer, the file
+  /// manager); true when something took it. Default: nothing to hand it to.
+  static Future<bool> Function(String path) openFile = (_) async => false;
+  static Future<bool> Function(String path) openFolder = (_) async => false;
+
+  /// A position fix to answer a peer who asked where this station is
+  /// (XPRS.md 15.1), or null with no location (the default, and the web).
+  static Future<({double lat, double lon, double acc})?> Function(
+      {Duration maxAge, Duration timeLimit}) locationFix = (
+          {Duration maxAge = const Duration(minutes: 5),
+          Duration timeLimit = const Duration(seconds: 20)}) async =>
+      null;
+
+  /// Counters the host keeps for work the core does not own (the USB
+  /// flasher), drained into TaskMonitorService's `perf:` lines once a minute:
+  /// name -> a function returning counters since the last drain. A worker or
+  /// subsystem with no counter is one nobody can see burning
+  /// (docs/performance.md 8.1).
+  static final Map<String, Map<String, int> Function()> perfSources = {};
 }
