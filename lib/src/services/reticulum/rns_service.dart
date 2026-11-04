@@ -6869,6 +6869,12 @@ class RnsService {
   int npdBadMac = 0;
   int npdRateLimited = 0;
 
+  /// Probes received, per interface, and the most hops one travelled: the
+  /// proof that a connectionless packet survives a reference rnsd hub, as a
+  /// count in the perf: line instead of a log line per probe (perf §8.10).
+  final Map<String, int> _npdRxByVia = {};
+  int _npdMaxHops = 0;
+
   Map<String, int> drainNpdStats() {
     final out = {
       'silent': npdSilent,
@@ -6876,7 +6882,11 @@ class RnsService {
       'replay': npdReplay,
       'badmac': npdBadMac,
       'ratelimited': npdRateLimited,
+      for (final e in _npdRxByVia.entries) 'rx.${e.key}': e.value,
+      if (_npdRxByVia.isNotEmpty) 'maxhops': _npdMaxHops,
     };
+    _npdRxByVia.clear();
+    _npdMaxHops = 0;
     npdSilent = 0;
     npdAnswered = 0;
     npdReplay = 0;
@@ -6937,10 +6947,8 @@ class RnsService {
     // The interface and hop count are the whole proof that a connectionless
     // PLAIN packet survives forwarding by a reference (Python) rnsd hub — the
     // one assumption in this design we cannot check by reading our own code.
-    LogService.instance.add(
-      'RNS: npd rx ${NpdType.name(npd.type)} from '
-      '${_hex(npd.senderPub).substring(0, 8)} via $via hops=${p.hops}',
-    );
+    _npdRxByVia[via] = (_npdRxByVia[via] ?? 0) + 1;
+    if (p.hops > _npdMaxHops) _npdMaxHops = p.hops;
 
     // An ANSWER to a probe we sent: match it to the waiting query by the nonce
     // it echoes back. (A reply carries the requester's nonce precisely so this
@@ -6972,6 +6980,11 @@ class RnsService {
       return;
     }
     _npdLastReplyMs[peer] = nowMs;
+    // Only the last gap matters, so an entry older than it is forgotten; a
+    // stranger with a fresh key per probe cannot grow this (perf §8.18).
+    if (_npdLastReplyMs.length > 512) {
+      _npdLastReplyMs.removeWhere((_, t) => nowMs - t >= _npdMinReplyGapMs);
+    }
 
     final selfPub = selfPubHex;
     if (selfPub == null) return;
