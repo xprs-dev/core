@@ -1,0 +1,27 @@
+name: xprs_core
+description: >-
+  The XPRS core shared by every XPRS program: the packet grammar and vocabulary,
+  callsigns, station policy, digipeating, presence, mailbox, the mesh session
+  and custody frames, folders, and the I2P node. Plain Dart, no Flutter, so the
+  phone/desktop app and the Linux server run one implementation.
+version: 0.1.0
+repository: https://github.com/xprs-dev/core
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  reticulum:                # Reticulum, LXMF, NOSTR, DHT, files, XprsCrypto
+    path: ../reticulum-dart
+  archive: ^3.6.1           # parcel / blob (de)compression
+  bech32: ^0.2.2            # npub / nsec encoding
+  crypto: ^3.0.3            # SHA-256
+  cryptography: ^2.7.0      # X25519 / Ed25519 / ChaCha20-Poly1305 / HKDF (I2P)
+  hex: ^0.2.0               # hex <-> bytes
+  pointycastle: ^3.9.1      # secp256k1 / BIP-340 Schnorr
+  sqlite3: ^2.4.0           # stores
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.0.0

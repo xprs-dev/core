@@ -1,0 +1,33 @@
+name: test
+
+# core is plain Dart. It depends on reticulum-dart by path (../reticulum-dart),
+# so that repo is checked out next to it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core
+        uses: actions/checkout@v4
+        with:
+          path: core
+
+      - name: Checkout reticulum-dart (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: xprs-dev/reticulum-dart
+          path: reticulum-dart
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Analyze and test
+        working-directory: core
+        run: |
+          dart pub get
+          dart analyze
+          dart test
