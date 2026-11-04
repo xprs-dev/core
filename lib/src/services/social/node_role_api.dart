@@ -564,7 +564,8 @@ class NodeRoleApi {
       body: r.items == 0
           ? tr('notifications.cleanup.nothing.body')
           : trn('notifications.cleanup.deleted', r.items),
-      source: 'wapp:archiver',
+      // Routed to the archiver's screen by the host (lib/boot).
+      source: 'core:archiver',
       scope: NotificationScope.app,
     ));
     return r.items;

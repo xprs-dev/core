@@ -96,7 +96,6 @@ import '../folders/folder_subscriptions.dart';
 import '../folders/folder_meta.dart';
 import '../folders/ntorrent.dart';
 import '../folders/piece_hashes.dart';
-import 'package:xprs_core/src/services/storage/activity_archive.dart';
 import '../mesh/mesh_store.dart';
 import 'package:reticulum/reticulum.dart'
     show MediaArchive, MediaRef, MediaKind;
@@ -104,7 +103,6 @@ import 'package:reticulum/reticulum.dart' show BlossomServer;
 
 import '../../profile/profile_db.dart';
 import '../../profile/profile_service.dart';
-import '../../profile/storage_paths.dart';
 import '../../profile/secure_file.dart';
 import '../preferences_service.dart';
 import 'package:reticulum/src/util/nostr_crypto.dart';
@@ -1011,6 +1009,18 @@ class RnsService {
   bool reachableByCallsign(String callsign) {
     final dest = lxmfDestForCallsign(callsign);
     return dest.isNotEmpty && hasPathTo(dest);
+  }
+
+  /// The presence verdict a screen draws as a dot, decided here once: in reach
+  /// when heard on the air lately (XprsMonitor) OR reachable over the
+  /// internet (a peer behind the hubs is no air sighting, but a message to it
+  /// leaves now). A room ('#...') has no single peer to reach. The screen used
+  /// to combine the two itself (audit 2026-11-04; architecture.md "Who is on
+  /// the mesh, decided once").
+  bool inReach(String callsign) {
+    if (callsign.isEmpty || callsign.startsWith('#')) return false;
+    return XprsMonitor.instance.heardRecently(callsign) ||
+        reachableByCallsign(callsign);
   }
 
   /// Diagnostic: our routing to [destHex] (next hop, interface, hops, age) plus
@@ -9070,27 +9080,11 @@ class RnsService {
       // pattern that froze the app for hours (docs/performance.md §3.1).
       // One transaction, so a batch of 100 is one fsync, not 100.
       final stored = store.putAllVerified(batch, tier: Tier.followed.index);
-      final prefs = PreferencesService.instanceSync;
-      if (prefs != null) {
-        final archive = ActivityArchive.forStorage(
-          wappDataStorageFor(prefs, 'social'),
-          fileName: 'social_following.sqlite3',
-        );
-        archive.addAll([
-          for (final event in batch)
-            {
-              't': event.createdAt * 1000,
-              'dir': event.pubkey == selfPubHex ? 'out' : 'in',
-              'from': event.pubkey.substring(0, 12),
-              'author': event.pubkey,
-              'text': event.content,
-              'kind': 'msg',
-              'mid': event.id ?? '',
-              'parent': _rootEventTag(event.tags),
-              'source': 'following',
-            },
-        ]);
-      }
+      // The core keeps followed authors' posts in its own event store (above)
+      // and nowhere else. It also used to write a copy into the Social wapp's
+      // private database (social_following.sqlite3), which nothing has read
+      // since the Following tab became a filter over the main archive: a core
+      // service writing a wapp's files, for no reader (audit 2026-11-04).
       final ms = DateTime.now().difference(started).inMilliseconds;
       if (stored > 0 || dropped > 0) {
         LogService.instance.add(
@@ -9100,13 +9094,6 @@ class RnsService {
     } catch (e) {
       LogService.instance.add('RNS/relay: follows mirror failed: $e');
     }
-  }
-
-  static String _rootEventTag(List<List<String>> tags) {
-    for (final tag in tags) {
-      if (tag.length >= 2 && tag[0] == 'e') return tag[1];
-    }
-    return '';
   }
 
   /// True if [pubHex] (64-char hex) is followed.
@@ -9526,6 +9513,29 @@ class RnsService {
     KeepService.instance.keep(Touch.react, eventId, authorHex: authorHex);
   }
 
+  /// NOSTR lanes a host holds open for a while (a page's wss subscription),
+  /// used by [react] after Reticulum. The host adds its lane when it opens one
+  /// and removes it when it closes; the core decides the order.
+  final Set<Future<void> Function(NostrEvent ev)> _nostrLanes = {};
+  void addNostrLane(Future<void> Function(NostrEvent ev) lane) =>
+      _nostrLanes.add(lane);
+  void removeNostrLane(Future<void> Function(NostrEvent ev) lane) =>
+      _nostrLanes.remove(lane);
+
+  /// Like a post: sign the reaction and send it. The lanes are the core's to
+  /// choose, in this order: Reticulum first (the local store, then the peer
+  /// indexers) so the like reaches the author over the mesh, then every NOSTR
+  /// lane a host holds open, best-effort. A screen used to make this choice
+  /// itself (audit 2026-11-04).
+  Future<void> react(String eventId, String authorHex) async {
+    final ev = buildSignedReaction(eventId, authorHex);
+    if (ev == null) return;
+    unawaited(relayPublish(ev.toJson()));
+    for (final lane in List.of(_nostrLanes)) {
+      unawaited(lane(ev).catchError((_) {}));
+    }
+  }
+
   /// Build a signed kind-7 reaction so the MAIN isolate can publish it (the
   /// engine's sockets freeze and cannot be trusted to actually send). Returns
   /// null if we have no key to sign with.
@@ -9724,7 +9734,9 @@ class RnsService {
         level: NotificationLevel.info,
         title: '$who $what',
         body: kind == 1 && content.isNotEmpty ? content : null,
-        source: 'wapp:social',
+        // What it is about, not which wapp shows it: the host routes
+        // core:nostr to the wapp that handles NOSTR (lib/boot).
+        source: 'core:nostr',
         scope: NotificationScope.app,
         // The event id IS the identity of this notification. With it, the store
         // can collapse a repeat into the same row instead of minting a new one

@@ -21,6 +21,19 @@ enum NotificationScope {
 
 /// Value object describing one notification.
 class XprsNotification {
+  /// The same notification under another [source]: how the host routes a
+  /// core topic (`core:nostr`) to the wapp that shows it (`wapp:social`).
+  XprsNotification withSource(String source) => XprsNotification(
+        level: level,
+        title: title,
+        body: body,
+        source: source,
+        tag: tag,
+        scope: scope,
+        convo: convo,
+        view: view,
+      );
+
   final NotificationLevel level;
   final String title;
   final String? body;
