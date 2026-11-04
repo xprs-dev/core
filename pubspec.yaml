@@ -25,6 +25,7 @@ dependencies:
   sqlite3: ^2.4.0           # stores
   meta: ^1.15.0             # @visibleForTesting / @immutable, without Flutter
   image: ^4.3.0             # chat picture previews, decoded on a worker isolate
+  ffi: ^2.1.0               # termios for the Linux serial port (flash)
   http: ^1.2.0              # connections/internet/http_transport.dart
   unorm_dart: ^0.3.0        # NFC normalisation of profile passwords (profile_crypto)
   web: ^0.5.1               # platform/fs_web.dart: the browser's storage behind package:file

@@ -23,6 +23,7 @@ import 'ble_rns_radio.dart';
 import 'package:reticulum/src/services/reticulum/rns_ble_interface.dart' show RnsBleRadio;
 import 'key_value_store.dart';
 import 'secure_store.dart';
+import 'usb_serial.dart';
 
 /// Keeping the process up, and the heartbeat that drives work while it is.
 ///
@@ -139,4 +140,8 @@ class CoreHost {
   /// subsystem with no counter is one nobody can see burning
   /// (docs/performance.md 8.1).
   static final Map<String, Map<String, int> Function()> perfSources = {};
+
+  /// USB serial through the platform (Android). Null where the core opens
+  /// serial ports itself (Linux) or there are none.
+  static UsbSerialHost? usbSerial;
 }
