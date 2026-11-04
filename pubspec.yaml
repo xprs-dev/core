@@ -14,6 +14,8 @@ environment:
 dependencies:
   reticulum:                # Reticulum, LXMF, NOSTR, DHT, files, XprsCrypto
     path: ../reticulum-dart
+  encrypted_archive:        # per-profile encrypted .ear archive (packages/)
+    path: packages/encrypted_archive
   archive: ^3.6.1           # parcel / blob (de)compression
   bech32: ^0.2.2            # npub / nsec encoding
   crypto: ^3.0.3            # SHA-256
@@ -22,7 +24,11 @@ dependencies:
   pointycastle: ^3.9.1      # secp256k1 / BIP-340 Schnorr
   sqlite3: ^2.4.0           # stores
   meta: ^1.15.0             # @visibleForTesting / @immutable, without Flutter
+  http: ^1.2.0              # connections/internet/http_transport.dart
+  unorm_dart: ^0.3.0        # NFC normalisation of profile passwords (profile_crypto)
+  web: ^0.5.1               # platform/fs_web.dart: the browser's storage behind package:file
 
+  file: any
 dev_dependencies:
   test: ^1.25.0
   lints: ^5.0.0

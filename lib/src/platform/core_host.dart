@@ -15,6 +15,11 @@
  */
 import 'package:reticulum/src/util/media_archive.dart' show MediaArchive;
 
+import '../services/notifications/notification.dart';
+import 'asset_source.dart';
+import 'key_value_store.dart';
+import 'secure_store.dart';
+
 /// Keeping the process up, and the heartbeat that drives work while it is.
 ///
 /// On Android this is the foreground service: `hold`/`release` are
@@ -58,4 +63,39 @@ class CoreHost {
   /// The device's shared, content-addressed media archive, or null while
   /// storage is not ready (or on the web). Default: none.
   static MediaArchive? Function() mediaArchive = () => null;
+
+  /// Show a notification to the person; true when they were actually told
+  /// (false for a suppressed duplicate). The app routes it to its backends
+  /// (tray, in-app card); the default drops it, which is right for a test
+  /// and for a server, which has nobody to show it to.
+  static bool Function(XprsNotification n) notify = (_) => false;
+
+  /// Open the settings store PreferencesService reads and writes. The app
+  /// opens shared_preferences; the default keeps settings in memory.
+  static Future<KeyValueStore> Function() openPreferences =
+      () async => MemoryKeyValueStore();
+
+  /// The OS keychain for a profile's device secrets. Default: none.
+  static SecureStore secureStore = const NoSecureStore();
+
+  /// Files shipped with the program (translations). Default: none.
+  static AssetSource assets = const NoAssets();
+
+  /// The per-application support directory (where profiles live when the
+  /// person has not chosen a folder), or null to fall back to the home
+  /// directory. The app asks path_provider.
+  static Future<String?> Function() appSupportDir = () async => null;
+
+  /// Does this process have a screen? An engine started at boot on Android
+  /// has none until the person opens the app. Default: no.
+  static bool Function() hasView = () => false;
+
+  /// Load the SQLite build the program ships (SQLCipher on Android) before
+  /// the first database opens. Default: the system library, nothing to do.
+  static void Function() prepareSqlite = () {};
+
+  /// May the program read and write anywhere on shared storage (Android's
+  /// "all files access", needed to keep an identity backup outside the app's
+  /// own folder)? Default: yes — a program with no such gate.
+  static Future<bool> Function() hasAllFilesAccess = () async => true;
 }

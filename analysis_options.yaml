@@ -4,6 +4,7 @@ analyzer:
     constant_identifier_names: ignore
   exclude:
     - build/**
+    - packages/**
 linter:
   rules:
     avoid_print: false
