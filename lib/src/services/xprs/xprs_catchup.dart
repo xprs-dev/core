@@ -365,7 +365,11 @@ class XprsCatchup {
     unawaited(_airMailbox());
     unawaited(_airDecoration());
     unawaited(tick(selfCallsign));
-    if (_armed || !platform.isAndroid) return;
+    // Armed on any host that delivers a heartbeat: Android's native one, the
+    // server's. Without this a server polled once at start, and on a fresh
+    // install that one tick only sets the watermark (36.10.1 rule 2), so it
+    // never asked anybody for the history it was missing.
+    if (_armed || !CoreHost.keepAlive.ticks) return;
     _armed = true;
     CoreHost.keepAlive.addTickListener(_onNativeTick);
   }

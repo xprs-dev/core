@@ -31,9 +31,13 @@ import 'usb_serial.dart';
 /// ref-counted by reason, and tick listeners are called from the native
 /// heartbeat, which keeps running when Dart timers are throttled in a pocket
 /// (docs/performance.md 8.2). A program that is never suspended (the server,
-/// a desktop) needs neither: the default holds nothing and never ticks, so
-/// work that must also run in the foreground keeps its own timer.
+/// a desktop) needs no hold. The default holds nothing and never ticks, so
+/// work that must also run in the foreground keeps its own timer; a host that
+/// can tick (the server: mains power, never throttled) says so in [ticks].
 abstract interface class KeepAlive {
+  /// Whether tick listeners are actually called. Work driven only by the
+  /// heartbeat (the catch-up poll) arms on this, never on the OS name.
+  bool get ticks;
   Future<void> hold(String reason);
   Future<void> release(String reason);
   void addTickListener(void Function() listener);
@@ -42,6 +46,8 @@ abstract interface class KeepAlive {
 
 class _NoKeepAlive implements KeepAlive {
   const _NoKeepAlive();
+  @override
+  bool get ticks => false;
   @override
   Future<void> hold(String reason) async {}
   @override
