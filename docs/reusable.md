@@ -184,3 +184,4 @@ re-baseline that refuses to hide a new violation) is described in
 `docs/audit-2026-11-04.md`, "How the move was done".
 
 | `LogService.onLine` | `services/log_service.dart` | a host that prints the log as it is kept (the server edition writes it to stdout / the journal) |
+| `HeartbeatKeepAlive` | `platform/heartbeat_keep_alive.dart` | the core's heartbeat on a host with no native one (server, desktop): a Dart tick at a period the host passes, running only while listened to; hold/release delegated |

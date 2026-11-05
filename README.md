@@ -46,7 +46,7 @@ right for a program that has none of it:
 
 | seam | the app's answer | default |
 |---|---|---|
-| `keepAlive` | Android foreground service, native heartbeat (`ticks`) | none, never ticks (the server supplies a 2 s heartbeat) |
+| `keepAlive` | Android foreground service, native heartbeat (`ticks`) | none, never ticks (desktop and server: `HeartbeatKeepAlive`, 2 s) |
 | `anyoneLooking`, `hasView` | launcher visibility, Flutter's views | no |
 | `notify` | NotificationService (routes `core:<topic>` to a wapp) | dropped |
 | `openPreferences` | shared_preferences | memory (`MemoryKeyValueStore`) |
