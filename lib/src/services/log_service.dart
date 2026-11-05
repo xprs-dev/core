@@ -42,6 +42,10 @@ class LogService {
   String _lastLine = '';
   int _repeats = 0;
 
+  /// Called with every new line as it is kept (not for collapsed repeats):
+  /// a host with a console or a journal (the server edition) prints it.
+  void Function(String line)? onLine;
+
   void add(String line) {
     final capped = line.length <= _maxLineLen
         ? line
@@ -69,6 +73,7 @@ class LogService {
     // so every line the ring keeps is also printed there (docs/web.md).
     if (_kWeb) print(capped); // ignore: avoid_print
     _lines.add('${DateTime.now().toIso8601String()}  $capped');
+    onLine?.call(capped);
     if (_lines.length > _max) {
       _lines.removeRange(0, _lines.length - _max);
     }

@@ -182,3 +182,5 @@ The tooling used for the November 2026 move (import-closure scan, the move
 script that rewrites imports and refuses a file importing app-only code, the
 re-baseline that refuses to hide a new violation) is described in
 `docs/audit-2026-11-04.md`, "How the move was done".
+
+| `LogService.onLine` | `services/log_service.dart` | a host that prints the log as it is kept (the server edition writes it to stdout / the journal) |

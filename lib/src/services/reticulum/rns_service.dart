@@ -231,6 +231,7 @@ class RnsService {
   /// The LAN hub a PROMOTED node accepts neighbours on, and the promotion
   /// flag — see [_applyHubRole].
   RnsTcpServerInterface? _lanHub;
+  Future<void>? _lanHubBinding;
   bool _hubPromoted = false;
   static const int _lanHubPort = 4242;
 
@@ -1671,7 +1672,11 @@ class RnsService {
         // flood onto BLE — that radio is shared and cannot afford it.
         ..edgeQuiet = true
         ..edgeBridge = false;
-      try {
+      // A node started in tcpserver mode on the hub port already accepts
+      // neighbours there (the server edition): that IS the LAN hub.
+      if (_server?.port == _lanHubPort) {
+        _lanHub = _server;
+      } else try {
         final hub = RnsTcpServerInterface(
           port: _lanHubPort,
           transport: t,
@@ -1680,17 +1685,24 @@ class RnsService {
           labelPrefix: 'lanhub',
           onPlainText: XprsTcp.attach,
         );
-        await hub.bind();
+        // Claimed before the await: a tcpserver start on the same port that
+        // runs meanwhile waits for this bind and shares it (see start()).
         _lanHub = hub;
+        final binding = hub.bind();
+        _lanHubBinding = binding;
+        await binding;
       } catch (e) {
+        _lanHub = null;
         LogService.instance.add(
             'RNS: LAN hub not bound on $_lanHubPort ($e); forwarding only');
+      } finally {
+        _lanHubBinding = null;
       }
       _hubPromoted = true;
       LogService.instance.add('RNS: hub role ON — transport for neighbours'
           '${_lanHub != null ? ", LAN hub on :$_lanHubPort" : ""}');
     } else if (!unlimited && _hubPromoted) {
-      await _lanHub?.close();
+      if (!identical(_lanHub, _server)) await _lanHub?.close();
       _lanHub = null;
       // Back to the scoped bridge: still relay BLE peers up if that is on,
       // never re-air the hub flood across uplinks.
@@ -4510,6 +4522,17 @@ class RnsService {
           // serve:archive into a socket and nobody else ever learned it.
           // transportId is what tags the rebroadcast as HEADER_2, per RNS.
           _transport!.transportId = _id!.hash;
+          // Promoted first (on mains, the hub role binds the LAN hub on its
+          // port): the same port is the same listener, not a second bind.
+          if (_lanHub != null && _lanHub!.port == port) {
+            try {
+              await _lanHubBinding;
+            } catch (_) {}
+            if (_lanHub != null) {
+              _server = _lanHub;
+              break;
+            }
+          }
           _server = RnsTcpServerInterface(
             port: port,
             transport: _transport!,
