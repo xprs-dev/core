@@ -113,7 +113,8 @@ void main() {
         'settings': {'colour': 'red'}})).status, 400);
     final r = await act(a, lan, {'action': 'set', 'session': s,
         'settings': {'local_private': false, 'who_may_post': 'local'}});
-    expect(r.json['settings'], {'local_private': false, 'who_may_post': 'local'});
+    expect(r.json['settings'],
+        {'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators'});
     // The admin manages from anywhere once claimed (the internet included).
     final far = await session(a, 'X1ALIC', _alice, internet);
     expect((await act(a, internet, {'action': 'set', 'session': far,

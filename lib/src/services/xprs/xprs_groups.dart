@@ -133,7 +133,21 @@ class XprsModeration {
 /// The answer for one group at one moment.
 class XprsRoster {
   XprsRoster(this.roles, this.hidden, this.verified,
-      [this.offers = const {}, this.moderation = const []]);
+      [this.offers = const {},
+      this.moderation = const [],
+      this.away = const {},
+      this.offerRoles = const {}]);
+
+  /// callsign → the role the pending offer in [offers] carries
+  /// ([XprsRole.mod] or [XprsRole.member]), so the invitee answers with the
+  /// right word (26.3.1).
+  final Map<String, XprsRole> offerRoles;
+
+  /// Who an open room has sent away (XPRS.md 10.10): callsign -> the end of a
+  /// suspension in epoch ms, or 0 for "until the admin lifts it". A closed
+  /// group reads [roles] instead; an open room has no roster, so a revocation
+  /// is the only thing that says somebody may not post.
+  final Map<String, int> away;
 
   /// The edits and removals of other people's publications that are in force,
   /// oldest first (XPRS.md 10.4.1).
@@ -540,6 +554,7 @@ class XprsGroups {
     final hidden = <String>{};
     final moderation = <XprsModeration>[];
     final suspended = <String, int>{}; // callsign -> until
+    final away = <String, int>{}; // 10.10: sent away from an open room
     // Offers awaiting an acceptance: callsign -> the grant that made them.
     final offered = <String, ({String id, XprsRole role, int ts})>{};
     var nextChange = 0;
@@ -571,6 +586,9 @@ class XprsGroups {
           offered[c] = (id: a.id, role: role, ts: a.ts);
           roles[c] = XprsRole.invited;
           suspended.remove(c);
+          // 10.10: in an open room the admin's grant makes somebody an
+          // ordinary visitor again, so it also lifts a revocation.
+          away.remove(c);
         }
       }
 
@@ -583,7 +601,12 @@ class XprsGroups {
         // withdrawn grant cannot be accepted after the fact and a stray
         // acceptance names nothing.
         if (o != null && o.id == a.hideRef && a.ts >= o.ts) {
-          roles[a.signer] = a.accept == 'mod' ? XprsRole.mod : o.role;
+          // The offered role is what is granted; `accept:mod` on a member's
+          // offer confers nothing more, and a moderator's offer answered with
+          // `accept:member` is the role declined.
+          roles[a.signer] = o.role == XprsRole.mod && a.accept == 'mod'
+              ? XprsRole.mod
+              : XprsRole.member;
           offered.remove(a.signer);
         }
       }
@@ -601,11 +624,15 @@ class XprsGroups {
           // lapses and the grant it interrupted stands again.
           if (a.until! > now) {
             suspended[c] = a.until!;
+            away[c] = a.until!;
             if (nextChange == 0 || a.until! < nextChange) nextChange = a.until!;
+          } else {
+            away.remove(c);
           }
         } else {
           roles.remove(c);
           suspended.remove(c);
+          away[c] = 0;
         }
       }
       if (a.hide.isNotEmpty && a.hideRef.isNotEmpty) hidden.add(a.hideRef);
@@ -633,8 +660,14 @@ class XprsGroups {
         _nextChange.remove(group);
       }
     }
-    return XprsRoster(roles, hidden, haveKey,
-        {for (final e in offered.entries) e.key: e.value.id}, moderation);
+    return XprsRoster(
+        roles,
+        hidden,
+        haveKey,
+        {for (final e in offered.entries) e.key: e.value.id},
+        moderation,
+        away,
+        {for (final e in offered.entries) e.key: e.value.role});
   }
 
   /// The tree the `role:sub` listings make (26.2): each listed group mapped

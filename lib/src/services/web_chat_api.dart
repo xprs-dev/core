@@ -20,6 +20,18 @@
  * station would own it. The settings say what visitors from outside the
  * station's network may see and who may post.
  *
+ * Moderation is XPRS.md 10.10: the station is the group of its own rooms
+ * (`d:` its callsign), its key signs the admin's acts (appoint, dismiss,
+ * lift), and moderators sign theirs in the browser and post them like any
+ * wire: `r:<id> remove:message` and `revoke:<call> [until:]`. The replay is
+ * the core's XprsGroups, the one every closed group uses.
+ *
+ * Rooms the station hosts (XPRS.md 10.10.1) are closed groups whose key the
+ * station holds: created by the administrator, public or private, posted to
+ * through the station and filed here, never aired. Alerts (10.10.2) are the
+ * `t:warning` and `t:info` the station holds; posting one through it is for
+ * moderators and the administrator unless the administrator opens it.
+ *
  * The browser holds the key and signs; this host never sees a private key and
  * never signs for the visitor. A wire is refused unless it is signed, is not
  * written as this station, is one of the few types a visitor may post, and
@@ -39,10 +51,22 @@ import 'package:hex/hex.dart';
 import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
+import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_sig.dart';
 import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsScope, XprsScope;
+
+/// The keys of the rooms a station hosts (XPRS.md 10.10.1): the host's store.
+class WebChatRoomKeys {
+  const WebChatRoomKeys({required this.create, required this.scalar});
+
+  /// Make a new group keypair named [nick]; its `X5` callsign, or null.
+  final String? Function(String nick) create;
+
+  /// The private scalar of a room this station holds, or null.
+  final BigInt? Function(String call) scalar;
+}
 
 /// One answer: a status and a JSON body.
 class WebChatReply {
@@ -96,6 +120,23 @@ class WebChatApi {
   /// LAN has no private addresses) widens it.
   final bool Function(String peer) isLocalPeer;
 
+  /// The moderation record (XPRS.md 10.10). Null: no moderation here.
+  final XprsGroups? groups;
+
+  /// Sign a canonical wire as this station, or null when it cannot (no key).
+  final XprsPacket? Function(String canonical)? signAsStation;
+
+  /// Air a wire this station signed (its own moderation acts).
+  final void Function(String wire)? publish;
+
+  /// Hosted rooms (10.10.1): their keys, filing a packet without airing it,
+  /// and reading a room's rows back. All three, or no hosted rooms.
+  final WebChatRoomKeys? roomKeys;
+  final void Function(String wire)? keep;
+  final List<Map<String, dynamic>> Function(
+      {required String room, int? sinceMs, int? untilMs, required int limit})?
+      roomRows;
+
   WebChatApi({
     required this.publicRows,
     required this.held,
@@ -107,6 +148,12 @@ class WebChatApi {
     DateTime Function()? now,
     this.store,
     bool Function(String peer)? isLocalPeer,
+    this.groups,
+    this.signAsStation,
+    this.publish,
+    this.roomKeys,
+    this.keep,
+    this.roomRows,
   })  : now = now ?? DateTime.now,
         isLocalPeer = isLocalPeer ?? isPrivateAddress;
 
@@ -122,6 +169,8 @@ class WebChatApi {
   /// signature; a command or a group act is never a visitor's to send.
   static const Set<String> postable = {
     'message', 'status', 'reaction', 'identity',
+    // Alerts (10.10.2), under the station's setting.
+    'warning', 'info',
   };
 
   static const int maxLimit = 200;
@@ -179,6 +228,10 @@ class WebChatApi {
       if (method == 'GET') return _adminState(query['session'], peer);
       if (method == 'POST') return _adminAct(body, peer);
     }
+    if (path == '/api/rooms' && _hostsRooms) {
+      if (method == 'GET') return _roomList(query['session']);
+      if (method == 'POST') return _roomAct(body);
+    }
     if (path == '/api/session') {
       if (method == 'GET') return _challenge(peer);
       if (method == 'POST') return _prove(_wireOf(body), peer);
@@ -201,12 +254,18 @@ class WebChatApi {
       'features': <String, bool>{},
       'serve': <String>[],
       'page': {
-        'tabs': ['chat', 'traffic'],
+        'tabs': ['chat', 'traffic', 'alerts'],
+        // Who may post an alert through this station (10.10.2).
+        'alerts': settings['who_may_alert'],
+        // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
+        if (_hostsRooms) 'rooms': true,
         'config': false,
         // This host gives a visitor who proves their key their own mail.
         'session': true,
         // And has an administrator (GET/POST /api/admin).
         'admin': true,
+        // And moderators (XPRS.md 10.10).
+        if (groups != null) 'moderation': true,
         if (app != null) 'app': app,
       },
     });
@@ -264,6 +323,8 @@ class WebChatApi {
       const {'local', 'regional', 'global'}.contains(v) ? v : null;
 
   WebChatReply _history(Map<String, String> q, String peer) {
+    final hosted = _hostedRoom(q['room']);
+    if (hosted != null) return _roomHistory(hosted, q);
     // The Local room is the station's own neighbourhood: kept from visitors
     // outside its network when the administrator says so (the default).
     final hideLocal = localPrivate && !isLocalPeer(peer);
@@ -291,6 +352,16 @@ class WebChatApi {
       limit: limit,
     );
     if (hideLocal) rows = [for (final r in rows) if (!_isLocalRow(r)) r];
+    final mod = _moderation();
+    if (mod != null) {
+      rows = [
+        for (final r in rows)
+          if (!mod.removed.contains('${r['id']}') &&
+              !(mod.away.contains(_base('${r['from'] ?? ''}')) &&
+                  !_safety.contains('${r['type']}')))
+            r,
+      ];
+    }
     final dir = q['dir'];
     if (dir == 'in') rows = [for (final r in rows) if (r['own'] != true) r];
     if (dir == 'out') rows = [for (final r in rows) if (r['own'] == true) r];
@@ -300,6 +371,12 @@ class WebChatApi {
       'held': held(types),
       'time': 'synced',
       'rows': rows,
+      // What a page already showing should take down (XPRS.md 10.10).
+      if (mod != null)
+        'moderation': {
+          'removed': mod.removed.take(200).toList(),
+          'away': mod.away.toList(),
+        },
     });
   }
 
@@ -336,9 +413,22 @@ class WebChatApi {
         WebChatReply(status, {'ok': false, 'error': why});
     final p = XprsPacket.parse(wire.trim());
     if (p == null || !p.fits) return no(400, 'malformed');
-    if (!postable.contains(p.type)) return no(403, 'not for a visitor to send');
     final from = (p['f'] ?? '').trim().toUpperCase();
     if (from.isEmpty) return no(400, 'no f:');
+    if (p.type == 'moderate') return _moderateFromVisitor(p, from, peer);
+    if (!postable.contains(p.type)) return no(403, 'not for a visitor to send');
+    final room = _hostedRoom(p['d']);
+    if (room != null) return _postInRoom(p, from, room);
+    if ((p.type == 'warning' || p.type == 'info') &&
+        !(p['remove'] ?? '').startsWith(p.type) &&
+        settings['who_may_alert'] != 'everyone' &&
+        !_isStaff(from)) {
+      return no(403, 'on this station only moderators post alerts');
+    }
+    final mod = _moderation();
+    if (mod != null && mod.away.contains(_base(from))) {
+      return no(403, "you were sent away from this station's rooms");
+    }
     // Never as this station: the publisher would sign an unsigned wire that
     // speaks as the phone, and a visitor would be writing in its owner's name.
     final me = selfCallsign().trim().toUpperCase();
@@ -368,6 +458,399 @@ class WebChatApi {
   }
 
   String _idOf(XprsPacket p) => xprsIdentifier(p);
+
+  // ---- moderation (XPRS.md 10.10) ---------------------------------------
+
+  /// Never hidden by a record (10.7): a call for help is shown whatever.
+  static const Set<String> _safety = {'sos', 'warning', 'info'};
+
+  static String _base(String c) => c.trim().toUpperCase().split('-').first;
+
+  String get _station => _base(selfCallsign());
+
+  /// The removed messages and the people sent away, as they stand now.
+  ({Set<String> removed, Set<String> away})? _moderation() {
+    final g = groups;
+    final st = _station;
+    if (g == null || st.isEmpty) return null;
+    final r = g.rosterOf(st);
+    final t = now().millisecondsSinceEpoch;
+    return (
+      removed: {
+        ...r.hidden,
+        for (final m in r.moderation)
+          if (m.kind == 'remove') m.target,
+      },
+      away: {
+        for (final e in r.away.entries)
+          if (e.value == 0 || e.value > t) e.key,
+      },
+    );
+  }
+
+  /// [call]'s place in the record of [group] (default the station's rooms):
+  /// admin, mod, member, invited, or none.
+  String roleOf(String call, {String? group}) {
+    final g = groups;
+    if (g == null) return 'none';
+    final role =
+        g.rosterOf(group ?? _station).roles[_base(call)] ?? XprsRole.none;
+    return switch (role) {
+      XprsRole.admin => 'admin',
+      XprsRole.mod => 'mod',
+      XprsRole.member => 'member',
+      XprsRole.invited => 'invited',
+      _ => 'none',
+    };
+  }
+
+  /// The station's administrator (by key) or one of its moderators.
+  bool _isStaff(String call) {
+    final c = _base(call);
+    final a = _json(_kAdmin);
+    final key = keyOf(c);
+    if (a['call'] == c && key != null && HEX.encode(key) == a['key']) {
+      return true;
+    }
+    return roleOf(c) == 'mod';
+  }
+
+  // ---- rooms the station hosts (XPRS.md 10.10.1) --------------------------
+
+  static const _kRooms = 'webchat.rooms';
+  bool get _hostsRooms =>
+      groups != null && roomKeys != null && keep != null && roomRows != null;
+
+  /// call -> {name, about, visibility, posting, created}.
+  Map<String, Map<String, dynamic>> get _rooms {
+    final m = _json(_kRooms);
+    return {
+      for (final e in m.entries)
+        if (e.value is Map) e.key: Map<String, dynamic>.from(e.value as Map),
+    };
+  }
+
+  void _saveRooms(Map<String, Map<String, dynamic>> r) =>
+      _save(_kRooms, jsonEncode(r));
+
+  /// The hosted room [v] names, or null.
+  String? _hostedRoom(String? v) {
+    if (v == null || !_hostsRooms) return null;
+    final c = _base(v);
+    return c.startsWith('X5') && _rooms.containsKey(c) ? c : null;
+  }
+
+  bool _isMember(String room, String? call) {
+    if (call == null) return false;
+    final r = roleOf(call, group: room);
+    return r == 'member' || r == 'mod' || r == 'admin';
+  }
+
+  /// Whether the visitor behind [session] may read [room].
+  bool _mayRead(String room, String? session) {
+    final meta = _rooms[room];
+    if (meta == null) return false;
+    if (meta['visibility'] != 'private') return true;
+    return _isMember(room, sessionCall(session)) || _adminOf(session) != null;
+  }
+
+  ({Set<String> removed, Set<String> away}) _roomModeration(String room) {
+    final r = groups!.rosterOf(room);
+    final t = now().millisecondsSinceEpoch;
+    return (
+      removed: {
+        ...r.hidden,
+        for (final m in r.moderation)
+          if (m.kind == 'remove') m.target,
+      },
+      away: {
+        for (final e in r.away.entries)
+          if (e.value == 0 || e.value > t) e.key,
+      },
+    );
+  }
+
+  WebChatReply _roomHistory(String room, Map<String, String> q) {
+    if (!_mayRead(room, q['session'])) {
+      return const WebChatReply(404, {'ok': false, 'error': 'no such room'});
+    }
+    final limit =
+        (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
+    final mod = _roomModeration(room);
+    final rows = [
+      for (final row in roomRows!(
+          room: room,
+          sinceMs: _when(q['since']),
+          untilMs: _when(q['until']),
+          limit: limit))
+        if (!mod.removed.contains('${row['id']}') &&
+            !mod.away.contains(_base('${row['from'] ?? ''}')))
+          row,
+    ];
+    return WebChatReply(200, {
+      'ok': true,
+      'count': rows.length,
+      'held': rows.length,
+      'time': 'synced',
+      'rows': rows,
+      'moderation': {
+        'removed': mod.removed.take(200).toList(),
+        'away': mod.away.toList(),
+      },
+    });
+  }
+
+  /// A visitor's message (or reaction) in a hosted room: filed, not aired.
+  WebChatReply _postInRoom(XprsPacket p, String from, String room) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    if (p.type != 'message' && p.type != 'reaction') {
+      return no(403, 'only messages and reactions in a room');
+    }
+    // The record is judged by signature, so a room takes only a wire it can
+    // verify: the visitor's page sends its identity first.
+    if (xprsVerify(p, keyOf(_base(from))) != XprsSigState.verified) {
+      return no(409, 'identity unknown');
+    }
+    if (_roomModeration(room).away.contains(_base(from))) {
+      return no(403, 'you were sent away from this room');
+    }
+    final meta = _rooms[room]!;
+    final membersOnly =
+        meta['visibility'] == 'private' || meta['posting'] != 'anyone';
+    if (membersOnly && !_isMember(room, from)) {
+      return no(403, 'only members post in this room');
+    }
+    final w = p.encode();
+    keep!(w);
+    return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
+  }
+
+  /// Sign [body] as [room] (the station holds its key) and file it.
+  String? _roomSign(String room, String body) {
+    final scalar = roomKeys!.scalar(room);
+    if (scalar == null) return 'this station does not hold that room';
+    final ts = now().toUtc();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = '${ts.year}-${two(ts.month)}-${two(ts.day)}_'
+        '${two(ts.hour)}:${two(ts.minute)}:${two(ts.second)}';
+    final p = XprsPacket.parse('t:moderate f:$room d:$room ts:$stamp $body');
+    if (p == null) return 'malformed';
+    final signed = xprsSign(p, scalar);
+    if (!groups!.offer(signed, nowMs: now().millisecondsSinceEpoch)) {
+      return 'the act was not taken';
+    }
+    keep!(signed.encode());
+    return null;
+  }
+
+  Map<String, dynamic> _roomJson(
+      String call, Map<String, dynamic> meta, String? who, bool admin) {
+    final r = groups!.rosterOf(call);
+    final role = who == null ? 'none' : roleOf(who, group: call);
+    final membersOnly =
+        meta['visibility'] == 'private' || meta['posting'] != 'anyone';
+    final sentAway =
+        who != null && _roomModeration(call).away.contains(_base(who));
+    List<String> having(XprsRole role) => [
+          for (final e in r.roles.entries)
+            if (e.value == role) e.key,
+        ]..sort();
+    return {
+      'call': call,
+      'name': meta['name'],
+      'about': meta['about'] ?? '',
+      'visibility': meta['visibility'],
+      'posting': meta['posting'],
+      'role': role,
+      if (role == 'invited' && who != null) ...{
+        'offer': r.offers[_base(who)],
+        'offer_role':
+            r.offerRoles[_base(who)] == XprsRole.mod ? 'mod' : 'member',
+      },
+      'can_post': who != null &&
+          !sentAway &&
+          (!membersOnly || role == 'member' || role == 'mod' || role == 'admin'),
+      if (admin || role == 'mod') ...{
+        'members': having(XprsRole.member),
+        'moderators': having(XprsRole.mod),
+        'invited': having(XprsRole.invited),
+      },
+    };
+  }
+
+  WebChatReply _roomList(String? session) {
+    final who = sessionCall(session);
+    final admin = _adminOf(session) != null;
+    final out = <Map<String, dynamic>>[];
+    final rooms = _rooms.entries.toList()
+      ..sort((a, b) => '${a.value['name']}'.compareTo('${b.value['name']}'));
+    for (final e in rooms) {
+      final private = e.value['visibility'] == 'private';
+      final role = who == null ? 'none' : roleOf(who, group: e.key);
+      // A private room is not even listed to somebody who is not in it.
+      if (private && !admin && role == 'none') continue;
+      out.add(_roomJson(e.key, e.value, who, admin));
+    }
+    return WebChatReply(200, {'ok': true, 'rooms': out});
+  }
+
+  WebChatReply _roomAct(String body) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    Map<String, dynamic> b;
+    try {
+      b = Map<String, dynamic>.from(jsonDecode(body) as Map);
+    } catch (_) {
+      return no(400, 'malformed');
+    }
+    final session = '${b['session'] ?? ''}';
+    if (_adminOf(session) == null) {
+      return no(403, "only the station's administrator manages rooms");
+    }
+    final rooms = _rooms;
+    String? opt(String k, Set<String> allowed) {
+      final v = b[k];
+      if (v == null) return null;
+      return allowed.contains(v) ? v as String : '';
+    }
+
+    final visibility = opt('visibility', const {'public', 'private'});
+    final posting = opt('posting', const {'members', 'anyone'});
+    if (visibility == '' || posting == '') {
+      return no(400, 'visibility is public or private; posting members or anyone');
+    }
+    String clean(Object? v, int max) {
+      final s = '${v ?? ''}'.replaceAll(RegExp(r'\s+'), ' ').trim();
+      return s.length > max ? s.substring(0, max) : s;
+    }
+
+    final action = b['action'];
+    if (action == 'create') {
+      final name = clean(b['name'], 32);
+      if (name.isEmpty) return no(400, 'a room needs a name');
+      final call = roomKeys!.create(name);
+      if (call == null) return no(503, 'could not make a key; try again');
+      rooms[call] = {
+        'name': name,
+        'about': clean(b['about'], 120),
+        'visibility': visibility ?? 'public',
+        'posting': visibility == 'private' ? 'members' : (posting ?? 'anyone'),
+        'created': now().millisecondsSinceEpoch,
+      };
+      _saveRooms(rooms);
+      // The administrator moderates the room too: offered, and accepted by
+      // their own signature in the page (10.3.1).
+      final admin = adminCall;
+      if (admin != null) _roomSign(call, 'grant:$admin role:mod');
+      return _roomListFor(session, call);
+    }
+    final call = _base('${b['call'] ?? ''}');
+    final meta = rooms[call];
+    if (meta == null) return no(404, 'no such room');
+    switch (action) {
+      case 'update':
+        if (b.containsKey('name')) {
+          final name = clean(b['name'], 32);
+          if (name.isEmpty) return no(400, 'a room needs a name');
+          meta['name'] = name;
+        }
+        if (b.containsKey('about')) meta['about'] = clean(b['about'], 120);
+        if (visibility != null) meta['visibility'] = visibility;
+        if (posting != null) meta['posting'] = posting;
+        if (meta['visibility'] == 'private') meta['posting'] = 'members';
+        rooms[call] = meta;
+        _saveRooms(rooms);
+        return _roomListFor(session, call);
+      case 'close':
+        rooms.remove(call);
+        _saveRooms(rooms);
+        return _roomList(session);
+      case 'add':
+      case 'appoint':
+      case 'remove':
+        final who = _base('${b['member'] ?? ''}');
+        if (!_callRe.hasMatch(who) || who == call) {
+          return no(400, 'a callsign, please');
+        }
+        final why = _roomSign(
+            call,
+            switch (action) {
+              'add' => 'grant:$who',
+              'appoint' => 'grant:$who role:mod',
+              _ => 'revoke:$who',
+            });
+        if (why != null) return no(409, why);
+        return _roomListFor(session, call);
+    }
+    return no(400,
+        'action must be create, update, close, add, appoint or remove');
+  }
+
+  WebChatReply _roomListFor(String session, String call) {
+    final r = _roomList(session);
+    return WebChatReply(200, {...r.json, 'room': call});
+  }
+
+  /// A moderator's act, or a person's acceptance, signed in the browser.
+  WebChatReply _moderateFromVisitor(XprsPacket p, String from, String peer) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    final g = groups;
+    final st = _station;
+    if (g == null || st.isEmpty) return no(403, 'no moderation here');
+    final target = _base(p['d'] ?? '');
+    final room = _hostedRoom(target);
+    if (target != st && room == null) return no(403, "only this station's rooms");
+    if (_base(from) == st || _base(from) == target) {
+      return no(403, 'not as this station');
+    }
+    // A record is only as good as its signatures: an act this station cannot
+    // verify changes nothing, so it is not taken in.
+    if (xprsVerify(p, keyOf(_base(from))) != XprsSigState.verified) {
+      return no(403, 'not signed by a key this station knows');
+    }
+    final self = p.has('accept') || p.has('leave');
+    if (!self) {
+      // Appointing and lifting are the admin's, which the station signs.
+      if (p.has('grant')) return no(403, 'only the administrator appoints');
+      if (roleOf(from, group: target) != 'mod') {
+        return no(403, 'not a moderator here');
+      }
+    }
+    // Not paced like a post: only a verified moderator, or somebody answering
+    // an offer made to them, gets this far.
+    g.offer(p);
+    final w = p.encode();
+    // A hosted room's record stays at the station (10.10.1).
+    if (room != null) {
+      keep!(w);
+    } else {
+      receive(w);
+    }
+    return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
+  }
+
+  /// Sign [body] as this station about its own rooms, file it and air it.
+  String? _stationAct(String body) {
+    final g = groups;
+    final st = _station;
+    final sign = signAsStation;
+    if (g == null || sign == null || st.isEmpty) return 'no moderation here';
+    final ts = now().toUtc();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = '${ts.year}-${two(ts.month)}-${two(ts.day)}_'
+        '${two(ts.hour)}:${two(ts.minute)}:${two(ts.second)}';
+    final p = sign('t:moderate f:$st d:$st ts:$stamp $body');
+    if (p == null) return 'this station cannot sign';
+    if (!g.offer(p, nowMs: now().millisecondsSinceEpoch)) {
+      return 'the act was not taken';
+    }
+    (publish ?? receive)(p.encode());
+    return null;
+  }
+
+  static final RegExp _callRe = RegExp(r'^[A-Z0-9]{3,12}(-[A-Z0-9]{1,3})?$');
 
   /// An undirected row written for the Local room (`scope:local`).
   static bool _isLocalRow(Map<String, dynamic> r) {
@@ -415,6 +898,9 @@ class WebChatApi {
     // Who may post through this page: everyone, local (the station's
     // network), nobody (read-only).
     'who_may_post': 'everyone',
+    // Who may post an alert (t:warning, t:info) through this station: the
+    // moderators and the administrator, or everyone (XPRS.md 10.10.2).
+    'who_may_alert': 'moderators',
   };
 
   Map<String, Object> get settings {
@@ -451,7 +937,43 @@ class WebChatApi {
       // Who could claim now: nobody holds it and the asker is on the network.
       'claimable': admin == null && local,
       if (you) 'settings': settings,
+      if (groups != null) ..._moderationState(session, you),
     });
+  }
+
+  /// The asker's place in the record, and for a moderator or the admin the
+  /// record itself: moderators, invitations, people sent away.
+  Map<String, dynamic> _moderationState(String? session, bool you) {
+    final call = sessionCall(session);
+    final r = groups!.rosterOf(_station);
+    final role = call == null ? 'none' : roleOf(call);
+    final t = now().millisecondsSinceEpoch;
+    final out = <String, dynamic>{
+      'station': _station,
+      'role': role,
+      if (role == 'invited' && call != null) 'offer': r.offers[_base(call)],
+    };
+    if (you || role == 'mod') {
+      out['moderators'] = [
+        for (final e in r.roles.entries)
+          if (e.value == XprsRole.mod) e.key,
+      ]..sort();
+      out['invited'] = [
+        for (final e in r.roles.entries)
+          if (e.value == XprsRole.invited && r.offers.containsKey(e.key)) e.key,
+      ]..sort();
+      out['away'] = [
+        for (final e in r.away.entries)
+          if (e.value == 0 || e.value > t)
+            {
+              'call': e.key,
+              if (e.value > 0)
+                'until': DateTime.fromMillisecondsSinceEpoch(e.value, isUtc: true)
+                    .toIso8601String(),
+            },
+      ];
+    }
+    return out;
   }
 
   WebChatReply _adminAct(String body, String peer) {
@@ -478,6 +1000,24 @@ class WebChatApi {
         final key = keyOf(call);
         if (key == null) return no(409, 'identity unknown');
         _save(_kAdmin, jsonEncode({'call': call, 'key': HEX.encode(key)}));
+        // The administrator moderates too: the station offers them the role,
+        // and their page accepts it with their own signature (10.3.1).
+        if (groups != null && roleOf(call) != 'mod') {
+          _stationAct('grant:$call role:mod');
+        }
+        return _adminState(session, peer);
+      case 'appoint':
+      case 'dismiss':
+      case 'lift':
+        if (_adminOf(session) == null) return no(403, 'not the administrator');
+        final who = _base('${b['call'] ?? ''}');
+        if (!_callRe.hasMatch(who)) return no(400, 'a callsign, please');
+        if (who == _station) return no(400, 'not the station itself');
+        // 10.10: a grant with role:mod appoints; a grant without a role makes
+        // somebody an ordinary visitor again (dismisses, or lifts).
+        final why = _stationAct(
+            b['action'] == 'appoint' ? 'grant:$who role:mod' : 'grant:$who');
+        if (why != null) return no(409, why);
         return _adminState(session, peer);
       case 'release':
         if (_adminOf(session) == null) return no(403, 'not the administrator');
@@ -500,6 +1040,11 @@ class WebChatApi {
                 return no(400, '$k must be everyone, local or nobody');
               }
               next[k] = v as String;
+            case 'who_may_alert':
+              if (!const {'moderators', 'everyone'}.contains(v)) {
+                return no(400, '$k must be moderators or everyone');
+              }
+              next[k] = v as String;
             default:
               return no(400, 'unknown setting $k');
           }
@@ -507,7 +1052,7 @@ class WebChatApi {
         _save(_kSettings, jsonEncode(next));
         return _adminState(session, peer);
     }
-    return no(400, 'action must be claim, release or set');
+    return no(400, 'action must be claim, release, set, appoint, dismiss or lift');
   }
 }
 

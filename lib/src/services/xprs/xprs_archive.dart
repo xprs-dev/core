@@ -470,8 +470,14 @@ class XprsArchive {
           r['id'] as String,
       ];
       final now = DateTime.now().millisecondsSinceEpoch;
+      // 10.10: a station's own rooms are undirected, so a removal in them
+      // (the station is the group) deletes the undirected row too.
+      final own = g == _selfBase.toUpperCase();
       for (final id in ids) {
         db.execute('DELETE FROM packets WHERE toc = ? AND id = ?', [g, id]);
+        if (own) {
+          db.execute("DELETE FROM packets WHERE toc = '' AND id = ?", [id]);
+        }
         db.execute('INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)',
             [id, '*$g', now]);
       }

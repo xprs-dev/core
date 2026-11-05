@@ -172,6 +172,17 @@ topic to the wapp that shows it (`routeCoreNotification`,
   signed nonce, no password), claimable once from the station's network, and
   settings kept in a `KeyValueStore`; reuse the pattern for any setting a
   visitor-facing host lets its owner change from a browser.
+- `WebChatApi` moderation (XPRS.md 10.10) — a station's own rooms moderated
+  through `XprsGroups` with the station as the group: `signAsStation` +
+  `publish` for the admin's acts, moderators' acts verified and fed to the
+  replay, `XprsRoster.away` (who an open room sent away, and until when).
+  Any host with open rooms (the app's share server) reuses it by passing
+  `groups`, `signAsStation` and `publish`.
+- `WebChatApi` hosted rooms and alerts (XPRS.md 10.10.1, 10.10.2) — closed
+  groups whose key the host holds (`WebChatRoomKeys` over `XprsGroupKeys`),
+  filed with `keep` and read with `roomRows`, never aired; `who_may_alert`
+  gates `t:warning`/`t:info` through the page. The server wires it in
+  `Station._webChatApi`; the app's share server can pass the same three.
 
 ## A public name and HTTPS (`connections/internet/public_name/`)
 
