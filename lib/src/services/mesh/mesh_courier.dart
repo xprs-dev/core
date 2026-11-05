@@ -52,8 +52,7 @@ import 'dart:typed_data';
 import 'package:hex/hex.dart';
 import 'package:crypto/crypto.dart' show sha256;
 
-import 'package:reticulum/src/util/xprs_crypto.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../../profile/profile_service.dart';
 import '../reticulum/rns_service.dart';

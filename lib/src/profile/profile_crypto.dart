@@ -38,7 +38,7 @@ import 'package:encrypted_archive/encrypted_archive.dart' show KeyDerivation;
 import 'package:hex/hex.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 /// Thrown when a password fails to open a profile's encryption envelope.
 class WrongProfilePassword implements Exception {

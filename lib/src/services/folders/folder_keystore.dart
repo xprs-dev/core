@@ -10,7 +10,7 @@
 import 'dart:convert';
 
 import '../../profile/secure_file.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 class FolderKey {
   final String folderId; // hex master pubkey

@@ -22,8 +22,7 @@
  */
 import 'dart:convert';
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
-import 'package:reticulum/src/util/nostr_event.dart';
+import 'package:reticulum/reticulum.dart';
 
 /// NIP-33 parameterized-replaceable: the master-signed admin key-set.
 const int kKindFolderKeyset = 30564;

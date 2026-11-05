@@ -119,7 +119,7 @@ class MeshConditions {
   ];
 }
 
-/// One distance-vector digest entry: "I reach <hash> at <cost> hops".
+/// One distance-vector digest entry: "I reach `<hash>` at `<cost>` hops".
 class MeshDvEntry {
   final Uint8List hash; // 3 bytes
   final int cost; // 1..kMeshMaxCost

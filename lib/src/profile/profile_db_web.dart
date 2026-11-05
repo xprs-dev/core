@@ -21,7 +21,9 @@
  *   same store; refusing the second tab is the host's job (docs/web.md).
  */
 
-import 'package:sqlite3/common.dart';
+// The browser's only SQLite is sqlite3's WASM build, marked experimental by
+// the package; the version is fixed by pubspec.lock.
+// ignore: experimental_member_use
 import 'package:sqlite3/wasm.dart';
 
 import 'profile_db_common.dart';

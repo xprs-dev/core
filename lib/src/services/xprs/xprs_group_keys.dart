@@ -21,7 +21,7 @@ import 'package:hex/hex.dart';
 import 'package:sqlite3/common.dart';
 
 import '../../profile/profile_db.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 /// A group this station holds the key for.
 class XprsOwnGroup {

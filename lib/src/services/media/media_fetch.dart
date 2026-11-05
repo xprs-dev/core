@@ -31,8 +31,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/util/media_archive.dart';
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import '../event_bus.dart';
 import '../preferences_service.dart';
 import '../receive/core_state.dart';

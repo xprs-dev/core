@@ -31,7 +31,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_files.dart';
 import 'xprs_packet.dart';
 import 'xprs_vocab.dart';

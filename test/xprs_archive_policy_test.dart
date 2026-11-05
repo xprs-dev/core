@@ -8,7 +8,7 @@
  * that, defaulting to keeping everything a phone overheard.
  */
 import 'package:test/test.dart';
-import 'package:reticulum/src/services/social/retention_tier.dart';
+import 'package:reticulum/reticulum.dart';
 import 'package:xprs_core/src/services/xprs/xprs_archive_policy.dart';
 
 void main() {

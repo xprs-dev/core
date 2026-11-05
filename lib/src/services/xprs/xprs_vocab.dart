@@ -189,8 +189,8 @@ String? xprsNormaliseWire(String content) {
 /// Field keys that only ever appear in protocol, used to recognise a FRAGMENT
 /// of a wire — a tail that lost its `t:`/`f:` on the way here.
 ///
-/// `m:` and `am:` are deliberately absent: a real message is `am:<handle> the
-/// words`, and treating that as protocol would hide exactly what we are trying
+/// `m:` and `am:` are deliberately absent: a real message is
+/// `am:<handle> the words`, and treating that as protocol would hide exactly what we are trying
 /// to deliver.
 const Set<String> _kXprsFragmentKeys = {
   'x', 'sig', 'via', 'relay', 'route', 'code', 'until', 'since', 'cmd',

@@ -13,7 +13,7 @@ import 'package:file/file.dart';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-import 'package:reticulum/src/services/files/file_transfer.dart' show PieceMask, RangedFileSource;
+import 'package:reticulum/reticulum.dart' show PieceMask, RangedFileSource;
 import '../../platform/fs.dart';
 import 'package:xprs_core/src/platform/off_thread.dart';
 

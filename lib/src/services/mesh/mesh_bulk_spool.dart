@@ -27,7 +27,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-import 'package:reticulum/src/util/media_archive.dart';
+import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import 'mesh_beacon.dart';
 import 'mesh_session.dart';

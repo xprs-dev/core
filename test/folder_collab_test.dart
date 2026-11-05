@@ -9,8 +9,7 @@ import 'package:test/test.dart';
 
 import 'package:xprs_core/src/services/folders/folder_event.dart';
 import 'package:xprs_core/src/services/folders/folder_state.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
-import 'package:reticulum/src/util/nostr_event.dart';
+import 'package:reticulum/reticulum.dart';
 
 void main() {
   String sha(String c) => c * 64; // 64-hex content hash

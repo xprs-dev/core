@@ -5,8 +5,7 @@ import 'package:test/test.dart';
 import 'package:hex/hex.dart';
 import 'package:crypto/crypto.dart';
 
-import 'package:reticulum/src/util/xprs_crypto.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 Uint8List _digest(String s) =>
     Uint8List.fromList(sha256.convert(utf8.encode(s)).bytes);

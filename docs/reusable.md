@@ -163,6 +163,37 @@ topic to the wapp that shows it (`routeCoreNotification`,
 - `ActivityArchive` (`services/storage/`) — a time-ordered feed store; one
   SQLite file per owner.
 
+## Visitors and the station's administrator (`services/web_chat_api.dart`)
+
+- `isPrivateAddress` — whether a socket's peer is on a private network
+  (RFC 1918, loopback, link-local, CGNAT, IPv6 ULA, `::ffff:` IPv4). Pure;
+  a host widens it with its own IPv6 prefixes (server: `Station.isLocalPeer`).
+- `WebChatApi` administration — an administrator proved by a session (a
+  signed nonce, no password), claimable once from the station's network, and
+  settings kept in a `KeyValueStore`; reuse the pattern for any setting a
+  visitor-facing host lets its owner change from a browser.
+
+## A public name and HTTPS (`connections/internet/public_name/`)
+
+- `PublicName` (`public_name.dart`, io + web stub) — the whole loop: public
+  addresses, a nip.io name, UPnP ports, an outside reachability test (Let's
+  Encrypt staging: port 80, then 443 through a redirect), a real certificate,
+  HTTPS, renewal. A host hands it its web server as an `AcmeWebServer` (the
+  server's `WebChatServer`; next, the app's share server on Android/desktop).
+- `AcmeClient` (`acme_io.dart`) — RFC 8555 HTTP-01 against any ACME CA;
+  `certificateExpiry` reads notAfter from a PEM with no X.509 library.
+- `EcKey` (`ec_key.dart`, pure Dart) — P-256: JWK + thumbprint, ES256 (raw)
+  and DER signatures, SEC1 PEM for `SecurityContext`, a PKCS#10 CSR with
+  SANs; `der*` / `pem` are a minimal DER writer for any other ASN.1 shape.
+- `discoverPublicAddresses`, `askPublicAddress`, `nipName`, `isPublic`,
+  `isEui64` (`public_address_io.dart`) — what the internet sees of this
+  machine, by one UDP DNS query (TXT ip.nip.io), no HTTP service.
+- `XprsPublisher.setPublicUrl` / `XprsProfiles.urlFor` — a host announces
+  where it serves the web chat (6.3.2 `url:`, a decoration field) and a screen
+  reads another station's; `PublicName.onUrl` feeds the first.
+- `UpnpGateway` (`upnp_io.dart`) — SSDP discovery, IPv4 port mappings
+  (falls back to a permanent lease), IPv6 pinholes, the router's public IPv4.
+
 ## Moving code here from the app
 
 1. Cut the edges first: a file moves when nothing it imports is Flutter, a

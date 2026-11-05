@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:reticulum/src/services/social/relay_role.dart';
+import 'package:reticulum/reticulum.dart';
 
 import '../log_service.dart';
 import '../reticulum/rns_service.dart';
@@ -100,7 +100,7 @@ class MirrorService {
       // for it. That is the whole point of the exercise.
       await _rns.publishAuthorProvider(pub);
       LogService.instance.add(
-        'archive: mirrored ${stored} note(s) from ${pub.substring(0, 12)} — '
+        'archive: mirrored $stored note(s) from ${pub.substring(0, 12)} — '
         'the DHT now points here instead of their phone',
       );
       return; // one per tick; it trickles.

@@ -13,7 +13,7 @@
 /// replay all depend on it staying the same.
 library;
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 import 'xprs_packet.dart';
 

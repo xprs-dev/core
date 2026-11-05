@@ -585,7 +585,6 @@ class XprsCatchup {
     if (selfCallsign.isEmpty) return;
 
     final now = nowMs();
-    final periodMs = prefs.xprsCatchupMinutes * 60000;
 
     // A fresh install has no hole: start keeping from now (36.10.1 rule 2).
     if (prefs.xprsCatchupWatermark == 0) {

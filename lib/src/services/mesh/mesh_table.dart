@@ -72,7 +72,9 @@ class MeshNeighbor {
     final mins = now.difference(_contactStamp).inMinutes;
     if (mins > 0) {
       var r = contactRatio;
-      for (var i = 0; i < mins && i < 720; i++) r *= 0.985;
+      for (var i = 0; i < mins && i < 720; i++) {
+        r *= 0.985;
+      }
       contactRatio = r;
       _contactStamp = now;
     }

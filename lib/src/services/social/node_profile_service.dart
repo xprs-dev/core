@@ -1,8 +1,6 @@
 import 'dart:convert';
 
 import 'package:reticulum/reticulum.dart';
-import 'package:reticulum/src/services/social/listening_schedule.dart';
-import 'package:reticulum/src/services/social/node_profile.dart';
 
 import '../files/capacity_governor.dart';
 import '../preferences_service.dart';

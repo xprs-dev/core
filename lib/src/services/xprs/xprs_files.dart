@@ -30,9 +30,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/services/social/archiver_policy.dart';
+import 'package:reticulum/reticulum.dart';
 
-import 'package:reticulum/src/util/media_ref.dart';
 import '../log_service.dart';
 import '../mesh/mesh_bulk_spool.dart';
 import 'xprs_id.dart';
@@ -227,7 +226,7 @@ class XprsFileServer {
         air(404);
         return 404;
       }
-      final ext = held.ext.isNotEmpty ? held.ext : (xprsFileExt(p['file']) ?? 'bin');
+      final ext = held.ext.isNotEmpty ? held.ext : xprsFileExt(p['file']);
       final n = XprsInlineSender.instance
           .onHave(bytes, from: selfBase, to: from, ext: ext, have: have);
       LogService.instance
@@ -646,7 +645,7 @@ class XprsFileFetch {
       fs.directory(dir).createSync(recursive: true);
       final name = (meta['name'] as String?)?.trim();
       final base = (name == null || name.isEmpty) ? sha : name;
-      final dest = '$dir${pathSeparator}$base';
+      final dest = '$dir$pathSeparator$base';
       fs.file(partPath).renameSync(dest);
       return dest;
     } catch (e) {

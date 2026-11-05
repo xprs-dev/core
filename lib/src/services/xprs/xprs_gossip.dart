@@ -234,8 +234,9 @@ class XprsGossip {
       return;
     }
     _signerLastMs[observer] = now;
-    if (_signerLastMs.length > 512)
+    if (_signerLastMs.length > 512) {
       _signerLastMs.remove(_signerLastMs.keys.first);
+    }
     final radio = kShortRange.contains(link);
     for (final c in hears) {
       final call = c.trim().toUpperCase();
@@ -466,8 +467,9 @@ class XprsGossip {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     if (now - (_askedAlwaysOnMs[c] ?? 0) < 600000) return; // 36.10.1 cadence
     _askedAlwaysOnMs[c] = now;
-    if (_askedAlwaysOnMs.length > 128)
+    if (_askedAlwaysOnMs.length > 128) {
       _askedAlwaysOnMs.remove(_askedAlwaysOnMs.keys.first);
+    }
     final t = DateTime.now().toUtc();
     String two(int n) => n.toString().padLeft(2, '0');
     final ts =

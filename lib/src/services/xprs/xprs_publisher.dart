@@ -23,7 +23,7 @@ import 'dart:convert';
 
 import 'dart:typed_data';
 
-import 'package:reticulum/src/connections/bluetooth/ble5_types.dart';
+import 'package:reticulum/reticulum.dart';
 import '../mesh/mesh_custody.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/xblob_service.dart';
@@ -39,7 +39,6 @@ import 'xprs_lan.dart';
 import 'xprs_airtime.dart';
 import 'xprs_file_lift.dart';
 import 'xprs_send.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
 import 'xprs_archive.dart';
 import 'xprs_callsign.dart';
 import 'xprs_body.dart';
@@ -1051,9 +1050,8 @@ class XprsPublisher {
   /// Deliberately carries NO `scope:`, so it is global and rides every active
   /// bearer. A key binding is not a local fact.
   ///
-  /// `nick:` is deliberately omitted: the key-binding form is 171 bytes and
-  /// the smallest controller measured in docs/ble5.md section 3 carries 184,
-  /// where an oversized frame is refused rather than truncated.
+  /// `nick:` is deliberately omitted: the binding is repeated often and kept
+  /// small (XPRS.md 6.3.2); the name travels in the decoration.
   Future<Map<String, String>> publishIdentity() async {
     final profile = ProfileService.instance.activeProfile;
     // wireCallsign, NOT callsign: this is the binding of section 6.4.2, and
@@ -1133,20 +1131,38 @@ class XprsPublisher {
     return report;
   }
 
-  /// The smallest advertisement a BLE5 controller in the field carries
-  /// (docs/ble5.md section 3, measured 184 B). A frame over it is refused
-  /// rather than truncated, so the packet carrying the picture has to fit it
-  /// or it never reaches the radio half of the mesh.
-  static const int decorationFrameMax = 184;
+  /// The most a decoration packet may take: the format's packet, 250 bytes
+  /// on every transport (XPRS.md section 4, one BLE5 extended advertisement).
+  static const int decorationFrameMax = XprsPacket.maxBytes;
 
-  /// The decoration of section 6.3.2, COMPOSED: `nick:`, `file:` and `m:`,
-  /// signed, as one packet when all three fit [decorationFrameMax] and as two
-  /// when they do not (nick and picture first, the description alone).
+  /// The web address where this station serves the web chat to visitors
+  /// (6.3.2 `url:`), set by the host (the server's public-name service).
+  /// Null: this station never named one, so the field is not stated at all.
+  /// Empty: it had one and has none now, stated as `url:-`.
+  String? get publicUrl => _publicUrl;
+  String? _publicUrl;
+
+  /// The host found (or lost: null) the address visitors reach it at. A
+  /// change goes on the air at once as a decoration.
+  void setPublicUrl(String? url) {
+    final u = url?.trim() ?? '';
+    final next = u.isNotEmpty ? u : (_publicUrl == null ? null : '');
+    if (next == _publicUrl) return;
+    _publicUrl = next;
+    unawaited(publishDecoration());
+  }
+
+  /// The decoration of section 6.3.2, COMPOSED: `nick:`, `file:`, `url:` and
+  /// `m:`, signed, as one packet when all fit [decorationFrameMax] and split
+  /// when they do not: nick and picture first (with the address when it still
+  /// fits), the address alone if not, the description alone.
   ///
   /// Every field is always stated, with `-` for "none": the section keeps,
   /// per field, the value from the newest announcement that CARRIED it, so a
   /// field left out means "unchanged" and only `-` can take a picture back.
   ///
+  /// [url] is the web chat's address, `''` for "none any more" (`url:-`), or
+  /// null to leave the field out (a station that never served one).
   /// [fileToken] is `file:<sha>.<ext>`, or empty for no picture. Pure: the
   /// caller supplies the time and the key, so a test has no profile to fake.
   /// Empty when there is nothing that can be signed, because an unsigned
@@ -1158,6 +1174,7 @@ class XprsPublisher {
     required String about,
     required String ts,
     required BigInt? signingKey,
+    String? url,
   }) {
     final c = call.trim().toUpperCase();
     if (c.isEmpty || signingKey == null) return const [];
@@ -1174,8 +1191,11 @@ class XprsPublisher {
 
     int bytes(String w) => utf8.encode(w).length;
     final env = 't:identity f:$c ts:$ts';
+    final u = url == null
+        ? ''
+        : ' url:${url.isEmpty ? '-' : url.replaceAll(RegExp(r'\s'), '')}';
     // The whole decoration in one packet, when the smallest controller takes it.
-    final whole = signed('$env nick:${n.isEmpty ? '-' : n} file:$f',
+    final whole = signed('$env nick:${n.isEmpty ? '-' : n} file:$f$u',
         body: m.isEmpty ? '-' : m);
     if (whole != null && bytes(whole) <= decorationFrameMax) return [whole];
     // Otherwise the picture and the name, shortening the name until it fits.
@@ -1187,19 +1207,30 @@ class XprsPublisher {
       if (n.isEmpty) return const [];
       n = n.length > 1 ? n.substring(0, n.length - 1) : '';
     }
+    // The address with them if it still fits, else in a packet of its own.
+    String? alone;
+    if (u.isNotEmpty) {
+      final withUrl = signed('$env nick:${n.isEmpty ? '-' : n} file:$f$u');
+      if (withUrl != null && bytes(withUrl) <= decorationFrameMax) {
+        a = withUrl;
+      } else {
+        alone = signed('$env$u');
+        if (alone != null && bytes(alone) > XprsPacket.maxBytes) alone = null;
+      }
+    }
     // And the description on its own, trimmed to the format's 250 bytes.
     var body = m.isEmpty ? '-' : m;
     String? b;
     while (true) {
       b = signed(env, body: body);
-      if (b == null) return [a];
+      if (b == null) return [a, ?alone];
       if (bytes(b) <= XprsPacket.maxBytes) break;
       final cut = utf8.decode(utf8.encode(body).sublist(0, utf8.encode(body).length - 4),
           allowMalformed: true);
       body = cut.replaceAll('�', '').trimRight();
-      if (body.isEmpty) return [a];
+      if (body.isEmpty) return [a, ?alone];
     }
-    return [a, b];
+    return [a, ?alone, b];
   }
 
   /// Put this station's decoration on the air (6.3.2): the nickname, the
@@ -1222,6 +1253,7 @@ class XprsPublisher {
       about: profile.description,
       ts: ts,
       signingKey: xprsProfileScalar(),
+      url: _publicUrl,
     );
     if (wires.isEmpty) return const {};
     final air = await _fanOut(wires, slot: 'decoration');
@@ -1231,9 +1263,11 @@ class XprsPublisher {
     depositArchivers(wires, what: 'decoration');
     // Said when something carried it: a station with no bearer up retries on
     // the next tick, and that is not news every five seconds (perf. 8.10).
-    if (air.report.values.any((v) => v == 'sent')) LogService.instance.add('XPRS: decoration ${wires.length} packet(s) '
+    if (air.report.values.any((v) => v == 'sent')) {
+      LogService.instance.add('XPRS: decoration ${wires.length} packet(s) '
         '${[for (final w in wires) utf8.encode(w).length].join('+')} B: '
         '${air.report.entries.map((e) => "${e.key}:${e.value}").join(", ")}');
+    }
     return air.report;
   }
 

@@ -32,7 +32,7 @@
 import 'xprs_self.dart';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_id.dart';

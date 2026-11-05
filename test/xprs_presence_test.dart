@@ -10,7 +10,7 @@
  */
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_presence.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 void main() {
   // A real key and the callsign it can produce, so the verification path is

@@ -26,7 +26,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:crypto/crypto.dart';
 
-import 'package:reticulum/src/util/xprs_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 void main() {
   // Captured on APRS-IS:

@@ -21,11 +21,9 @@ import 'dart:typed_data';
 import 'package:xprs_core/src/platform/battery.dart';
 import 'package:xprs_core/src/platform/core_host.dart';
 
-import 'package:reticulum/src/connections/bluetooth/ble5_types.dart';
+import 'package:reticulum/reticulum.dart';
 import '../../profile/profile_service.dart';
 import '../../profile/storage_paths.dart';
-import 'package:reticulum/src/util/media_archive.dart';
-import 'package:reticulum/src/util/media_ref.dart';
 import '../log_service.dart';
 import '../preferences_service.dart';
 import '../xprs/xprs_airtime.dart';
@@ -45,8 +43,6 @@ import '../media/media_preview.dart';
 import '../media/media_ref_index.dart';
 import '../reticulum/rns_service.dart';
 import '../social/archiver_service.dart';
-import 'package:reticulum/src/services/social/archiver_policy.dart';
-import 'package:reticulum/src/services/social/retention_tier.dart';
 import '../xprs/xprs_history_server.dart';
 import '../xprs/xprs_ingest.dart';
 import '../xprs/xprs_gossip.dart';
@@ -63,7 +59,6 @@ import '../xprs/xprs_bridge.dart';
 import '../xprs/xprs_digipeat.dart';
 import '../xprs/xprs_fetch.dart';
 import '../xprs/xprs_forwarder.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
 import 'mesh_transfer_scheduler.dart';
 import '../xprs/xprs_lan.dart';
 import '../xprs/xprs_monitor.dart';
@@ -116,7 +111,7 @@ class MeshService {
   Timer? _triggerTimer;
   bool _powered = false;
   int _batteryPct = 100;
-  int _beaconsSent = 0, _beaconsHeard = 0;
+  int _beaconsHeard = 0;
 
   // Channel-load meter: BLE5 frames heard in a sliding minute (fed by
   // BleService for every inbound frame, any subtype). Drives politeness.
@@ -736,7 +731,7 @@ class MeshService {
           if (destDir != null) {
             try {
               await fs.directory(destDir).create(recursive: true);
-              final path = '$destDir${pathSeparator}$shaHex'
+              final path = '$destDir$pathSeparator$shaHex'
                   '${ext.isNotEmpty ? '.$ext' : ''}';
               await fs.file(path).writeAsBytes(bytes);
               return path;
@@ -1176,11 +1171,9 @@ class MeshService {
         'Mesh: now ${can ? "relay-capable" : "scan-only (radio refuses to advertise)"}');
   }
 
-  int _beaconsFailed = 0;
-
-  /// Beacons the radio refused to air. `beaconsSent` counts only the ones that
-  /// actually went out.
-  int get beaconsFailed => _beaconsFailed;
+  /// Beacons the radio refused to air. The only beacon is the XPRS one, so
+  /// this is [xprsBeaconsFailed]; `beaconsSent` counts those that went out.
+  int get beaconsFailed => _xprsBeaconsFailed;
 
   /// Say we are here. ONE beacon goes out, and it is the XPRS one.
   ///
@@ -1258,7 +1251,7 @@ class MeshService {
     // The beacon already says who is here; this says where to write. A hearer
     // that holds no path asks for one (a single throttled path request), and the
     // peer answers with the announce that carries its key. 36 bytes on a
-    // 76-byte beacon, well inside the smallest measured advert ceiling (184).
+    // 76-byte beacon, well inside the 250-byte packet (XPRS.md section 4).
     final lx = ourLxmfDest?.call();
     if (lx != null && lx.length == 32) envelope = envelope.with_('lx', lx);
 
@@ -1611,7 +1604,7 @@ class MeshService {
       'uptime': DateTime.now().difference(_startedAt).inSeconds,
       'neighbors': t?.neighbors.length ?? 0,
       'routes': t?.routes.length ?? 0,
-      'beaconsSent': _beaconsSent,
+      'beaconsSent': _xprsBeaconsSent, // the only beacon is the XPRS one
       'beaconsHeard': _beaconsHeard,
       'xprsBeaconsSent': _xprsBeaconsSent,
       'xprsBeaconsHeard': _xprsBeaconsHeard,

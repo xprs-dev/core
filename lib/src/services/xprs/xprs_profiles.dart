@@ -25,8 +25,7 @@ import 'dart:convert';
 
 
 import '../../profile/profile_service.dart';
-import 'package:reticulum/src/util/media_archive.dart';
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import '../background_service.dart';
 import '../log_service.dart';
 import '../media/media_fetch.dart';
@@ -51,6 +50,10 @@ class StationDecoration {
   int pictureTs = 0;
   String? about;
   int aboutTs = 0;
+
+  /// Where the station serves the web chat to visitors (6.3.2 `url:`).
+  String? url;
+  int urlTs = 0;
 }
 
 class XprsProfiles {
@@ -115,7 +118,15 @@ class XprsProfiles {
   }
 
   static bool _decorates(XprsPacket p) =>
-      p.type == 'identity' && (p.has('nick') || p.has('file') || p.has('m'));
+      p.type == 'identity' &&
+      (p.has('nick') || p.has('file') || p.has('m') || p.has('url'));
+
+  /// A web address a screen may offer as a link: http(s) only, no spaces,
+  /// bounded. Anything else is not a web chat and is not kept.
+  static bool _isWebUrl(String v) =>
+      v.length <= 200 &&
+      RegExp(r'^https?://[^\s/?#]+(?:[/?#]\S*)?$', caseSensitive: false)
+          .hasMatch(v);
 
   /// A `t:identity` that came through the receive door. Only decorations are
   /// of interest; the key binding is the ingest's own business, and it runs
@@ -159,6 +170,9 @@ class XprsProfiles {
   MediaRef? pictureFor(String call) => decorationFor(call)?.picture;
   String? nickFor(String call) => decorationFor(call)?.nick;
   String? aboutFor(String call) => decorationFor(call)?.about;
+
+  /// The address [call] serves the web chat at, or null.
+  String? urlFor(String call) => decorationFor(call)?.url;
 
   bool _load(String c) {
     _loaded.add(c);
@@ -238,6 +252,13 @@ class XprsProfiles {
       final v = m == '-' ? null : m;
       changed |= v != d.about;
       d.about = v;
+    }
+    final url = p['url'];
+    if (url != null && ts > d.urlTs && (url == '-' || _isWebUrl(url))) {
+      d.urlTs = ts;
+      final v = url == '-' ? null : url;
+      changed |= v != d.url;
+      d.url = v;
     }
     if (changed) accepted++;
     return changed;

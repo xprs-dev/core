@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 
 void main() {
   // A syntactically valid 43-char base64url hash for fixtures.

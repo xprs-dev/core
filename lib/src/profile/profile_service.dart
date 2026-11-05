@@ -20,7 +20,7 @@ import 'package:encrypted_archive/encrypted_archive.dart' show SQLiteLoader;
 import 'package:reticulum/reticulum.dart' as reticulum;
 
 import 'iwi_profile.dart';
-import 'package:reticulum/src/util/nostr_key_generator.dart';
+import 'package:reticulum/reticulum.dart';
 import '../services/log_service.dart';
 import '../services/preferences_service.dart';
 import 'identity_backup.dart';

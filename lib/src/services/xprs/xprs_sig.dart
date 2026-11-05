@@ -20,8 +20,7 @@ import 'dart:typed_data';
 import 'package:hex/hex.dart';
 
 import '../../profile/profile_service.dart';
-import 'package:reticulum/src/util/xprs_crypto.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_id.dart';
 import 'xprs_packet.dart';
 import 'xprs_vocab.dart' show xprsParseTs;

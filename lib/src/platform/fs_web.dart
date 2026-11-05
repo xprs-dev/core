@@ -93,7 +93,7 @@ void _kick() {
 
 // ── IndexedDB plumbing ──────────────────────────────────────────────────────
 
-Future<T> _await<T>(web.IDBRequest req) {
+Future<T> _await<T extends JSAny?>(web.IDBRequest req) {
   final c = Completer<T>();
   req.onsuccess = ((web.Event _) => c.complete(req.result as T)).toJS;
   req.onerror = ((web.Event _) => c.completeError(

@@ -18,7 +18,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../mesh/mesh_service.dart';
 import 'xprs_history_server.dart';

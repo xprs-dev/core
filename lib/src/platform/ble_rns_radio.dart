@@ -6,7 +6,7 @@
  */
 import 'dart:typed_data';
 
-import 'package:reticulum/src/services/reticulum/rns_ble_interface.dart';
+import 'package:reticulum/reticulum.dart';
 
 abstract interface class BleRnsRadio implements RnsBleRadio {
   /// Can this device run this radio at all.

@@ -13,14 +13,13 @@
  * core code never imports the app's platform, UI or wapp layers. When it needs
  * something only the host has, it asks here, and the host fills it in.
  */
-import 'package:reticulum/src/util/media_archive.dart' show MediaArchive;
+import 'package:reticulum/reticulum.dart' show MediaArchive, RnsBleRadio;
 
 import '../services/notifications/notification.dart';
 import 'advert_radio.dart';
 import 'asset_source.dart';
 import 'battery.dart';
 import 'ble_rns_radio.dart';
-import 'package:reticulum/src/services/reticulum/rns_ble_interface.dart' show RnsBleRadio;
 import 'key_value_store.dart';
 import 'secure_store.dart';
 import 'usb_serial.dart';

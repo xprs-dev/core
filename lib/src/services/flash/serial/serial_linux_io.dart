@@ -59,7 +59,9 @@ const Map<int, int> _baudCodes = {
   2000000: 0x100B,
 };
 
-/// glibc's struct termios (NCCS = 32).
+/// glibc's struct termios (NCCS = 32). Field names are the C ones on
+/// purpose, so the layout reads against `<termios.h>` line by line.
+// ignore_for_file: non_constant_identifier_names
 final class _Termios extends Struct {
   @Uint32()
   external int c_iflag;

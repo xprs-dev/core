@@ -117,7 +117,7 @@ class MediaDiskCache {
   }
 
   /// Cache-only lookup (no network). For locally generated derivatives — e.g.
-  /// a video's poster frame stored under the synthetic key "<url>#poster".
+  /// a video's poster frame stored under the synthetic key `<url>#poster`.
   Future<Uint8List?> peek(String key) async {
     await _ensure();
     final h = _hash(key);

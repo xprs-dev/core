@@ -255,8 +255,8 @@ class XprsSend {
     );
   }
 
-  /// Withdraw a message this station sent to [to] (XPRS.md 7.8.2): `r:<id>
-  /// remove:message`, a packet of its own with no body, so nothing in it is
+  /// Withdraw a message this station sent to [to] (XPRS.md 7.8.2):
+  /// `r:<id> remove:message`, a packet of its own with no body, so nothing in it is
   /// sealed and nothing in it is readable beyond who and which.
   ///
   /// It travels as the original did, to the same `d:`, carried and receipted
@@ -505,8 +505,8 @@ class XprsSend {
   /// describing it, pointed at the message that carried the preview with `r:`
   /// (§7.7.1 describes and never delivers; §5's `r:` refers). The receiver
   /// renders the preview immediately and fetches this one when asked.
-  /// Describe the ORIGINAL a carried preview stands for: `t:file r:<message
-  /// id> file:<original> size: name:` (XPRS.md 7.7.7). Public because every
+  /// Describe the ORIGINAL a carried preview stands for:
+  /// `t:file r:<message id> file:<original> size: name:` (XPRS.md 7.7.7). Public because every
   /// sender that seals owes it — the composer and the remote API both — and
   /// two copies of it would drift.
   static void airFileCompanion(

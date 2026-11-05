@@ -167,8 +167,10 @@ Future<void> migrateStorageLayout() async {
 }
 
 /// One-time per-device rename of the old layout
+/// ```
 ///   <id>/apps/   (installed packages)  -> <id>/wapps/
 ///   <id>/wapps/  (per-wapp data)       -> <id>/data/
+/// ```
 /// The data rename runs FIRST so the `wapps/` name is free before the
 /// packages rename takes it. Idempotent: each step is guarded so a
 /// re-run (or an already-new layout) is a no-op.

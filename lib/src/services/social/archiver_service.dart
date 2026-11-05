@@ -1,4 +1,4 @@
-import 'package:reticulum/src/services/social/archiver_policy.dart';
+import 'package:reticulum/reticulum.dart';
 
 import '../preferences_service.dart';
 

@@ -11,6 +11,14 @@
  *   GET  /api/services      what this host offers: which tabs, and `app`
  *   GET  /api/xprs/history  PUBLIC rows only (no `d:`, no mail, no group)
  *   POST /api/xprs/send     a finished wire the visitor signed in the browser
+ *   GET/POST /api/admin     the station's administrator and their settings
+ *
+ * The administrator is a visitor who proved their key (a session, below).
+ * A station with none lets the first such visitor ON ITS OWN NETWORK claim
+ * it: that is the moment after a board is flashed or a server installed. A
+ * visitor from the internet cannot, or the first stranger to find a public
+ * station would own it. The settings say what visitors from outside the
+ * station's network may see and who may post.
  *
  * The browser holds the key and signs; this host never sees a private key and
  * never signs for the visitor. A wire is refused unless it is signed, is not
@@ -22,14 +30,19 @@
  * Pure over its callbacks (no sockets, no singletons) so every rule is tested
  * without a phone; ShareAppService is the socket half.
  */
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+
+import 'package:hex/hex.dart';
+
+import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_sig.dart';
-import 'xprs/xprs_vocab.dart' show xprsParseTs;
+import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsScope, XprsScope;
 
 /// One answer: a status and a JSON body.
 class WebChatReply {
@@ -74,6 +87,15 @@ class WebChatApi {
 
   final DateTime Function() now;
 
+  /// Where the administrator and the settings are kept. Null: in memory
+  /// (they last until the host restarts).
+  final KeyValueStore? store;
+
+  /// Whether a visitor's address is on this station's own network. Default
+  /// [isPrivateAddress]; a host that knows its own public prefixes (an IPv6
+  /// LAN has no private addresses) widens it.
+  final bool Function(String peer) isLocalPeer;
+
   WebChatApi({
     required this.publicRows,
     required this.held,
@@ -83,7 +105,10 @@ class WebChatApi {
     required this.keyOf,
     required this.appPath,
     DateTime Function()? now,
-  }) : now = now ?? DateTime.now;
+    this.store,
+    bool Function(String peer)? isLocalPeer,
+  })  : now = now ?? DateTime.now,
+        isLocalPeer = isLocalPeer ?? isPrivateAddress;
 
   /// What a visitor may read: conversation, not machinery. An identity is a
   /// public broadcast and is how a browser finds the key a callsign is bound
@@ -147,7 +172,13 @@ class WebChatApi {
       {String peer = ''}) async {
     if (peer.isNotEmpty && visitors.add(peer)) onVisitors?.call(visitors.length);
     if (method == 'GET' && path == '/api/services') return _services();
-    if (method == 'GET' && path == '/api/xprs/history') return _history(query);
+    if (method == 'GET' && path == '/api/xprs/history') {
+      return _history(query, peer);
+    }
+    if (path == '/api/admin') {
+      if (method == 'GET') return _adminState(query['session'], peer);
+      if (method == 'POST') return _adminAct(body, peer);
+    }
     if (path == '/api/session') {
       if (method == 'GET') return _challenge(peer);
       if (method == 'POST') return _prove(_wireOf(body), peer);
@@ -165,6 +196,8 @@ class WebChatApi {
     final app = appPath();
     return WebChatReply(200, {
       'ok': true,
+      // The station's callsign, which the page shows next to its title.
+      'station': selfCallsign(),
       'features': <String, bool>{},
       'serve': <String>[],
       'page': {
@@ -172,6 +205,8 @@ class WebChatApi {
         'config': false,
         // This host gives a visitor who proves their key their own mail.
         'session': true,
+        // And has an administrator (GET/POST /api/admin).
+        'admin': true,
         if (app != null) 'app': app,
       },
     });
@@ -228,7 +263,16 @@ class WebChatApi {
   static String? _room(String? v) =>
       const {'local', 'regional', 'global'}.contains(v) ? v : null;
 
-  WebChatReply _history(Map<String, String> q) {
+  WebChatReply _history(Map<String, String> q, String peer) {
+    // The Local room is the station's own neighbourhood: kept from visitors
+    // outside its network when the administrator says so (the default).
+    final hideLocal = localPrivate && !isLocalPeer(peer);
+    if (hideLocal && q['room'] == 'local') {
+      return WebChatReply(200, {
+        'ok': true, 'count': 0, 'held': 0, 'time': 'synced', 'rows': const [],
+        'private': true,
+      });
+    }
     var types = <String>[
       for (final t in (q['kind'] ?? q['only'] ?? '').split(','))
         if (readable.contains(t.trim())) t.trim(),
@@ -246,6 +290,7 @@ class WebChatApi {
       room: _room(q['room']),
       limit: limit,
     );
+    if (hideLocal) rows = [for (final r in rows) if (!_isLocalRow(r)) r];
     final dir = q['dir'];
     if (dir == 'in') rows = [for (final r in rows) if (r['own'] != true) r];
     if (dir == 'out') rows = [for (final r in rows) if (r['own'] == true) r];
@@ -308,6 +353,14 @@ class WebChatApi {
     final state = xprsVerify(p, keyOf(base(from)));
     if (state == XprsSigState.forged) return no(400, 'forged');
     if (!mayAir(p)) return no(403, 'not a member of that group');
+    switch (whoMayPost) {
+      case 'nobody':
+        return no(403, 'this station is read-only');
+      case 'local':
+        if (!isLocalPeer(peer)) {
+          return no(403, "only from this station's network");
+        }
+    }
     if (!_allowed(peer)) return no(429, 'slow down');
     final w = p.encode();
     receive(w);
@@ -315,6 +368,177 @@ class WebChatApi {
   }
 
   String _idOf(XprsPacket p) => xprsIdentifier(p);
+
+  /// An undirected row written for the Local room (`scope:local`).
+  static bool _isLocalRow(Map<String, dynamic> r) {
+    final p = XprsPacket.parse('${r['wire'] ?? ''}');
+    return p != null && xprsScope(p).scope == XprsScope.local;
+  }
+
+  // ---- the administrator -------------------------------------------------
+
+  static const _kAdmin = 'webchat.admin';
+  static const _kSettings = 'webchat.settings';
+  final Map<String, String> _mem = {};
+
+  String? _load(String k) => store != null ? store!.getString(k) : _mem[k];
+  void _save(String k, String? v) {
+    if (v == null) {
+      if (store != null) {
+        store!.remove(k);
+      } else {
+        _mem.remove(k);
+      }
+    } else if (store != null) {
+      store!.setString(k, v);
+    } else {
+      _mem[k] = v;
+    }
+  }
+
+  Map<String, dynamic> _json(String k) {
+    try {
+      final v = _load(k);
+      return v == null ? {} : Map<String, dynamic>.from(jsonDecode(v) as Map);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// The administrator's callsign, or null when the station has none.
+  String? get adminCall => _json(_kAdmin)['call'] as String?;
+
+  /// The settings and their defaults. Kept to what the page can explain.
+  static const Map<String, Object> settingDefaults = {
+    // The Local room is not shown to visitors outside the station's network.
+    'local_private': true,
+    // Who may post through this page: everyone, local (the station's
+    // network), nobody (read-only).
+    'who_may_post': 'everyone',
+  };
+
+  Map<String, Object> get settings {
+    final s = _json(_kSettings);
+    return {
+      for (final e in settingDefaults.entries)
+        e.key: (s[e.key] ?? e.value) as Object,
+    };
+  }
+
+  bool get localPrivate => settings['local_private'] == true;
+  String get whoMayPost => '${settings['who_may_post']}';
+
+  /// The session's callsign when it is the administrator's, proven by the
+  /// same key it was claimed with.
+  String? _adminOf(String? session) {
+    final call = sessionCall(session);
+    final a = _json(_kAdmin);
+    if (call == null || a['call'] != call) return null;
+    final key = keyOf(call);
+    if (key == null || HEX.encode(key) != a['key']) return null;
+    return call;
+  }
+
+  WebChatReply _adminState(String? session, String peer) {
+    final admin = adminCall;
+    final you = _adminOf(session) != null;
+    final local = isLocalPeer(peer);
+    return WebChatReply(200, {
+      'ok': true,
+      'admin': admin,
+      'you': you,
+      'local': local,
+      // Who could claim now: nobody holds it and the asker is on the network.
+      'claimable': admin == null && local,
+      if (you) 'settings': settings,
+    });
+  }
+
+  WebChatReply _adminAct(String body, String peer) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    Map<String, dynamic> b;
+    try {
+      b = Map<String, dynamic>.from(jsonDecode(body) as Map);
+    } catch (_) {
+      return no(400, 'malformed');
+    }
+    final session = '${b['session'] ?? ''}';
+    switch (b['action']) {
+      case 'claim':
+        // Paced like a post: claiming is the one act open to anybody.
+        // Setting and releasing need the administrator's session already.
+        if (!_allowed(peer)) return no(429, 'slow down');
+        final call = sessionCall(session);
+        if (call == null) return no(403, 'prove your key first (a session)');
+        if (adminCall != null) return no(409, 'this station has an administrator');
+        if (!isLocalPeer(peer)) {
+          return no(403, "claim it from the station's own network");
+        }
+        final key = keyOf(call);
+        if (key == null) return no(409, 'identity unknown');
+        _save(_kAdmin, jsonEncode({'call': call, 'key': HEX.encode(key)}));
+        return _adminState(session, peer);
+      case 'release':
+        if (_adminOf(session) == null) return no(403, 'not the administrator');
+        _save(_kAdmin, null);
+        return _adminState(session, peer);
+      case 'set':
+        if (_adminOf(session) == null) return no(403, 'not the administrator');
+        final want = b['settings'];
+        if (want is! Map) return no(400, 'no settings');
+        final next = Map<String, Object>.of(settings);
+        for (final e in want.entries) {
+          final k = '${e.key}';
+          final v = e.value;
+          switch (k) {
+            case 'local_private':
+              if (v is! bool) return no(400, '$k must be true or false');
+              next[k] = v;
+            case 'who_may_post':
+              if (!const {'everyone', 'local', 'nobody'}.contains(v)) {
+                return no(400, '$k must be everyone, local or nobody');
+              }
+              next[k] = v as String;
+            default:
+              return no(400, 'unknown setting $k');
+          }
+        }
+        _save(_kSettings, jsonEncode(next));
+        return _adminState(session, peer);
+    }
+    return no(400, 'action must be claim, release or set');
+  }
+}
+
+/// Whether [address] (as a socket reports it) is on a private network:
+/// loopback, RFC 1918, link-local, CGNAT's shared space, IPv6 ULA and
+/// link-local, and IPv4 written as IPv6 (`::ffff:192.168.1.9`).
+bool isPrivateAddress(String address) {
+  var a = address.trim().toLowerCase();
+  if (a.startsWith('[') && a.endsWith(']')) a = a.substring(1, a.length - 1);
+  final pct = a.indexOf('%'); // zone id: fe80::1%eth0
+  if (pct >= 0) a = a.substring(0, pct);
+  if (a.startsWith('::ffff:') && a.contains('.')) a = a.substring(7);
+  final v4 = a.split('.');
+  if (v4.length == 4) {
+    final b = v4.map(int.tryParse).toList();
+    if (b.any((x) => x == null || x < 0 || x > 255)) return false;
+    final o0 = b[0]!, o1 = b[1]!;
+    return o0 == 127 ||
+        o0 == 10 ||
+        (o0 == 172 && o1 >= 16 && o1 < 32) ||
+        (o0 == 192 && o1 == 168) ||
+        (o0 == 169 && o1 == 254) ||
+        (o0 == 100 && o1 >= 64 && o1 < 128);
+  }
+  if (!a.contains(':')) return false;
+  if (a == '::1') return true;
+  final first = int.tryParse(a.split(':').first.isEmpty ? '0' : a.split(':').first,
+      radix: 16);
+  if (first == null) return false;
+  return (first & 0xfe00) == 0xfc00 || // fc00::/7 unique local
+      (first & 0xffc0) == 0xfe80; // fe80::/10 link-local
 }
 
 /// The archive-backed [WebChatApi.publicRows]: undirected rows of [types]

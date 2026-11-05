@@ -21,9 +21,9 @@ import 'package:xprs_core/src/platform/core_host.dart';
 
 import '../log_service.dart';
 import '../preferences_service.dart';
-import 'package:reticulum/src/services/files/capacity_policy.dart';
+import 'package:reticulum/reticulum.dart';
 
-export 'package:reticulum/src/services/files/capacity_policy.dart' show NetKind, CapacityProfile, policyFor;
+export 'package:reticulum/reticulum.dart' show NetKind, CapacityProfile, policyFor;
 
 class CapacityGovernor {
   CapacityGovernor._();

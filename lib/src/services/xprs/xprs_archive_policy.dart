@@ -44,7 +44,7 @@
  */
 library;
 
-import 'package:reticulum/src/services/social/retention_tier.dart';
+import 'package:reticulum/reticulum.dart';
 
 /// Types no station spools, whatever its tiers say: an acknowledgement, a
 /// result and a reachability test are answers, not records. Defined here

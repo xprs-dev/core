@@ -11,9 +11,10 @@ import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_vocab.dart';
 import 'package:test/test.dart';
 
-/// The two advert ceilings measured on real hardware (docs/ble5.md).
-const int kOlderTablet = 184;
-const int kTank2 = 296;
+/// The packet the format allows on every transport, BLE5 included
+/// (XPRS.md section 4), and a smaller budget to show the cut stays honest.
+const int kPacket = 250;
+const int kSmall = 150;
 
 XprsPacket envelope(String self) =>
     XprsPacket.parse('t:observation f:$self link:ble peers:0 hears:x')!;
@@ -24,22 +25,22 @@ List<String> calls(int n) =>
 void main() {
   group('fitting neighbours into one advert', () {
     test('everything fits when there is room, and peers matches', () {
-      final fit = xprsNeighbourFit(calls(3), envelope('X1A67X'), kTank2);
+      final fit = xprsNeighbourFit(calls(3), envelope('X1A67X'), kPacket);
       expect(fit.hears.length, 3);
       expect(fit.peers, 3);
     });
 
     test('a long list is cut, and peers still tells the truth', () {
-      final fit = xprsNeighbourFit(calls(60), envelope('X1A67X'), kOlderTablet);
+      final fit = xprsNeighbourFit(calls(60), envelope('X1A67X'), kPacket);
       expect(fit.hears.length, lessThan(60));
       expect(fit.peers, 60,
           reason: 'peers is the total, not the number that fitted');
       expect(fit.hears.length, greaterThan(10),
-          reason: 'the 184-byte budget should still carry a useful list');
+          reason: 'a 250-byte packet should still carry a useful list');
     });
 
     test('what it produces actually fits the budget it was given', () {
-      for (final budget in [kOlderTablet, kTank2, 250]) {
+      for (final budget in [kSmall, kPacket]) {
         final fit = xprsNeighbourFit(calls(60), envelope('X1A67X'), budget);
         final p = envelope('X1A67X')
             .with_('peers', '${fit.peers}')
@@ -54,12 +55,12 @@ void main() {
       // Section 10.6.3: most relevant first, and the sender decides what
       // relevant means. The fitter must not reorder.
       final ranked = ['X3RLY7', 'X1RD89', 'X32DVA', 'CT1ABC-9'];
-      final fit = xprsNeighbourFit(ranked, envelope('X1A67X'), kTank2);
+      final fit = xprsNeighbourFit(ranked, envelope('X1A67X'), kPacket);
       expect(fit.hears, ranked);
     });
 
     test('no neighbours is an empty list, not a broken packet', () {
-      final fit = xprsNeighbourFit([], envelope('X1A67X'), kTank2);
+      final fit = xprsNeighbourFit([], envelope('X1A67X'), kPacket);
       expect(fit.hears, isEmpty);
       expect(fit.peers, 0);
     });
@@ -73,8 +74,8 @@ void main() {
       final p = XprsPacket.parse(wire)!;
       expect(p.byteLength, 76);
       expect(p.fits, isTrue);
-      expect(p.byteLength, lessThan(kOlderTablet),
-          reason: 'must fit the smallest controller we have measured');
+      expect(p.byteLength, lessThan(kPacket),
+          reason: 'one packet, 250 bytes on BLE5 as everywhere');
     });
 
     test('peers, mail and hears come off it', () {

@@ -4,8 +4,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:hex/hex.dart';
 
-import 'package:reticulum/src/util/xprs_crypto.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 
 BigInt _big(String hex) {
   var r = BigInt.zero;

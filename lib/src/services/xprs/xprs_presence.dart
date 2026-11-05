@@ -24,7 +24,7 @@
  */
 library;
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_callsign.dart';
 
 /// What the callsign says this device is (XPRS.md 3.1).

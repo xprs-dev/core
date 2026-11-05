@@ -8,7 +8,7 @@
  * hardware.json. Durations keep their symbols (`30m`, `2h`) because they are
  * what the person types in the schedule field.
  */
-import 'package:reticulum/src/services/social/listening_schedule.dart';
+import 'package:reticulum/reticulum.dart';
 
 import 'core_i18n.dart';
 

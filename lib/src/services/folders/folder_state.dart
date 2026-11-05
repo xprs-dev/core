@@ -16,7 +16,7 @@
  */
 import 'dart:convert';
 
-import 'package:reticulum/src/util/nostr_event.dart';
+import 'package:reticulum/reticulum.dart';
 import 'folder_event.dart';
 
 class FolderState {

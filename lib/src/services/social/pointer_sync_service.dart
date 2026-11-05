@@ -3,8 +3,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:reticulum/reticulum.dart';
-import 'package:reticulum/src/services/files/dht/pointer_sync.dart';
-import 'package:reticulum/src/services/social/relay_role.dart';
 
 import '../log_service.dart';
 import '../preferences_service.dart';

@@ -1,4 +1,4 @@
-import 'package:reticulum/src/util/nostr_nip19.dart';
+import 'package:reticulum/reticulum.dart';
 
 final RegExp _noteFileRe = RegExp(r'file:[A-Za-z0-9_-]{43}\.[a-z0-9]{1,18}');
 final RegExp _noteHttpMediaRe = RegExp(

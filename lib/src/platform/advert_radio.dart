@@ -7,7 +7,7 @@
  */
 import 'dart:typed_data';
 
-import 'package:reticulum/src/connections/bluetooth/ble5_types.dart';
+import 'package:reticulum/reticulum.dart';
 
 abstract interface class AdvertRadio {
   /// This controller's advert ceiling in bytes; 0 when there is no radio.

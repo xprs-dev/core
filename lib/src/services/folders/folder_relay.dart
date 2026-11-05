@@ -14,9 +14,7 @@
  */
 import 'dart:typed_data';
 
-import 'package:reticulum/src/services/reticulum/rns_identity.dart';
-import 'package:reticulum/src/services/social/relay_event_store.dart' show RelayEventStore, NostrFilter;
-import 'package:reticulum/src/util/nostr_event.dart';
+import 'package:reticulum/reticulum.dart';
 
 typedef ProviderPublish = Future<void> Function(Uint8List key32);
 typedef ProviderResolve = Future<List<RnsIdentity>> Function(Uint8List key32);

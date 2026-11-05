@@ -7,7 +7,6 @@ import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../preferences_service.dart';
 import '../reticulum/rns_service.dart';
-import 'package:reticulum/src/services/social/keep_policy.dart';
 import 'package:xprs_core/src/platform/core_host.dart';
 
 /// "To touch it is to keep it" — the host half of the touch rule

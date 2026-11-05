@@ -9,9 +9,7 @@
  * ([adminPrivHex]) and only take effect if that key is in the folder's key-set.
  * Only the owner (holder of the master key) can grant/revoke admins.
  */
-import 'package:reticulum/src/services/social/relay_event_store.dart' show NostrFilter;
-import 'package:reticulum/src/util/nostr_crypto.dart';
-import 'package:reticulum/src/util/nostr_event.dart';
+import 'package:reticulum/reticulum.dart';
 import 'folder_event.dart';
 import 'folder_keystore.dart';
 import 'folder_state.dart';

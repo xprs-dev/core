@@ -25,8 +25,7 @@ import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
-import 'package:reticulum/src/util/media_archive.dart';
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import '../background_service.dart';
 import '../log_service.dart';
 import '../xprs/xprs_inline_file.dart';

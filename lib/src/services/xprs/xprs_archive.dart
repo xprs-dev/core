@@ -28,12 +28,11 @@ import 'dart:typed_data';
 import 'package:sqlite3/common.dart';
 
 import '../../profile/profile_db.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../db_bytes.dart';
 import '../log_service.dart';
 import '../receive/core_state.dart';
 import 'xprs_id.dart';
-import 'package:reticulum/src/services/social/retention_tier.dart';
 import 'xprs_archive_policy.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
@@ -544,7 +543,7 @@ class XprsArchive {
   /// sender's key was still unknown must not evict the one that was checked.
   /// Unverified rows are collapsed among themselves the same way. At most four
   /// rows of each kind per station, for ever.
-  static const _identityFields = ['k', 'nick', 'file', 'm'];
+  static const _identityFields = ['k', 'nick', 'file', 'm', 'url'];
 
   static void _collapseIdentities(CommonDatabase db, String fromc) {
     if (fromc.isEmpty) return;

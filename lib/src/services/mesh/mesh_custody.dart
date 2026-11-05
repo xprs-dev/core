@@ -16,9 +16,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 
-import 'package:reticulum/src/connections/bluetooth/ble5_types.dart';
 import '../log_service.dart';
 import '../reticulum/rns_service.dart';
 import '../xprs/xprs_airtime.dart';

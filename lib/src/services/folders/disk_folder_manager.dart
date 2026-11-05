@@ -16,7 +16,7 @@ import 'dart:convert';
 import 'package:file/file.dart';
 import 'dart:typed_data';
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import 'disk_folder.dart';
 import 'folder_keystore.dart';
 import 'folder_meta.dart';
@@ -341,7 +341,7 @@ class DiskFolderManager {
   /// Null when we do not serve this folder from disk.
   String? dataDirOf(String folderId) {
     final dir = _dirs[folderId];
-    return dir == null ? null : '$dir${pathSeparator}$kFolderDataDir';
+    return dir == null ? null : '$dir$pathSeparator$kFolderDataDir';
   }
 
   /// The listing this folder publishes, read from `data/meta.json`. An empty
@@ -351,7 +351,7 @@ class DiskFolderManager {
     final data = dataDirOf(folderId);
     if (data == null) return const FolderMeta();
     try {
-      final f = fs.file('$data${pathSeparator}$kFolderMetaFile');
+      final f = fs.file('$data$pathSeparator$kFolderMetaFile');
       if (!f.existsSync()) return const FolderMeta();
       return FolderMeta.parse(f.readAsStringSync());
     } catch (e) {
@@ -368,7 +368,7 @@ class DiskFolderManager {
     try {
       final dir = fs.directory(data);
       if (!dir.existsSync()) dir.createSync(recursive: true);
-      final f = fs.file('$data${pathSeparator}$kFolderMetaFile');
+      final f = fs.file('$data$pathSeparator$kFolderMetaFile');
       await f.writeAsString(meta.encode(), flush: true);
       return true;
     } catch (e) {
@@ -651,7 +651,9 @@ class DiskFolderManager {
   // Path helpers, all on '/'-normalized absolute paths.
   static String _norm(String p) {
     var s = p.replaceAll('\\', '/');
-    while (s.length > 1 && s.endsWith('/')) s = s.substring(0, s.length - 1);
+    while (s.length > 1 && s.endsWith('/')) {
+      s = s.substring(0, s.length - 1);
+    }
     return s;
   }
 
@@ -681,7 +683,9 @@ class DiskFolderManager {
   /// hide it from sharing), bounded length.
   static String _safeName(String name) {
     var s = name.replaceAll(RegExp(r'[/\\\x00-\x1f]'), '_').trim();
-    while (s.startsWith('.')) s = s.substring(1);
+    while (s.startsWith('.')) {
+      s = s.substring(1);
+    }
     if (s.isEmpty) s = 'torrent';
     return s.length > 80 ? s.substring(0, 80) : s;
   }

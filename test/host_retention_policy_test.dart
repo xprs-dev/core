@@ -1,6 +1,5 @@
 import 'package:test/test.dart';
-import 'package:reticulum/src/services/social/retention_tier.dart';
-import 'package:reticulum/src/services/social/host_retention_policy.dart';
+import 'package:reticulum/reticulum.dart';
 
 void main() {
   const gb = 1 << 30;

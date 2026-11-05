@@ -45,45 +45,16 @@ import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_presence.dart';
 import '../xprs/xprs_tcp.dart';
 import '../xprs/xprs_vocab.dart';
-import 'package:reticulum/src/services/files/dht/dht_core.dart' show kDhtAspects;
-import 'package:reticulum/src/services/files/dht/dht_node.dart';
-import 'package:reticulum/src/services/files/dht/holder_hint.dart';
-import 'package:reticulum/src/services/files/dht/pointer_log.dart';
-import 'package:reticulum/src/services/files/dht/pointer_sync.dart';
-import 'package:reticulum/src/services/files/dht/provider_record.dart'
-    show kCapUnknown, kCapArchive, kCapHomeWifi, kCapCellular, ProviderRecord;
-import 'package:reticulum/src/services/files/composite_file_source.dart';
-import 'package:reticulum/src/services/files/disk_index.dart';
-import 'package:reticulum/src/services/files/file_node.dart';
-import 'package:reticulum/src/services/files/file_transfer.dart';
-import 'package:reticulum/src/services/files/folder_popularity.dart';
-import 'package:reticulum/src/services/files/media_file_source.dart';
-import 'package:reticulum/src/services/files/partial_store.dart';
-import 'package:reticulum/src/services/files/serve_quota.dart';
-import 'package:reticulum/src/services/files/serve_stats.dart';
+import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import 'rns_iface_kind.dart';
 import '../media_disk_cache.dart';
-import 'package:reticulum/src/services/social/relay_event_store.dart';
-import 'package:reticulum/src/services/social/relay_node.dart';
-import 'package:reticulum/src/services/social/relay_role.dart';
-import 'package:reticulum/src/services/social/spam.dart';
-import 'package:reticulum/src/services/social/store_forward.dart';
-import 'package:reticulum/src/services/social/follow_set.dart';
 import '../social/direct_follow_resolver.dart';
-import 'package:reticulum/src/services/social/keep_policy.dart' show Touch;
 import '../social/keep_service.dart';
-import 'package:reticulum/src/services/social/archiver_policy.dart';
 import '../social/archiver_service.dart';
 import '../social/mirror_service.dart';
 import '../social/node_profile_service.dart';
 import '../social/pointer_sync_service.dart';
-import 'package:reticulum/src/services/social/nostr_engine.dart'
-    show NostrClient;
-import 'package:reticulum/src/services/social/nostr_ws_server.dart'
-    show NostrWsServer;
-import 'package:reticulum/src/services/social/host_retention_policy.dart';
-import 'package:reticulum/src/services/social/retention_tier.dart';
 import '../folders/disk_folder_manager.dart';
 import '../folders/folder_event.dart'
     show kKindFolderKeyset, kKindFolderOp, kFolderTag, FolderShareType, FileEntry, pieceSizeForFile;
@@ -97,36 +68,13 @@ import '../folders/folder_meta.dart';
 import '../folders/ntorrent.dart';
 import '../folders/piece_hashes.dart';
 import '../mesh/mesh_store.dart';
-import 'package:reticulum/reticulum.dart'
-    show MediaArchive, MediaRef, MediaKind;
-import 'package:reticulum/reticulum.dart' show BlossomServer;
 
 import '../../profile/profile_db.dart';
 import '../../profile/profile_service.dart';
 import '../../profile/secure_file.dart';
 import '../preferences_service.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
-import 'package:reticulum/src/util/nostr_nip19.dart';
-import 'package:reticulum/src/util/nostr_event.dart';
 import '../../util/nostr_imeta.dart';
-import 'package:reticulum/src/util/npd.dart';
-import 'package:reticulum/src/util/xprs_crypto.dart';
-import 'package:reticulum/src/services/reticulum/lxmf/lxmf.dart'
-    show kLxmfApp, kLxmfDeliveryAspects, kLxmfPropagationAspects;
-import 'package:reticulum/src/services/reticulum/lxmf/lxmf_message.dart';
-import 'package:reticulum/src/services/reticulum/lxmf/lxmf_router.dart';
-import 'package:reticulum/src/services/reticulum/nomad_node.dart';
 import 'observed_store.dart';
-import 'package:reticulum/src/services/reticulum/rns_announce.dart';
-import 'package:reticulum/src/services/reticulum/rns_ble_interface.dart';
-import 'package:reticulum/src/services/reticulum/rns_crypto.dart';
-import 'package:reticulum/src/services/reticulum/rns_identity.dart';
-import 'package:reticulum/src/services/reticulum/rns_packet.dart';
-import 'package:reticulum/src/services/reticulum/rns_lan_interface.dart';
-import 'package:reticulum/src/services/reticulum/rns_tcp_interface.dart';
-import 'package:reticulum/src/services/reticulum/rns_tcp_server_interface.dart';
-import 'package:reticulum/src/services/reticulum/rns_transport.dart';
-import 'package:reticulum/src/services/reticulum/rns_transport_engine.dart';
 import 'wapp_mailbox.dart';
 import '../../platform/fs.dart';
 import 'package:xprs_core/src/platform/os.dart' as platform;
@@ -632,7 +580,7 @@ class RnsService {
   /// {npub, callsign, nick}. [query] filters case-insensitively across all three
   /// (empty = everyone); the result is sorted by callsign. Generic and exposed to
   /// wapps via the hal_contacts_* HAL so any wapp can offer an "add from contacts"
-  /// picker. A callsign is always derivable from the key (X1<short>), and the
+  /// picker. A callsign is always derivable from the key (`X1<short>`), and the
   /// observed APRS callsign overrides it when known.
   List<Map<String, dynamic>> contacts(String query) {
     final q = query.trim().toLowerCase();
@@ -1676,7 +1624,8 @@ class RnsService {
       // neighbours there (the server edition): that IS the LAN hub.
       if (_server?.port == _lanHubPort) {
         _lanHub = _server;
-      } else try {
+      } else {
+        try {
         final hub = RnsTcpServerInterface(
           port: _lanHubPort,
           transport: t,
@@ -1697,6 +1646,7 @@ class RnsService {
             'RNS: LAN hub not bound on $_lanHubPort ($e); forwarding only');
       } finally {
         _lanHubBinding = null;
+      }
       }
       _hubPromoted = true;
       LogService.instance.add('RNS: hub role ON — transport for neighbours'
@@ -3746,8 +3696,9 @@ class RnsService {
                   final hex = _hex(h);
                   final now = DateTime.now().millisecondsSinceEpoch;
                   final src = fileServeSource;
-                  if (src is MediaFileSource)
+                  if (src is MediaFileSource) {
                     src.archive.incrementDownloads(hex);
+                  }
                   _serveStats?.record(hex, now);
                   // Popularity: this served file belongs to zero or more folders
                   // we share; count the requester as a leecher of each. The
@@ -4212,9 +4163,7 @@ class RnsService {
           // via NostrEngine — the UI isolate only sends commands + reads caches, so
           // a public firehose can never make the app unresponsive. Its store is a
           // separate SQLite file opened INSIDE that isolate.
-          final base = relayStorePath == null
-              ? null
-              : relayStorePath!.replaceAll(RegExp(r'[^/]*$'), '');
+          final base = relayStorePath?.replaceAll(RegExp(r'[^/]*$'), '');
           if (base != null && !nostrOn) {
             LogService.instance.add(
               'NOSTR: retired (nostr.enabled=false) — engine not spawned, '
@@ -4452,8 +4401,9 @@ class RnsService {
               1825;
           try {
             final n = store.pruneHosted(strangerMaxAge: Duration(days: days));
-            if (n > 0)
+            if (n > 0) {
               LogService.instance.add('RNS/relay: pruned $n stranger note(s)');
+            }
             store.sfPrune();
             // Tier-aware media eviction: drop hosted stranger blobs past retention,
             // and, only under ceiling pressure, followed-people's media (largest
@@ -5522,7 +5472,7 @@ class RnsService {
     if (RnsCrypto.constantTimeEquals(ann.destHash, wappHash)) {
       try {
         final a = ann.appData;
-        if (a.length >= 1) {
+        if (a.isNotEmpty) {
           final tagLen = a[0];
           if (a.length >= 1 + tagLen) {
             final tag = utf8.decode(
@@ -6233,8 +6183,9 @@ class RnsService {
     final relay = _relay;
     final store = _relayStore;
     final hub = _nostrHub;
-    if (files == null || relay == null || store == null || hub == null)
+    if (files == null || relay == null || store == null || hub == null) {
       return 0;
+    }
     final key = _hexToBytes(pubHex.toLowerCase());
     if (key == null || key.length != 32) return 0;
 
@@ -9232,7 +9183,7 @@ class RnsService {
   List<Map<String, dynamic>> nostrRelays() =>
       _nostrHub?.relaysJson() ?? const [];
 
-  /// Add/remove a relay by URI (wss://…, rns://<idhash>, local).
+  /// Add/remove a relay by URI (`wss://…`, `rns://<idhash>`, `local`).
   bool nostrRelayAdd(String uri) => _nostrHub?.addRelay(uri) ?? false;
   bool nostrRelayRemove(String uri) => _nostrHub?.removeRelay(uri) ?? false;
 
@@ -9963,7 +9914,7 @@ class RnsService {
     if (kind == 1) onSelfNotePublished?.call(ev.toJson());
     // Advertise our authorship so a synced indexer content-pulls our posts from
     // us (self-dedups after the first advertise).
-    if (kind == 1 && pub != null) unawaited(publishAuthorProvider(pub));
+    if (kind == 1) unawaited(publishAuthorProvider(pub));
     // Then the internet relays (wss) via the engine — best-effort, never blocks,
     // and only when a hub exists (it may be null; the reticulum publish above is
     // what makes the post visible to the mesh + Nomadnet regardless).
@@ -11103,7 +11054,7 @@ class RnsService {
           if (leaf.startsWith('$stem.') && leaf != name) f.deleteSync();
         }
       }
-      await src.copy('$dataDir${pathSeparator}$name');
+      await src.copy('$dataDir$pathSeparator$name');
     } catch (e) {
       LogService.instance.add('folders: could not add $name: $e');
       return null;
@@ -11143,15 +11094,25 @@ class RnsService {
     if (f != null) {
       for (final k in f.ownedFolders()) {
         final st = _localReduceCache[k.folderId];
-        if (st != null) for (final e in st.fileList) add(e.sha, k.folderId);
+        if (st != null) {
+          for (final e in st.fileList) {
+            add(e.sha, k.folderId);
+          }
+        }
       }
     }
     final subs = _subs;
     if (subs != null) {
       for (final fid in subs.folderIds()) {
-        for (final sha in subs.downloadedOf(fid).values) add(sha, fid);
+        for (final sha in subs.downloadedOf(fid).values) {
+          add(sha, fid);
+        }
         final st = _localReduceCache[fid];
-        if (st != null) for (final e in st.fileList) add(e.sha, fid);
+        if (st != null) {
+          for (final e in st.fileList) {
+            add(e.sha, fid);
+          }
+        }
       }
     }
     _shaFolderIndex

@@ -33,7 +33,7 @@ import 'dart:convert';
 import '../events/wapp_event_broker.dart';
 import '../log_service.dart';
 import '../xprs/xprs_id.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_packet.dart';

@@ -14,8 +14,7 @@
  */
 import 'dart:async';
 
-import 'package:reticulum/src/util/media_ref.dart';
-import 'package:reticulum/src/util/nostr_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import '../media/media_fetch.dart';
 import '../media/media_preview.dart';
 import '../reticulum/rns_service.dart';

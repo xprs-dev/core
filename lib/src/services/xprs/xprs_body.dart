@@ -30,8 +30,7 @@ import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
 
-import 'package:reticulum/src/util/nostr_crypto.dart';
-import 'package:reticulum/src/util/xprs_crypto.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
 import 'xprs_sig.dart';
@@ -297,7 +296,9 @@ List<String> xprsChunkAtSpaces(String text, int capacity) {
       // to a code-point boundary (a UTF-8 continuation byte is 10xxxxxx).
       final b = utf8.encode(w);
       var cut = capacity;
-      while (cut > 0 && (b[cut] & 0xC0) == 0x80) cut--;
+      while (cut > 0 && (b[cut] & 0xC0) == 0x80) {
+        cut--;
+      }
       if (cut == 0) break; // a single code point wider than the part: keep it
       chunks.add(utf8.decode(b.sublist(0, cut)));
       w = utf8.decode(b.sublist(cut));

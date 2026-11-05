@@ -27,7 +27,7 @@
  * Pure: no store, no I/O. The size and name come from a lookup the caller
  * injects, so this is testable on its own and the core owns the archive.
  */
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_body.dart';
 import 'xprs_packet.dart';
 

@@ -25,7 +25,7 @@
 import 'package:sqlite3/common.dart';
 
 import '../../profile/profile_db.dart';
-import 'package:reticulum/src/util/media_ref.dart';
+import 'package:reticulum/reticulum.dart';
 import 'xprs_groups.dart';
 import 'xprs_packet.dart';
 
