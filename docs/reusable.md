@@ -29,6 +29,26 @@ writing its own regex.
 the packet with `sig:` and `via:` removed, so a message keeps one identity at
 every hop. Dedup, replies, reactions and history replay all key on it.
 
+### `web_chat_forum` — a room's posts as topics and comments
+
+`forumPosts(rows)` turns `blog` history rows into posts with their parts
+joined (7.6) and the whole's identifier, holed sets left out; `forumTopics`
+folds them into the newest topics by last activity with a reply count
+(18.5). Pure functions: the server's `/api/rooms?topics=` and any app screen
+listing a forum share one fold. Events (26) replace by title the same way a
+post does, so an events index would start here.
+
+### Holding a split packet until it verifies — `WebChatApi._postPart`
+
+A split plain packet is signed once, on its last part, over the whole
+(9.1.1). The pattern: decide who may post from the envelope, offer each part
+to an `XprsPartTable`, and when the set completes verify the reassembled
+packet and file THAT, never the parts: a part's `sig:` reads as forged on its
+own and the archive drops it at flush, and a reader wants the post, not its
+fragments (`WappDelivery._whole` files a rejoined message the same way).
+Anything that takes split packets from an untrusted sender through an API
+wants the same shape.
+
 ## Relaying and delivery
 
 ### Injected sends — `XprsMailbox` (and the app's `XprsForwarder`)

@@ -10,6 +10,7 @@ import 'package:xprs_core/src/services/xprs/xprs_groups.dart';
 import 'package:xprs_core/src/services/xprs/xprs_id.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
+import 'package:xprs_core/src/services/xprs/xprs_vocab.dart' show xprsParseTs;
 
 final _station = BigInt.parse('5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a', radix: 16);
 final _alice = BigInt.parse('1234567890abcdef1234567890abcdef', radix: 16);
@@ -58,14 +59,15 @@ void main() {
           scalar: (c) => roomKeys[c],
         ),
         keep: kept.add,
-        roomRows: ({required room, sinceMs, untilMs, required limit}) => [
-          for (final w in kept)
-            if (XprsPacket.parse(w)!['d'] == room && XprsPacket.parse(w)!.type == 'message')
+        roomRows: ({required room, sinceMs, untilMs, required types, required limit}) => [
+          for (final w in kept.reversed)
+            if (XprsPacket.parse(w)!['d'] == room && types.contains(XprsPacket.parse(w)!.type))
               {
                 'id': xprsIdentifier(XprsPacket.parse(w)!),
-                'type': 'message',
+                'type': XprsPacket.parse(w)!.type,
                 'from': XprsPacket.parse(w)!['f'],
                 'to': room,
+                'ts': xprsParseTs(XprsPacket.parse(w)!['ts'])! ~/ 1000,
                 'wire': w,
               },
         ],
@@ -208,6 +210,103 @@ void main() {
         'visibility': 'secret'})).status, 400);
     await post(a, '/api/rooms', {'action': 'close', 'session': s, 'call': call});
     expect(await rooms(a, s), isEmpty);
+  });
+
+  group('forum rooms (XPRS.md 18.5)', () {
+    Future<String> forum(WebChatApi a, String s) async =>
+        (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Radio',
+            'kind': 'forum', 'visibility': 'public', 'posting': 'anyone'})).json['room'] as String;
+    Future<WebChatReply> topics(WebChatApi a, String call, String s) =>
+        a.handle('GET', '/api/rooms', {'topics': call, 'session': s}, '', peer: lan);
+    Future<List> thread(WebChatApi a, String call, String root, String s) async =>
+        (await a.handle('GET', '/api/xprs/history',
+                {'room': call, 'kind': 'blog', 'root': root, 'session': s}, '', peer: lan))
+            .json['rows'] as List;
+
+    test('a topic, a comment, the index that counts them, the thread in order', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = await forum(a, s);
+      expect((await rooms(a, s)).single['kind'], 'forum');
+      final b = await session(a, 'X1BOBB', _bob);
+      final topic = _signed('t:blog f:X1BOBB d:$call ts:${ts()} title:balun-question tag:radio m:Which balun?', _bob);
+      expect((await send(a, topic)).status, 200);
+      final id = xprsIdentifier(XprsPacket.parse(topic)!);
+      expect((await send(a, _signed('t:blog f:X1CARO d:$call ts:${ts(1)} m:no title and no r:', _carol))).status, 400);
+      expect((await send(a, _signed('t:blog f:X1CARO d:$call ts:${ts(1)} title:Not-A-Label m:x', _carol))).status, 400);
+      final comment = _signed('t:blog f:X1CARO d:$call ts:${ts(2)} r:$id m:A 1:1 current balun.', _carol);
+      expect((await send(a, comment)).status, 200);
+      expect(received.where((w) => w.contains(call)), isEmpty, reason: 'filed, never aired');
+      final t = (await topics(a, call, b)).json['topics'] as List;
+      expect(t, hasLength(1));
+      expect(t[0]['title'], 'balun-question');
+      expect(t[0]['id'], id);
+      expect(t[0]['replies'], 1);
+      expect(t[0]['tags'], 'radio');
+      expect((await thread(a, call, id, b)).map((r) => r['wire']), [topic, comment],
+          reason: 'the thread, oldest first');
+      // A chat room takes no post, and only a forum room has an index.
+      final chat = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Chat'})).json['room'] as String;
+      expect((await send(a, _signed('t:blog f:X1BOBB d:$chat ts:${ts()} title:x m:y', _bob))).status, 403);
+      expect((await topics(a, chat, b)).status, 400);
+      expect((await topics(a, 'X5NONE', b)).status, 404);
+    });
+
+    test('a replaced topic is one topic, edited; a moderator takes an edition down', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = await forum(a, s);
+      final offer = (await rooms(a, s)).single['offer'];
+      await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:$offer accept:mod', _alice));
+      final v1 = _signed('t:blog f:X1BOBB d:$call ts:${ts()} title:log m:first', _bob);
+      final v2 = _signed('t:blog f:X1BOBB d:$call ts:${ts(5)} title:log m:corrected', _bob);
+      await send(a, v1);
+      await send(a, v2);
+      final id1 = xprsIdentifier(XprsPacket.parse(v1)!), id2 = xprsIdentifier(XprsPacket.parse(v2)!);
+      await send(a, _signed('t:blog f:X1CARO d:$call ts:${ts(1)} r:$id1 m:on the first', _carol));
+      var t = (await topics(a, call, s)).json['topics'] as List;
+      expect(t, hasLength(1));
+      expect(t[0]['id'], id2);
+      expect(t[0]['edited'], true);
+      expect(t[0]['replies'], 1, reason: 'a comment on an earlier edition is the topic\'s');
+      // An act is judged at its moment: after the acceptance that made Alice
+      // a moderator and not from the future (five minutes of slack); a post's
+      // ts: is the author's claim and may be later than that.
+      expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} r:$id2 remove:message', _alice))).status, 200);
+      t = (await topics(a, call, s)).json['topics'] as List;
+      expect(t[0]['id'], id1, reason: 'the edition that is left');
+      expect(t[0]['edited'], false);
+    });
+
+    test('a split topic is held and verified on its last part (9.1.1)', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = await forum(a, s);
+      final head = 't:blog f:X1BOBB d:$call ts:${ts()} title:antenna-notes';
+      final whole = XprsPacket.parse('$head m:I rebuilt the dipole. The feed point was off.')!;
+      final sig = xprsSign(whole, _bob)['sig']!;
+      final r1 = await send(a, '$head n:1/2 m:I rebuilt the dipole.');
+      expect(r1.status, 202);
+      expect(kept.where((w) => w.contains('antenna-notes')), isEmpty, reason: 'held, not filed');
+      final r2 = await send(a, '$head n:2/2 sig:$sig m:The feed point was off.');
+      expect(r2.status, 200);
+      expect(r2.json['id'], xprsIdentifier(whole));
+      expect(kept.where((w) => w.contains('antenna-notes')).single, whole.with_('sig', sig).encode(),
+          reason: 'the whole is filed, signed, not the parts');
+      final t = (await topics(a, call, s)).json['topics'] as List;
+      expect(t.single['id'], xprsIdentifier(whole));
+      expect((await thread(a, call, xprsIdentifier(whole), s)).single['wire'], whole.with_('sig', sig).encode(),
+          reason: 'the thread opens with the whole post');
+      // A set whose signature covers something else is refused and nothing of it is filed.
+      final head2 = 't:blog f:X1BOBB d:$call ts:${ts(1)} title:other';
+      expect((await send(a, '$head2 n:1/2 m:some')).status, 202);
+      expect((await send(a, '$head2 n:2/2 sig:$sig m:words')).status, 409);
+      expect(kept.where((w) => w.contains('title:other')), isEmpty);
+      // Who may post is decided before a part is held.
+      await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:${(await rooms(a, s)).single['offer']} accept:mod', _alice));
+      await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} revoke:X1CARO', _alice));
+      expect((await send(a, 't:blog f:X1CARO d:$call ts:${ts(2)} title:t n:1/2 m:a')).status, 403);
+    });
   });
 
   group('alerts (10.10.2)', () {

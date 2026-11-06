@@ -54,7 +54,9 @@ import 'xprs/xprs_archive.dart' show XprsArchive;
 import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
+import 'xprs/xprs_parts.dart';
 import 'xprs/xprs_sig.dart';
+import 'web_chat_forum.dart';
 import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsScope, XprsScope;
 
 /// The keys of the rooms a station hosts (XPRS.md 10.10.1): the host's store.
@@ -134,8 +136,11 @@ class WebChatApi {
   final WebChatRoomKeys? roomKeys;
   final void Function(String wire)? keep;
   final List<Map<String, dynamic>> Function(
-      {required String room, int? sinceMs, int? untilMs, required int limit})?
-      roomRows;
+      {required String room,
+      int? sinceMs,
+      int? untilMs,
+      required List<String> types,
+      required int limit})? roomRows;
 
   WebChatApi({
     required this.publicRows,
@@ -231,7 +236,10 @@ class WebChatApi {
       if (method == 'POST') return _adminAct(body, peer);
     }
     if (path == '/api/rooms' && _hostsRooms) {
-      if (method == 'GET') return _roomList(query['session']);
+      if (method == 'GET') {
+        final t = query['topics'];
+        return t == null ? _roomList(query['session']) : _roomTopics(t, query['session']);
+      }
       if (method == 'POST') return _roomAct(body);
     }
     if (path == '/api/session') {
@@ -418,9 +426,12 @@ class WebChatApi {
     final from = (p['f'] ?? '').trim().toUpperCase();
     if (from.isEmpty) return no(400, 'no f:');
     if (p.type == 'moderate') return _moderateFromVisitor(p, from, peer);
-    if (!postable.contains(p.type)) return no(403, 'not for a visitor to send');
+    // A hosted room decides what it takes (a forum room takes posts too,
+    // which no visitor may air); everything else is the visitor's to send
+    // only when [postable] says so.
     final room = _hostedRoom(p['d']);
     if (room != null) return _postInRoom(p, from, room);
+    if (!postable.contains(p.type)) return no(403, 'not for a visitor to send');
     if ((p.type == 'warning' || p.type == 'info') &&
         !(p['remove'] ?? '').startsWith(p.type) &&
         settings['who_may_alert'] != 'everyone' &&
@@ -579,17 +590,40 @@ class WebChatApi {
     }
     final limit =
         (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
+    var types = <String>[
+      for (final t in (q['kind'] ?? q['only'] ?? '').split(','))
+        if (readable.contains(t.trim())) t.trim(),
+    ];
+    if (types.isEmpty) types = const ['message', 'reaction'];
+    // A thread (7.4, 18.5): the post itself and what names it, oldest first.
+    final root = _rootRe.hasMatch(q['root'] ?? '') ? q['root'] : null;
     final mod = _roomModeration(room);
-    final rows = [
+    var rows = [
       for (final row in roomRows!(
           room: room,
           sinceMs: _when(q['since']),
           untilMs: _when(q['until']),
-          limit: limit))
+          types: types,
+          limit: root == null ? limit : maxLimit))
         if (!mod.removed.contains('${row['id']}') &&
             !mod.away.contains(_base('${row['from'] ?? ''}')))
           row,
     ];
+    if (root != null) {
+      // The opening post's own rows: one, or the parts of a split one, whose
+      // identifier is the whole's and so not on any row (7.6).
+      final own = <String>{
+        for (final p in forumPosts(rows))
+          if (p.id == root) ...p.rowIds,
+      };
+      bool inThread(Map<String, dynamic> row) {
+        if ('${row['id']}' == root || own.contains('${row['id']}')) return true;
+        final p = XprsPacket.parse('${row['wire'] ?? ''}');
+        return p != null && (p['root'] == root || p['r'] == root);
+      }
+
+      rows = rows.where(inThread).toList().reversed.take(limit).toList();
+    }
     return WebChatReply(200, {
       'ok': true,
       'count': rows.length,
@@ -603,30 +637,114 @@ class WebChatApi {
     });
   }
 
-  /// A visitor's message (or reaction) in a hosted room: filed, not aired.
+  static final RegExp _rootRe = RegExp(r'^[0-9a-f]{6}$');
+
+  /// `title:` is a label (XPRS.md 18.1): lowercase letters, digits and `-`.
+  static final RegExp _labelRe = RegExp(r'^[a-z0-9][a-z0-9-]{0,39}$');
+
+  /// The rows the topic index folds: the newest posts of a room. A window,
+  /// not the room (performance.md: never a page fetched to count).
+  static const int forumWindow = 500;
+
+  /// Parts of split posts still short (7.6), by (f, ts). Nothing is filed
+  /// until the whole verifies (9.1.1), and then it is the whole that is
+  /// filed, as the receive door files a rejoined message: a part's `sig:`
+  /// covers the whole and would read as forged on the part alone, and a
+  /// reader wants the post, not its fragments.
+  final XprsPartTable _parts = XprsPartTable();
+  final Map<String, int> _partsHeld = {};
+
+  /// What a `t:blog` in a forum room must be (18, 18.5): a topic has a
+  /// title; a comment has none and names its post; a correction or a
+  /// withdrawal names what it acts on. Null when it is one of those.
+  static String? forumShape(XprsPacket p) {
+    final title = p['title'];
+    if (title != null) {
+      return _labelRe.hasMatch(title) ? null : 'title: is a label: lowercase letters, digits and -';
+    }
+    if (p.has('r') || p.has('edit')) return null;
+    return 'a post needs a title: to open a topic, or r: to comment on one';
+  }
+
+  /// A visitor's message (or reaction, or in a forum room a post) in a
+  /// hosted room: filed, not aired.
   WebChatReply _postInRoom(XprsPacket p, String from, String room) {
     WebChatReply no(int status, String why) =>
         WebChatReply(status, {'ok': false, 'error': why});
-    if (p.type != 'message' && p.type != 'reaction') {
+    final meta = _rooms[room]!;
+    final forum = meta['kind'] == 'forum';
+    if (p.type == 'blog') {
+      if (!forum) return no(403, 'posts go in a forum room');
+      final why = forumShape(p);
+      if (why != null) return no(400, why);
+    } else if (p.type != 'message' && p.type != 'reaction') {
       return no(403, 'only messages and reactions in a room');
     }
-    // The record is judged by signature, so a room takes only a wire it can
-    // verify: the visitor's page sends its identity first.
-    if (xprsVerify(p, keyOf(_base(from))) != XprsSigState.verified) {
+    // A split post is signed once, on its last part, over the packet the
+    // parts reassemble into (9.1.1): the parts are held and the whole is
+    // verified when it is complete. Who may post is decided before holding.
+    final split = p.type == 'blog' && p.has('n');
+    if (!split &&
+        xprsVerify(p, keyOf(_base(from))) != XprsSigState.verified) {
+      // The record is judged by signature, so a room takes only a wire it can
+      // verify: the visitor's page sends its identity first.
       return no(409, 'identity unknown');
     }
     if (_roomModeration(room).away.contains(_base(from))) {
       return no(403, 'you were sent away from this room');
     }
-    final meta = _rooms[room]!;
     final membersOnly =
         meta['visibility'] == 'private' || meta['posting'] != 'anyone';
     if (membersOnly && !_isMember(room, from)) {
       return no(403, 'only members post in this room');
     }
+    if (split) return _postPart(p, from);
     final w = p.encode();
     keep!(w);
     return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
+  }
+
+  WebChatReply _postPart(XprsPacket p, String from) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    final key = xprsSetKey(p);
+    final n = int.tryParse((p['n'] ?? '').split('/').first);
+    if (key == null || n == null) return no(400, 'a part needs ts: and n:');
+    final done = _parts.offer(p, clear: p['m'] ?? '', now: now());
+    if (_partsHeld.length >= XprsPartTable.maxSets && !_partsHeld.containsKey(key)) {
+      _partsHeld.remove(_partsHeld.keys.first);
+    }
+    if (done == null) {
+      final held = (_partsHeld[key] ?? 0) + 1;
+      _partsHeld[key] = held;
+      return WebChatReply(202, {'ok': true, 'held': held});
+    }
+    _partsHeld.remove(key);
+    final whole = done.sig == null ? done.packet : done.packet.with_('sig', done.sig!);
+    if (xprsVerify(whole, keyOf(_base(from))) != XprsSigState.verified) {
+      return no(409, 'the signature does not cover the whole post, or the key is unknown');
+    }
+    final w = whole.encode();
+    keep!(w);
+    return WebChatReply(200, {'ok': true, 'id': _idOf(whole), 'wire': w, 'parts': done.partIds.length});
+  }
+
+  /// The topic index of a forum room (API-HTTP.md, XPRS.md 18.5).
+  WebChatReply _roomTopics(String call, String? session) {
+    final room = _hostedRoom(call);
+    if (room == null || !_mayRead(room, session)) {
+      return const WebChatReply(404, {'ok': false, 'error': 'no such room'});
+    }
+    if (_rooms[room]!['kind'] != 'forum') {
+      return const WebChatReply(400, {'ok': false, 'error': 'not a forum room'});
+    }
+    final mod = _roomModeration(room);
+    final rows = roomRows!(room: room, types: const ['blog'], limit: forumWindow);
+    return WebChatReply(200, {
+      'ok': true,
+      'room': room,
+      'topics': forumTopics(rows, removed: mod.removed, away: mod.away),
+    });
   }
 
   /// Sign [body] as [room] (the station holds its key) and file it.
@@ -663,7 +781,10 @@ class WebChatApi {
       'call': call,
       'name': meta['name'],
       'about': meta['about'] ?? '',
+      'kind': meta['kind'] ?? 'chat',
       'visibility': meta['visibility'],
+      // Sharing with other stations (10.10.1) is not implemented yet.
+      'shared': meta['shared'] == true,
       'posting': meta['posting'],
       'role': role,
       if (role == 'invited' && who != null) ...{
@@ -720,8 +841,9 @@ class WebChatApi {
 
     final visibility = opt('visibility', const {'public', 'private'});
     final posting = opt('posting', const {'members', 'anyone'});
-    if (visibility == '' || posting == '') {
-      return no(400, 'visibility is public or private; posting members or anyone');
+    final kind = opt('kind', const {'chat', 'forum'});
+    if (visibility == '' || posting == '' || kind == '') {
+      return no(400, 'visibility is public or private; posting members or anyone; kind chat or forum');
     }
     String clean(Object? v, int max) {
       final s = '${v ?? ''}'.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -737,6 +859,7 @@ class WebChatApi {
       rooms[call] = {
         'name': name,
         'about': clean(b['about'], 120),
+        'kind': kind ?? 'chat',
         'visibility': visibility ?? 'public',
         'posting': visibility == 'private' ? 'members' : (posting ?? 'anyone'),
         'created': now().millisecondsSinceEpoch,
@@ -759,6 +882,7 @@ class WebChatApi {
           meta['name'] = name;
         }
         if (b.containsKey('about')) meta['about'] = clean(b['about'], 120);
+        if (kind != null) meta['kind'] = kind;
         if (visibility != null) meta['visibility'] = visibility;
         if (posting != null) meta['posting'] = posting;
         if (meta['visibility'] == 'private') meta['posting'] = 'members';
