@@ -180,6 +180,9 @@ class WebChatApi {
   /// signature; a command or a group act is never a visitor's to send.
   static const Set<String> postable = {
     'message', 'status', 'reaction', 'identity',
+    // A post (18): the visitor's own signed words, like a status, kept and
+    // read later. One longer than a packet comes as parts (7.6).
+    'blog',
     // Alerts (10.10.2), under the station's setting.
     'warning', 'info',
     // A call for help is never refused (10.7), whoever asks through here.
@@ -456,12 +459,6 @@ class WebChatApi {
     if (me.isNotEmpty && base(from) == base(me)) {
       return no(403, 'not as this station');
     }
-    if (!p.has('sig')) return no(400, 'unsigned');
-    // When this station already knows the key that callsign is bound to, the
-    // signature must hold; with none known it is relayed as unverified, which
-    // is what every receiver will conclude for themselves.
-    final state = xprsVerify(p, keyOf(base(from)));
-    if (state == XprsSigState.forged) return no(400, 'forged');
     if (!mayAir(p)) return no(403, 'not a member of that group');
     switch (whoMayPost) {
       case 'nobody':
@@ -472,6 +469,22 @@ class WebChatApi {
         }
     }
     if (!_allowed(peer)) return no(429, 'slow down');
+    // A post longer than one packet comes as its parts (7.6), signed once
+    // over the whole on the last (9.1.1): a part alone is neither signed nor
+    // verifiable, and is aired as given, like any heard part. The page that
+    // reads the feed joins the set and judges the signature on the whole.
+    // Only a post to everybody: one to a room went the room's way above,
+    // and a part to anybody else's group is not the page's to send.
+    final part = p.type == 'blog' && p.has('n') && !p.has('d');
+    if (!part) {
+      if (!p.has('sig')) return no(400, 'unsigned');
+      // When this station already knows the key that callsign is bound to,
+      // the signature must hold; with none known it is relayed as
+      // unverified, which is what every receiver will conclude for
+      // themselves.
+      final state = xprsVerify(p, keyOf(base(from)));
+      if (state == XprsSigState.forged) return no(400, 'forged');
+    }
     final w = p.encode();
     receive(w);
     return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});

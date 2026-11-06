@@ -334,7 +334,14 @@ class XprsArchive {
           // repeats the lie — dropped, same policy as the courier.
           var sig = XprsSigState.unsigned;
           if (p.has('sig')) {
-            sig = xprsVerify(p, keyResolver?.call(_base(p['f'] ?? '')));
+            // A part carries the signature of the whole it belongs to (9.1.1:
+            // "a partial set proves nothing"): it is neither verified nor
+            // forged until whoever reads the set joins it, so the archive
+            // keeps it as unverified rather than dropping the last part of
+            // every long post as a forgery.
+            sig = p.has('n')
+                ? XprsSigState.unverified
+                : xprsVerify(p, keyResolver?.call(_base(p['f'] ?? '')));
           }
           // Report before acting on it: a forged packet is dropped from the
           // spool, and if the verdict went with it nothing would ever be able

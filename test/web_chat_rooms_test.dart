@@ -317,6 +317,33 @@ void main() {
     });
   });
 
+  group('a post to everybody (XPRS.md 18), from the page', () {
+    test('a post is the visitor\'s to send; its parts go out as given (7.6)', () async {
+      final a = make();
+      final one = _signed('t:blog f:X1BOBB ts:${ts()} title:short m:Fits one packet.', _bob);
+      expect((await send(a, one)).status, 200);
+      expect(received.last, one);
+      // The whole post never leaves the page: the station sees parts, the
+      // first unsigned and the last signed over a whole it cannot see, and
+      // airs each as it would any heard part (API-HTTP.md, /api/xprs/send).
+      final head = 't:blog f:X1BOBB ts:${ts(1)} title:field-day';
+      final whole = XprsPacket.parse('$head m:We set up on the hill. The wind took the mast twice.')!;
+      final sig = xprsSign(whole, _bob)['sig']!;
+      expect((await send(a, '$head n:1/2 m:We set up on the hill.')).status, 200);
+      expect((await send(a, '$head n:2/2 sig:$sig m:The wind took the mast twice.')).status, 200);
+      expect(received.where((w) => w.contains('field-day')).toList(), [
+        '$head n:1/2 m:We set up on the hill.',
+        '$head n:2/2 sig:$sig m:The wind took the mast twice.',
+      ]);
+      expect(kept.where((w) => w.contains('field-day')), isEmpty, reason: 'not a room: nothing filed here');
+      // An unsigned post that is not a part is still refused, as every wire is.
+      expect((await send(a, 't:blog f:X1BOBB ts:${ts(2)} title:bare m:no signature')).status, 400);
+      // And never as this station, nor a part to somebody else's group.
+      expect((await send(a, 't:blog f:X3STAT ts:${ts(2)} title:t n:1/2 m:a')).status, 403);
+      expect((await send(a, 't:blog f:X1BOBB d:X5ELSE ts:${ts(2)} title:t n:1/2 m:a')).status, 400);
+    });
+  });
+
   group('sharing a room between stations (XPRS.md 10.10.1)', () {
     test('the owner shares with named peers; they are served and asked back', () async {
       final a = make();
