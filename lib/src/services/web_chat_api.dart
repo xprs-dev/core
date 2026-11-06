@@ -276,6 +276,8 @@ class WebChatApi {
         'tabs': ['chat', 'traffic', 'alerts'],
         // Who may post an alert through this station (10.10.2).
         'alerts': settings['who_may_alert'],
+        // The administrator's HTML under the page's header.
+        'banner': settings['banner'],
         // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
         if (_hostsRooms) 'rooms': true,
         'config': false,
@@ -1196,7 +1198,13 @@ class WebChatApi {
     // Who may post an alert (t:warning, t:info) through this station: the
     // moderators and the administrator, or everyone (XPRS.md 10.10.2).
     'who_may_alert': 'moderators',
+    // HTML the page shows under its header to every visitor; the
+    // administrator's to write, a template until they do.
+    'banner': bannerDefault,
   };
+
+  static const String bannerDefault = '<strong>Welcome to this station.</strong> Operated by <em>your name</em> from <em>your town</em>. Local chat, alerts, posts and a forum for the area it reaches.';
+  static const int maxBannerChars = 4000;
 
   Map<String, Object> get settings {
     final s = _json(_kSettings);
@@ -1340,6 +1348,11 @@ class WebChatApi {
                 return no(400, '$k must be moderators or everyone');
               }
               next[k] = v as String;
+            case 'banner':
+              if (v is! String || v.length > maxBannerChars) {
+                return no(400, '$k is HTML of at most $maxBannerChars characters');
+              }
+              next[k] = v;
             default:
               return no(400, 'unknown setting $k');
           }

@@ -113,8 +113,17 @@ void main() {
         'settings': {'colour': 'red'}})).status, 400);
     final r = await act(a, lan, {'action': 'set', 'session': s,
         'settings': {'local_private': false, 'who_may_post': 'local'}});
-    expect(r.json['settings'],
-        {'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators'});
+    expect(r.json['settings'], {
+      'local_private': false,
+      'who_may_post': 'local',
+      'who_may_alert': 'moderators',
+      'banner': WebChatApi.bannerDefault,
+    });
+    // The banner is the administrator's HTML, bounded.
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'banner': 'x' * (WebChatApi.maxBannerChars + 1)}})).status, 400);
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'banner': '<b>Hill</b>'}})).json['settings']['banner'], '<b>Hill</b>');
     // The admin manages from anywhere once claimed (the internet included).
     final far = await session(a, 'X1ALIC', _alice, internet);
     expect((await act(a, internet, {'action': 'set', 'session': far,
