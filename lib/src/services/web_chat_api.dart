@@ -171,6 +171,8 @@ class WebChatApi {
     'message', 'status', 'reaction', 'identity',
     // Alerts (10.10.2), under the station's setting.
     'warning', 'info',
+    // A call for help is never refused (10.7), whoever asks through here.
+    'sos',
   };
 
   static const int maxLimit = 200;
@@ -425,8 +427,9 @@ class WebChatApi {
         !_isStaff(from)) {
       return no(403, 'on this station only moderators post alerts');
     }
+    // Somebody sent away may not post, except a call for help (10.7).
     final mod = _moderation();
-    if (mod != null && mod.away.contains(_base(from))) {
+    if (mod != null && p.type != 'sos' && mod.away.contains(_base(from))) {
       return no(403, "you were sent away from this station's rooms");
     }
     // Never as this station: the publisher would sign an unsigned wire that

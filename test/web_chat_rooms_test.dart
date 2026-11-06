@@ -219,8 +219,8 @@ void main() {
       await claim(a);
       expect((await send(a, alert('X1BOBB', _bob))).status, 403);
       expect((await send(a, alert('X1ALIC', _alice))).status, 200, reason: 'the administrator');
-      expect((await send(a, _signed('t:sos f:X1BOBB ts:${ts()} m:help', _bob))).status, 403,
-          reason: 'sos is not a visitor type here, and is not an alert setting');
+      expect((await send(a, _signed('t:sos f:X1BOBB ts:${ts()} m:help', _bob))).status, 200,
+          reason: 'a call for help is never refused (10.7), and is no alert setting');
     });
 
     test('the administrator may open it to everyone', () async {

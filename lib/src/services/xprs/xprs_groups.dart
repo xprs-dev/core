@@ -536,13 +536,14 @@ class XprsGroups {
       // second — a self-grant on group creation does exactly this). 26.4 says
       // membership begins at the acceptance's ts "if the grant was in force at
       // that moment", and a same-ts grant IS in force, so the grant must be
-      // walked first or the acceptance finds no offer and is dropped. The
-      // acceptance names the grant by id in r: (`hideRef`), so this ordering is
-      // reproducible everywhere — unlike the plain id tie-break, which broke
-      // this pair at random depending on which id sorted smaller. The id rule
-      // still decides every other tie (contradicting acts by one signer).
-      if (y.accept.isNotEmpty && y.hideRef == x.id) return -1;
-      if (x.accept.isNotEmpty && x.hideRef == y.id) return 1;
+      // walked first or the acceptance finds no offer and is dropped. So on a
+      // shared ts every acceptance walks after everything else: a TOTAL
+      // order, the same walk everywhere. (Ordering only the grant-acceptance
+      // PAIR, with the id deciding the rest, was not one: three same-second
+      // acts could sort the acceptance before its grant, and did on the
+      // ESP32's qsort.) The id rule still decides every other tie.
+      final xa = x.accept.isNotEmpty ? 1 : 0, ya = y.accept.isNotEmpty ? 1 : 0;
+      if (xa != ya) return xa - ya;
       return x.id.compareTo(y.id);
     });
 

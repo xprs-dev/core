@@ -178,6 +178,11 @@ topic to the wapp that shows it (`routeCoreNotification`,
   replay, `XprsRoster.away` (who an open room sent away, and until when).
   Any host with open rooms (the app's share server) reuses it by passing
   `groups`, `signAsStation` and `publish`.
+- The station API is a contract with a conformance suite: the webchat
+  repo's `contract/conformance.py` drives `/api/services`, `/api/session`,
+  `/api/admin`, `/api/rooms`, history and send from outside, and the ESP32's
+  C engine (`firmware/common/xprs_webchat`) passes the same run. A rule
+  added to `WebChatApi` goes into the suite, and the other engine follows.
 - `WebChatApi` hosted rooms and alerts (XPRS.md 10.10.1, 10.10.2) — closed
   groups whose key the host holds (`WebChatRoomKeys` over `XprsGroupKeys`),
   filed with `keep` and read with `roomRows`, never aired; `who_may_alert`
