@@ -65,6 +65,11 @@ class XprsHistoryServer {
   /// Set by the host from the web chat API's rooms.
   bool? Function(String group, String asker)? hostedRoom;
 
+  /// The other stations that hold a copy of a shared room (its listed peers,
+  /// the ones seen asking, its owner): named in `m:try` when an ask for the
+  /// room finds nothing here, so a third station finds the holders (12.9).
+  List<String> Function(String group)? roomPeers;
+
   static const int knownPerHour = 6;
   static const int strangerPerHour = 2;
   static const int globalPerHour = 12;
@@ -345,7 +350,12 @@ class XprsHistoryServer {
       final asked = _base(p['only'] ?? '');
       final tries = asked.isEmpty
           ? const <String>[]
-          : XprsGossip.instance.tryCandidates(asked, selfBase: selfBase);
+          : servingRoom
+              ? [
+                  for (final c in roomPeers?.call(asked) ?? const <String>[])
+                    if (c != from && c != selfBase) c,
+                ].take(3).toList()
+              : XprsGossip.instance.tryCandidates(asked, selfBase: selfBase);
       _airControl(selfBase, from, cmdId, 404,
           m: tries.isEmpty ? null : 'try ${tries.join(',')}');
       return;

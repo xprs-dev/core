@@ -51,6 +51,13 @@ pairs (`mirrorPairs`) and the serving gate the history server consults
 should keep a bounded record in step between two stations, a category of
 events, a place's notices, is the same shape with a different `only:`.
 
+### `XprsArchive.maxGroupBytes` — a ceiling per group
+
+10.9.3's fourth axis on eviction: every twentieth flush, a group whose rows
+exceed the ceiling loses its oldest ones (never its acts, its identity or
+this station's own words). Anything else that keeps a bounded record per
+addressee would be the same query with a different prefix.
+
 ### Holding a split packet until it verifies — `WebChatApi._postPart`
 
 A split plain packet is signed once, on its last part, over the whole

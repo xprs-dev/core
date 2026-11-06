@@ -334,6 +334,8 @@ void main() {
       expect(j['peers'], ['X3MIRR'], reason: 'a callsign each, never this station');
       expect(a.roomServable(call, 'X3MIRR'), true);
       expect(a.roomServable(call, 'X3OTHR'), false, reason: 'listed peers only');
+      expect(a.roomPeers(call), ['X3MIRR']);
+      expect(a.roomPeers('X5NONE'), isEmpty);
       expect(a.mirrorPairs().map((p) => '${p.group}|${p.peer}'), ['$call|X3MIRR']);
       // Shared with no list: any station, and one that asked is remembered.
       await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': call, 'shared': true, 'peers': []});
@@ -366,6 +368,7 @@ void main() {
       expect(synced, ['X5F0RM'], reason: 'asked for at once');
       expect(a.roomServable('X5F0RM', 'X3OWNR'), true, reason: 'the copy is served back to its owner');
       expect(a.roomServable('X5F0RM', 'X3OTHR'), false);
+      expect(a.roomPeers('X5F0RM'), ['X3OWNR']);
       expect(a.mirrorPairs().map((p) => '${p.group}|${p.peer}'), ['X5F0RM|X3OWNR']);
       expect((await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': 'X5F0RM', 'shared': true})).status, 400);
       expect((await post(a, '/api/rooms', {'action': 'add', 'session': s, 'call': 'X5F0RM', 'member': 'X1BOBB'})).status, 409,

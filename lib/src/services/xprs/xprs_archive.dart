@@ -104,6 +104,14 @@ class XprsArchive {
   /// Caps. Prefs-backed by the owner (MeshService reads them at init and on
   /// change); the defaults are a judgement, not a specification (§31.3).
   int maxBytes = 500 * 1024 * 1024;
+
+  /// XPRS.md 10.9.3: a byte ceiling per `X5` group, and within it the oldest
+  /// goes first, so one loud group cannot crowd every quiet one out of the
+  /// spool. A fourth axis on 12.11, not a change to its three. The group's
+  /// acts and its identity are its record and never go (a roster without
+  /// its grants is no roster, 10.4), nor does what this station itself said.
+  int maxGroupBytes = 8 * 1024 * 1024;
+  int groupPruned = 0;
   int maxAgeDays = 365;
 
   /// The signer's x-only key for a callsign, or null when not held. Injected
@@ -678,6 +686,11 @@ class XprsArchive {
     if (++_flushesSinceCap < 20) return;
     _flushesSinceCap = 0;
     try {
+      _pruneGroups(db);
+    } catch (e) {
+      LogService.instance.add('XPRS archive: group prune failed: $e');
+    }
+    try {
       final bytes = _dataBytes(db);
       if (bytes <= maxBytes) return;
       // The cap is the STRANGERS' quota. Mine and the people I follow are
@@ -721,6 +734,31 @@ class XprsArchive {
       db.execute('PRAGMA incremental_vacuum;');
     } catch (e) {
       LogService.instance.add('XPRS archive: cap prune failed: $e');
+    }
+  }
+
+  /// The per-group ceiling (10.9.3), one bounded batch per group over it.
+  void _pruneGroups(CommonDatabase db) {
+    final over = db.select(
+        'SELECT toc, SUM(length(wire)) b, COUNT(*) n FROM packets '
+        "WHERE toc >= 'X5' AND toc < 'X6' AND own = 0 "
+        "AND type NOT IN ('identity', 'moderate') "
+        'GROUP BY toc HAVING b > ?',
+        [maxGroupBytes]);
+    for (final r in over) {
+      final toc = r['toc'] as String;
+      final b = r['b'] as int;
+      final n = r['n'] as int;
+      if (n == 0) continue;
+      final avg = (b / n).clamp(64, 1 << 20);
+      var drop = ((b - maxGroupBytes) / avg).ceil() + 50;
+      if (drop > 5000) drop = 5000;
+      db.execute(
+          'DELETE FROM packets WHERE id IN '
+          '(SELECT id FROM packets WHERE toc = ? AND own = 0 '
+          "AND type NOT IN ('identity', 'moderate') ORDER BY pts ASC LIMIT ?)",
+          [toc, drop]);
+      groupPruned += drop;
     }
   }
 

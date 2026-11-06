@@ -1027,6 +1027,24 @@ class WebChatApi {
     return true;
   }
 
+  /// The stations that hold a copy of [group] besides this one: a shared
+  /// room's listed peers and the ones seen asking, a mirrored room's owner.
+  /// Named in a `404 m:try` so a third station finds a holder (12.9).
+  List<String> roomPeers(String group) {
+    if (!_hostsRooms) return const [];
+    final meta = _rooms[_base(group)];
+    if (meta == null) return const [];
+    if (meta['mirrored'] == true) {
+      final o = _base('${meta['owner'] ?? ''}');
+      return o.isEmpty ? const [] : [o];
+    }
+    if (meta['shared'] != true) return const [];
+    return {
+      for (final x in meta['peers'] as List? ?? const []) '$x',
+      for (final x in meta['seen'] as List? ?? const []) '$x',
+    }.toList();
+  }
+
   /// Every (group, peer) this station keeps in step (XprsGroupMirror): a
   /// mirrored room with its owner, a shared room with each peer it lists or
   /// has seen asking.
