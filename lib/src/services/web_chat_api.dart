@@ -1198,12 +1198,11 @@ class WebChatApi {
     // Who may post an alert (t:warning, t:info) through this station: the
     // moderators and the administrator, or everyone (XPRS.md 10.10.2).
     'who_may_alert': 'moderators',
-    // HTML the page shows under its header to every visitor; the
-    // administrator's to write, a template until they do.
-    'banner': bannerDefault,
+    // HTML the page shows under its header to every visitor, the
+    // administrator's to write; empty, the page shows its own text.
+    'banner': '',
   };
 
-  static const String bannerDefault = '<strong>Welcome to this station.</strong> Operated by <em>your name</em> from <em>your town</em>. Local chat, alerts, posts and a forum for the area it reaches.';
   static const int maxBannerChars = 4000;
 
   Map<String, Object> get settings {

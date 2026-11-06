@@ -117,7 +117,7 @@ void main() {
       'local_private': false,
       'who_may_post': 'local',
       'who_may_alert': 'moderators',
-      'banner': WebChatApi.bannerDefault,
+      'banner': '',
     });
     // The banner is the administrator's HTML, bounded.
     expect((await act(a, lan, {'action': 'set', 'session': s,
