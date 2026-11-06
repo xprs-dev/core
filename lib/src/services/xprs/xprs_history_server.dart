@@ -57,6 +57,14 @@ class XprsHistoryServer {
   /// images). Set by the host; null means no exemptions.
   bool Function(String shaHex)? freelyServed;
 
+  /// Is [group]'s record this station's hosted room, and may [asker] have
+  /// it (XPRS.md 10.10.1: a hosted room never leaves the station unless it
+  /// is shared)? Null: not a room here, served as any group's traffic is.
+  /// False: a room, and not theirs: its rows are left out, and an ask that
+  /// names it is answered 404. True: a shared room's peer, unmetered for it.
+  /// Set by the host from the web chat API's rooms.
+  bool? Function(String group, String asker)? hostedRoom;
+
   static const int knownPerHour = 6;
   static const int strangerPerHour = 2;
   static const int globalPerHour = 12;
@@ -231,7 +239,18 @@ class XprsHistoryServer {
     // refused after the second. The host says which digests those are.
     final freely = cmd == 'file' &&
         (freelyServed?.call(xprsFileShaOf(p['file'] ?? '') ?? '') ?? false);
-    if (!selfIsAsking && !freely && !_budgetAllows(from, now)) {
+    // An ask naming a hosted room: only a peer the room is shared with
+    // (10.10.1). Theirs is a standing ask, not a stranger's, so not metered.
+    final onlyBase = _base(p['only'] ?? '');
+    final roomVerdict = cmd == 'history' && onlyBase.startsWith('X5')
+        ? hostedRoom?.call(onlyBase, from)
+        : null;
+    if (roomVerdict == false) {
+      _airControl(selfBase, from, cmdId, 404);
+      return;
+    }
+    final servingRoom = roomVerdict == true;
+    if (!selfIsAsking && !freely && !servingRoom && !_budgetAllows(from, now)) {
       refused429++;
       refusedBudget++;
       LogService.instance
@@ -285,7 +304,7 @@ class XprsHistoryServer {
         untilMs: untilMs,
         only: p['only'],
         types: _kinds(p) ?? XprsArchive.kXprsTalk.toList(),
-        ownOnly: _ownOnlyFor(from, selfBase: selfBase),
+        ownOnly: !servingRoom && _ownOnlyFor(from, selfBase: selfBase),
         // XPRS.md 12.1: mail is held for its addressee and never offered to
         // a third party. Without this a public archiver's page was twelve of
         // everybody's sealed DMs, and the asker's own mail competed with all
@@ -305,6 +324,14 @@ class XprsHistoryServer {
         return !own &&
             !xprsReachAdmits(reach, xprsBearerReach(r['bearer'] as String? ?? ''));
       });
+    // A hosted room's rows go to whom it is shared with and to nobody else
+    // (10.10.1), whatever else the ask matched.
+    if (hostedRoom != null) {
+      rows.removeWhere((r) {
+        final toc = _base(r['to'] as String? ?? '');
+        return toc.startsWith('X5') && hostedRoom!(toc, from) == false;
+      });
+    }
     answered++;
 
     if (rows.isEmpty) {
@@ -480,14 +507,29 @@ class XprsHistoryServer {
     final now = DateTime.now().millisecondsSinceEpoch;
     archive.flush(nowMs: now);
     final cmdId = xprsIdentifier(cmd);
+    // A hosted room on this lane as on the air (10.10.1): shared peers only.
+    final onlyBase = _base(cmd['only'] ?? '');
+    final roomVerdict = onlyBase.startsWith('X5') ? hostedRoom?.call(onlyBase, from) : null;
+    if (roomVerdict == false) {
+      return [
+        if (_result(selfBase, from, cmdId, 404) case final p?) p.encode()
+      ];
+    }
+    final servingRoom = roomVerdict == true;
     final rows = archive.query(
         sinceMs: xprsParseTs(cmd['since']),
         untilMs: xprsParseTs(cmd['until']) ?? (now + 1),
         only: cmd['only'],
         types: _kinds(cmd) ?? XprsArchive.kXprsTalk.toList(),
         limit: inlinePageSize + 1,
-        ownOnly: _ownOnlyFor(from, selfBase: selfBase),
+        ownOnly: !servingRoom && _ownOnlyFor(from, selfBase: selfBase),
         mailFor: from); // 12.1, as on every other lane
+    if (hostedRoom != null) {
+      rows.removeWhere((r) {
+        final toc = _base(r['to'] as String? ?? '');
+        return toc.startsWith('X5') && hostedRoom!(toc, from) == false;
+      });
+    }
     answered++;
     if (rows.isEmpty) {
       return [

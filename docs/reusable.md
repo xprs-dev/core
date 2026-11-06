@@ -38,6 +38,19 @@ folds them into the newest topics by last activity with a reply count
 listing a forum share one fold. Events (26) replace by title the same way a
 post does, so an events index would start here.
 
+### `XprsGroupMirror` — one group kept in step with a peer station
+
+A standing `cmd:history only:<X5> since:<mark>` to each (group, peer) pair
+the host names, 12.9.3's neighbour ask narrowed to one group: pages
+continued before the oldest row (11.2.1), the mark moved to the ask's own
+time on 200/404, a minute after news and doubling to ten while quiet, 429
+honoured; an act parked for want of its signer's key makes it ask the peers
+for that identity (`XprsGroups.onUnknownSigner`). Every send and clock is a seam. The web chat API supplies the
+pairs (`mirrorPairs`) and the serving gate the history server consults
+(`roomServable`, via `XprsHistoryServer.hostedRoom`). Anything else that
+should keep a bounded record in step between two stations, a category of
+events, a place's notices, is the same shape with a different `only:`.
+
 ### Holding a split packet until it verifies — `WebChatApi._postPart`
 
 A split plain packet is signed once, on its last part, over the whole

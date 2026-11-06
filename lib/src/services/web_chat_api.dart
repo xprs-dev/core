@@ -47,17 +47,19 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
+import 'package:reticulum/reticulum.dart' show NostrCrypto;
 
 import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
+import 'xprs/xprs_group_mirror.dart' show MirrorPair;
 import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_parts.dart';
 import 'xprs/xprs_sig.dart';
 import 'web_chat_forum.dart';
-import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsScope, XprsScope;
+import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsNowTs, xprsScope, XprsScope;
 
 /// The keys of the rooms a station hosts (XPRS.md 10.10.1): the host's store.
 class WebChatRoomKeys {
@@ -130,6 +132,10 @@ class WebChatApi {
 
   /// Air a wire this station signed (its own moderation acts).
   final void Function(String wire)? publish;
+
+  /// The host's hook to ask a shared room's peers now (XprsGroupMirror.poke):
+  /// the administrator pressed Sync, or just mirrored a room.
+  void Function(String group)? onSync;
 
   /// Hosted rooms (10.10.1): their keys, filing a packet without airing it,
   /// and reading a room's rows back. All three, or no hosted rooms.
@@ -747,6 +753,22 @@ class WebChatApi {
     });
   }
 
+  /// File the room's `t:identity` (10.1), signed with its own key.
+  void _roomIdentity(String call, String name) {
+    final scalar = roomKeys!.scalar(call);
+    final pub = keyOf(call);
+    if (scalar == null || pub == null) return;
+    final npub = NostrCrypto.encodeNpub(HEX.encode(pub));
+    final nick = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final p = XprsPacket.parse('t:identity f:$call ts:${xprsNowTs(now().millisecondsSinceEpoch)} '
+        'k:$npub${nick.isEmpty ? '' : ' nick:$nick'}');
+    if (p == null) return;
+    keep!(xprsSign(p, scalar).encode());
+  }
+
   /// Sign [body] as [room] (the station holds its key) and file it.
   String? _roomSign(String room, String body) {
     final scalar = roomKeys!.scalar(room);
@@ -783,8 +805,14 @@ class WebChatApi {
       'about': meta['about'] ?? '',
       'kind': meta['kind'] ?? 'chat',
       'visibility': meta['visibility'],
-      // Sharing with other stations (10.10.1) is not implemented yet.
+      // Sharing with other stations (10.10.1): the peers it lists, and the
+      // ones that asked for it and were answered.
       'shared': meta['shared'] == true,
+      if (meta['shared'] == true) ...{
+        'peers': [for (final x in meta['peers'] as List? ?? const []) '$x'],
+        'seen': [for (final x in meta['seen'] as List? ?? const []) '$x'],
+      },
+      if (meta['mirrored'] == true) ...{'mirrored': true, 'owner': meta['owner']},
       'posting': meta['posting'],
       'role': role,
       if (role == 'invited' && who != null) ...{
@@ -865,6 +893,10 @@ class WebChatApi {
         'created': now().millisecondsSinceEpoch,
       };
       _saveRooms(rooms);
+      // The room's own announcement first (10.1): a station that mirrors the
+      // room learns its key from the record itself, ahead of the acts the
+      // key signed, which nothing verifies without it.
+      _roomIdentity(call, name);
       // The administrator moderates the room too: offered, and accepted by
       // their own signature in the page (10.3.1).
       final admin = adminCall;
@@ -872,9 +904,62 @@ class WebChatApi {
       return _roomListFor(session, call);
     }
     final call = _base('${b['call'] ?? ''}');
+    if (action == 'mirror') {
+      // A room another station holds (10.10.1, shared): this station keeps a
+      // copy under the owner's record and never signs as the room.
+      final owner = _base('${b['owner'] ?? ''}');
+      if (!call.startsWith('X5') || !_callRe.hasMatch(call)) {
+        return no(400, "call is the room's X5 callsign");
+      }
+      if (!_callRe.hasMatch(owner) || owner == _station || owner == call) {
+        return no(400, 'owner is the station that holds the room');
+      }
+      if (rooms.containsKey(call)) return no(409, 'already a room here');
+      final name = clean(b['name'], 32);
+      rooms[call] = {
+        'name': name.isEmpty ? call : name,
+        'about': clean(b['about'], 120),
+        'kind': kind ?? 'forum',
+        'visibility': visibility ?? 'public',
+        'posting': visibility == 'private' ? 'members' : (posting ?? 'anyone'),
+        'mirrored': true,
+        'owner': owner,
+        'created': now().millisecondsSinceEpoch,
+      };
+      _saveRooms(rooms);
+      onSync?.call(call);
+      return _roomListFor(session, call);
+    }
     final meta = rooms[call];
     if (meta == null) return no(404, 'no such room');
     switch (action) {
+      case 'share':
+        if (meta['mirrored'] == true) return no(400, 'a mirrored room is shared by its owner');
+        final shared = b['shared'] == true;
+        final peers = <String>[
+          for (final x in b['peers'] is List ? b['peers'] as List : const [])
+            if (_callRe.hasMatch(_base('$x')) && _base('$x') != _station) _base('$x'),
+        ];
+        if (shared && meta['visibility'] == 'private' && peers.isEmpty) {
+          return no(400, 'a private room is shared with named stations');
+        }
+        meta['shared'] = shared;
+        meta['peers'] = peers.take(16).toList();
+        if (!shared) meta.remove('seen');
+        rooms[call] = meta;
+        _saveRooms(rooms);
+        return _roomListFor(session, call);
+      case 'unmirror':
+        if (meta['mirrored'] != true) return no(400, 'not a mirrored room');
+        rooms.remove(call);
+        _saveRooms(rooms);
+        return _roomList(session);
+      case 'sync':
+        if (meta['mirrored'] != true && meta['shared'] != true) {
+          return no(400, 'not a shared room');
+        }
+        onSync?.call(call);
+        return _roomListFor(session, call);
       case 'update':
         if (b.containsKey('name')) {
           final name = clean(b['name'], 32);
@@ -911,7 +996,59 @@ class WebChatApi {
         return _roomListFor(session, call);
     }
     return no(400,
-        'action must be create, update, close, add, appoint or remove');
+        'action must be create, update, close, add, appoint, remove, share, mirror, unmirror or sync');
+  }
+
+  /// May [group]'s rows be served to [asker] over `cmd:history` (10.10.1)?
+  /// Null: not a room here. False: a room not shared with them. True: a
+  /// shared room's listed peer, anybody for a public room shared with no
+  /// list, or the owner of a room this station mirrors. An unlisted asker a
+  /// public room answered is remembered (bounded), so the room asks them back.
+  bool? roomServable(String group, String asker) {
+    if (!_hostsRooms) return null;
+    final rooms = _rooms;
+    final call = _base(group);
+    final meta = rooms[call];
+    if (meta == null) return null;
+    final a = _base(asker);
+    if (a.isEmpty || a == _station) return false;
+    if (meta['mirrored'] == true) return a == _base('${meta['owner'] ?? ''}');
+    if (meta['shared'] != true) return false;
+    final peers = [for (final x in meta['peers'] as List? ?? const []) '$x'];
+    if (peers.contains(a)) return true;
+    if (peers.isNotEmpty || meta['visibility'] == 'private') return false;
+    final seen = [for (final x in meta['seen'] as List? ?? const []) '$x'];
+    if (!seen.contains(a)) {
+      seen.add(a);
+      meta['seen'] = seen.length > 16 ? seen.sublist(seen.length - 16) : seen;
+      rooms[call] = meta;
+      _saveRooms(rooms);
+    }
+    return true;
+  }
+
+  /// Every (group, peer) this station keeps in step (XprsGroupMirror): a
+  /// mirrored room with its owner, a shared room with each peer it lists or
+  /// has seen asking.
+  List<MirrorPair> mirrorPairs() {
+    if (!_hostsRooms) return const [];
+    final out = <MirrorPair>[];
+    for (final e in _rooms.entries) {
+      final meta = e.value;
+      if (meta['mirrored'] == true) {
+        final owner = _base('${meta['owner'] ?? ''}');
+        if (owner.isNotEmpty) out.add(MirrorPair(group: e.key, peer: owner));
+      } else if (meta['shared'] == true) {
+        final peers = <String>{
+          for (final x in meta['peers'] as List? ?? const []) '$x',
+          for (final x in meta['seen'] as List? ?? const []) '$x',
+        };
+        for (final p in peers) {
+          out.add(MirrorPair(group: e.key, peer: p));
+        }
+      }
+    }
+    return out;
   }
 
   WebChatReply _roomListFor(String session, String call) {

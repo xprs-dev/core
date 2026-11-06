@@ -130,9 +130,17 @@ void main() {
     final call = r.json['room'] as String;
     expect(call, startsWith('X5'));
     expect(groups.rosterOf(call).roles[call], XprsRole.admin);
-    // The administrator is offered the room's moderator role, signed by the room.
-    expect(kept.single, contains('f:$call d:$call'));
-    expect(kept.single, contains('grant:X1ALIC role:mod'));
+    // The room announces itself (10.1), signed by its own key, so a mirror
+    // learns the key from the record; then the administrator is offered the
+    // room's moderator role, signed by the room.
+    expect(kept, hasLength(2));
+    final ident = XprsPacket.parse(kept.first)!;
+    expect(ident.type, 'identity');
+    expect(ident['f'], call);
+    expect(ident['nick'], 'block-c');
+    expect(xprsVerify(ident, keys[call]), XprsSigState.verified);
+    expect(kept.last, contains('f:$call d:$call'));
+    expect(kept.last, contains('grant:X1ALIC role:mod'));
     expect(received.where((w) => w.contains(call)), isEmpty,
         reason: 'a hosted room is never aired (10.10.1)');
   });
@@ -306,6 +314,73 @@ void main() {
       await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:${(await rooms(a, s)).single['offer']} accept:mod', _alice));
       await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} revoke:X1CARO', _alice));
       expect((await send(a, 't:blog f:X1CARO d:$call ts:${ts(2)} title:t n:1/2 m:a')).status, 403);
+    });
+  });
+
+  group('sharing a room between stations (XPRS.md 10.10.1)', () {
+    test('the owner shares with named peers; they are served and asked back', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Radio',
+          'kind': 'forum', 'visibility': 'public', 'posting': 'anyone'})).json['room'] as String;
+      expect(a.roomServable(call, 'X3MIRR'), false, reason: 'not shared: never served');
+      expect(a.roomServable('X5NONE', 'X3MIRR'), isNull, reason: 'not a room here');
+      expect(a.mirrorPairs(), isEmpty);
+      final r = await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': call,
+          'shared': true, 'peers': ['x3mirr', 'X3STAT', 'bad!']});
+      expect(r.status, 200);
+      final j = (r.json['rooms'] as List).single;
+      expect(j['shared'], true);
+      expect(j['peers'], ['X3MIRR'], reason: 'a callsign each, never this station');
+      expect(a.roomServable(call, 'X3MIRR'), true);
+      expect(a.roomServable(call, 'X3OTHR'), false, reason: 'listed peers only');
+      expect(a.mirrorPairs().map((p) => '${p.group}|${p.peer}'), ['$call|X3MIRR']);
+      // Shared with no list: any station, and one that asked is remembered.
+      await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': call, 'shared': true, 'peers': []});
+      expect(a.roomServable(call, 'X3ANYY'), true);
+      expect(a.mirrorPairs().map((p) => p.peer), ['X3ANYY']);
+      expect(((await rooms(a, s)).single)['seen'], ['X3ANYY']);
+      await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': call, 'shared': false});
+      expect(a.roomServable(call, 'X3ANYY'), false);
+      expect(a.mirrorPairs(), isEmpty);
+      // A private room is shared with named stations only.
+      await post(a, '/api/rooms', {'action': 'update', 'session': s, 'call': call, 'visibility': 'private'});
+      expect((await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': call, 'shared': true, 'peers': []})).status, 400);
+    });
+
+    test('a mirror keeps another station\'s room: filed, never signed as the room', () async {
+      final a = make();
+      final s = await claim(a);
+      final synced = <String>[];
+      a.onSync = synced.add;
+      expect((await post(a, '/api/rooms', {'action': 'mirror', 'session': s, 'call': 'X1NOTG', 'owner': 'X3OWNR'})).status, 400);
+      expect((await post(a, '/api/rooms', {'action': 'mirror', 'session': s, 'call': 'X5F0RM', 'owner': 'X3STAT'})).status, 400,
+          reason: 'not from ourselves');
+      final r = await post(a, '/api/rooms', {'action': 'mirror', 'session': s, 'call': 'X5F0RM', 'owner': 'X3OWNR', 'name': 'Radio'});
+      expect(r.status, 200);
+      expect(r.json['room'], 'X5F0RM');
+      final j = (r.json['rooms'] as List).single;
+      expect(j['mirrored'], true);
+      expect(j['owner'], 'X3OWNR');
+      expect(j['kind'], 'forum');
+      expect(synced, ['X5F0RM'], reason: 'asked for at once');
+      expect(a.roomServable('X5F0RM', 'X3OWNR'), true, reason: 'the copy is served back to its owner');
+      expect(a.roomServable('X5F0RM', 'X3OTHR'), false);
+      expect(a.mirrorPairs().map((p) => '${p.group}|${p.peer}'), ['X5F0RM|X3OWNR']);
+      expect((await post(a, '/api/rooms', {'action': 'share', 'session': s, 'call': 'X5F0RM', 'shared': true})).status, 400);
+      expect((await post(a, '/api/rooms', {'action': 'add', 'session': s, 'call': 'X5F0RM', 'member': 'X1BOBB'})).status, 409,
+          reason: 'no key: the mirror never grants');
+      // A visitor posts in the copy; the owner's next ask pulls it.
+      keys['X5F0RM'] = keys['X1CARO']!; // any key: the roster is empty, the room open
+      final b = await session(a, 'X1BOBB', _bob);
+      final comment = _signed('t:blog f:X1BOBB d:X5F0RM ts:${ts()} r:5f2c1a m:from the mirror', _bob);
+      expect((await send(a, comment)).status, 200);
+      expect(kept, contains(comment));
+      expect((await rooms(a, b)).single['call'], 'X5F0RM');
+      expect((await post(a, '/api/rooms', {'action': 'sync', 'session': s, 'call': 'X5F0RM'})).status, 200);
+      expect(synced, hasLength(2));
+      expect((await post(a, '/api/rooms', {'action': 'unmirror', 'session': s, 'call': 'X5F0RM'})).status, 200);
+      expect(await rooms(a, s), isEmpty);
     });
   });
 
