@@ -276,8 +276,10 @@ class WebChatApi {
         'tabs': ['chat', 'traffic', 'alerts'],
         // Who may post an alert through this station (10.10.2).
         'alerts': settings['who_may_alert'],
-        // The administrator's HTML under the page's header.
-        'banner': settings['banner'],
+        // What the page defines for itself and the administrator set
+        // (`page_<name>` settings): the banner, its CSS, its logo.
+        for (final e in settings.entries)
+          if (e.key.startsWith(pagePrefix)) e.key.substring(pagePrefix.length): e.value,
         // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
         if (_hostsRooms) 'rooms': true,
         'config': false,
@@ -1198,18 +1200,22 @@ class WebChatApi {
     // Who may post an alert (t:warning, t:info) through this station: the
     // moderators and the administrator, or everyone (XPRS.md 10.10.2).
     'who_may_alert': 'moderators',
-    // HTML the page shows under its header to every visitor, the
-    // administrator's to write; empty, the page shows its own text.
-    'banner': '',
   };
 
-  static const int maxBannerChars = 4000;
+  /// A setting the page defines for itself (`page_banner`, `page_css`,
+  /// `page_logo`, whatever it adds next): a string the station stores as
+  /// given and reports under `page` on /api/services. The page owns its
+  /// meaning; the station owns nothing but the bound.
+  static const String pagePrefix = 'page_';
+  static const int maxPageSettingChars = 8000;
 
   Map<String, Object> get settings {
     final s = _json(_kSettings);
     return {
       for (final e in settingDefaults.entries)
         e.key: (s[e.key] ?? e.value) as Object,
+      for (final e in s.entries)
+        if (e.key.startsWith(pagePrefix) && e.value is String) e.key: e.value as Object,
     };
   }
 
@@ -1347,13 +1353,18 @@ class WebChatApi {
                 return no(400, '$k must be moderators or everyone');
               }
               next[k] = v as String;
-            case 'banner':
-              if (v is! String || v.length > maxBannerChars) {
-                return no(400, '$k is HTML of at most $maxBannerChars characters');
-              }
-              next[k] = v;
             default:
-              return no(400, 'unknown setting $k');
+              if (!k.startsWith(pagePrefix) || k.length == pagePrefix.length) {
+                return no(400, 'unknown setting $k');
+              }
+              if (v is! String || v.length > maxPageSettingChars) {
+                return no(400, '$k is text of at most $maxPageSettingChars characters');
+              }
+              if (v.isEmpty) {
+                next.remove(k);
+              } else {
+                next[k] = v;
+              }
           }
         }
         _save(_kSettings, jsonEncode(next));

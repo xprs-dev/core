@@ -113,17 +113,24 @@ void main() {
         'settings': {'colour': 'red'}})).status, 400);
     final r = await act(a, lan, {'action': 'set', 'session': s,
         'settings': {'local_private': false, 'who_may_post': 'local'}});
-    expect(r.json['settings'], {
-      'local_private': false,
-      'who_may_post': 'local',
-      'who_may_alert': 'moderators',
-      'banner': '',
-    });
-    // The banner is the administrator's HTML, bounded.
+    expect(r.json['settings'],
+        {'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators'});
+    // What the page defines for itself (page_<name>): a bounded string,
+    // stored as given, reported under page on /api/services, gone when emptied.
     expect((await act(a, lan, {'action': 'set', 'session': s,
-        'settings': {'banner': 'x' * (WebChatApi.maxBannerChars + 1)}})).status, 400);
+        'settings': {'page_css': 'x' * (WebChatApi.maxPageSettingChars + 1)}})).status, 400);
     expect((await act(a, lan, {'action': 'set', 'session': s,
-        'settings': {'banner': '<b>Hill</b>'}})).json['settings']['banner'], '<b>Hill</b>');
+        'settings': {'page_': 'x'}})).status, 400);
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'page_banner': 1}})).status, 400);
+    final set = await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'page_banner': '<b>Hill</b>', 'page_css': '.logo{color:red}'}});
+    expect(set.json['settings']['page_banner'], '<b>Hill</b>');
+    final page = (await a.handle('GET', '/api/services', {}, '', peer: lan)).json['page'] as Map;
+    expect(page['banner'], '<b>Hill</b>');
+    expect(page['css'], '.logo{color:red}');
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'page_css': ''}})).json['settings'].containsKey('page_css'), false);
     // The admin manages from anywhere once claimed (the internet included).
     final far = await session(a, 'X1ALIC', _alice, internet);
     expect((await act(a, internet, {'action': 'set', 'session': far,
