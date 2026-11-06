@@ -32,6 +32,7 @@ import '../log_service.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_archive_policy.dart';
+import 'xprs_mesh_policy.dart';
 import 'xprs_climate.dart';
 import 'xprs_groups.dart';
 import 'xprs_gossip.dart';
@@ -245,6 +246,23 @@ class XprsIngest {
   /// PreferencesService up to four times per packet. Every writer calls
   /// [reloadPolicy]; nothing else may reach for a preference in this file.
   static XprsArchivePolicy policy = const XprsArchivePolicy();
+
+  /// What this station keeps from afar and from whom (xprs_mesh_policy.dart),
+  /// as one immutable snapshot the host replaces when the administrator's
+  /// settings change. The default keeps everything, as before.
+  static XprsMeshPolicy mesh = const XprsMeshPolicy(
+      reachAlerts: XprsReach.global, reachPosts: XprsReach.global);
+  static int meshDropped = 0;
+
+  /// The verdict for the digipeater and the history server: may [p], heard
+  /// on [bearer], go on from here?
+  static bool meshAdmits(XprsPacket p, String bearer) =>
+      xprsMeshAdmits(p,
+          bearer: _archiveBearer(bearer),
+          policy: mesh,
+          self: XprsArchive.instance.selfCallsign,
+          askedFor: askedFor?.call(p) ?? false) ==
+      XprsMeshVerdict.keep;
 
   static void reloadPolicy() {
     final p = PreferencesService.instanceSync;
@@ -462,7 +480,18 @@ class XprsIngest {
             // replays a roster from those packets and nothing else: keep none
             // and the station forgets every group it is in on restart.
             XprsGroups.instance.concernsUs(p, _base(selfCallsign));
-    final shelf = xprsAdmitTier(
+    // The administrator's reach for this kind, and the mesh of record
+    // (xprs_mesh_policy.dart): a record from further than the station keeps,
+    // or from a stranger's station in named mode, is read and goes no further.
+    final meshVerdict = xprsMeshAdmits(p,
+        bearer: _archiveBearer(bearer),
+        policy: mesh,
+        self: _base(selfCallsign),
+        askedFor: askedFor?.call(p) ?? false);
+    if (meshVerdict == XprsMeshVerdict.drop) meshDropped++;
+    final shelf = meshVerdict == XprsMeshVerdict.drop
+        ? null
+        : xprsAdmitTier(
       tier: _shelfFor(_base(from), forUs, p),
       type: p.type,
       publication: _isPublication(p),

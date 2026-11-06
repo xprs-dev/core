@@ -76,6 +76,10 @@ class XprsDigipeater {
   /// which is the same routine the 36.8.1 release uses. One rule, one place.
   final String? Function(String wire) relayable;
 
+  /// Set by the host: may [p], heard on [bearer], be repeated at all? Null
+  /// admits everything.
+  static bool Function(XprsPacket p, String bearer)? admits;
+
   /// Whether [bearer] may repeat at all right now — the operator's switch per
   /// medium, and the API's `only:`/`disable:` test hook.
   bool Function(String bearer) enabled;
@@ -121,6 +125,9 @@ class XprsDigipeater {
   /// Does the 13.2.1 cancel and the 13.1/13.2 decision in that order, because
   /// a packet that cancels ours must not then be queued by us.
   void heard(XprsPacket p, String wire, String bearer) {
+    // The administrator's reach and mesh of record (xprs_mesh_policy.dart):
+    // what the station would not keep, it does not repeat.
+    if (!(admits?.call(p, bearer) ?? true)) return;
     final id = xprsIdentifier(p);
     if (id.isEmpty || bearer.isEmpty) return;
     _sweep();

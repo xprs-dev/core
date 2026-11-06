@@ -113,8 +113,27 @@ void main() {
         'settings': {'colour': 'red'}})).status, 400);
     final r = await act(a, lan, {'action': 'set', 'session': s,
         'settings': {'local_private': false, 'who_may_post': 'local'}});
-    expect(r.json['settings'],
-        {'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators'});
+    expect(r.json['settings'], {
+      'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators',
+      'reach_alerts': 'regional', 'reach_posts': 'regional', 'reach_chat': 'global',
+      'follow': '', 'peers_mode': 'open', 'peers': '',
+    });
+    // The mesh settings: a reach word, a mode, and lists of callsigns.
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'reach_alerts': 'far'}})).status, 400);
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'peers': 'X3TOWN not-a-call'}})).status, 400);
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'follow': 'npub1notlongenough'}})).status, 400);
+    Map<String, Object>? told;
+    a.onSettings = (m) => told = m;
+    final npub = 'npub1${'q' * 58}';
+    final mesh = await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'reach_alerts': 'global', 'peers_mode': 'named', 'peers': ' x3town, X3HUB ',
+                     'follow': 'X1ALIC $npub'}});
+    expect(mesh.json['settings']['peers'], 'X3TOWN X3HUB');
+    expect(mesh.json['settings']['follow'], 'X1ALIC $npub');
+    expect(told?['peers_mode'], 'named');
     // What the page defines for itself (page_<name>): a bounded string,
     // stored as given, reported under page on /api/services, gone when emptied.
     expect((await act(a, lan, {'action': 'set', 'session': s,

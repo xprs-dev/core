@@ -458,8 +458,15 @@ class XprsHistoryServer {
   /// devices always see everything.
   static bool _ownOnlyFor(String from, {required String selfBase}) {
     if (_base(from) == _base(selfBase)) return false;
+    // A named mesh of record (xprs_mesh_policy.dart): a station not on the
+    // list is a stranger, served this station's own publications only.
+    if (trusted != null && !trusted!(_base(from))) return true;
     return !(PreferencesService.instanceSync?.xprsPublicArchiver ?? false);
   }
+
+  /// Set by the host in `peers_mode: named`: is [call] a trusted peer?
+  /// Null means every station in reach is.
+  static bool Function(String call)? trusted;
 
   /// Asks heard in the last hour, for the Archiver screen.
   int get asksLastHour {

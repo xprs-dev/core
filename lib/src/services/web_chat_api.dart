@@ -57,6 +57,7 @@ import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_parts.dart';
+import 'xprs/xprs_mesh_policy.dart';
 import 'xprs/xprs_sig.dart';
 import 'web_chat_forum.dart';
 import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsNowTs, xprsScope, XprsScope;
@@ -1200,7 +1201,23 @@ class WebChatApi {
     // Who may post an alert (t:warning, t:info) through this station: the
     // moderators and the administrator, or everyone (XPRS.md 10.10.2).
     'who_may_alert': 'moderators',
+    // The mesh (docs/plan-mesh-trust.md, xprs_mesh_policy.dart): how far
+    // away a kind may come from and still be kept; whose words are fetched
+    // from anywhere; which stations this one exchanges records with.
+    'reach_alerts': 'regional',
+    'reach_posts': 'regional',
+    'reach_chat': 'global',
+    'follow': '',
+    'peers_mode': 'open',
+    'peers': '',
   };
+
+  /// Told after the administrator changed the settings, with the new map:
+  /// the host rebuilds what reads them on a hot path (the mesh policy).
+  void Function(Map<String, Object> settings)? onSettings;
+
+  static final RegExp _meshCallRe = RegExp(r'^X[1-5][A-Z0-9]{2,5}$');
+  static final RegExp _npubRe = RegExp(r'^npub1[a-z0-9]{58}$');
 
   /// A setting the page defines for itself (`page_banner`, `page_css`,
   /// `page_logo`, whatever it adds next): a string the station stores as
@@ -1353,6 +1370,30 @@ class WebChatApi {
                 return no(400, '$k must be moderators or everyone');
               }
               next[k] = v as String;
+            case 'reach_alerts':
+            case 'reach_posts':
+            case 'reach_chat':
+              if (!XprsMeshPolicy.kinds.contains(v)) {
+                return no(400, '$k must be local, regional or global');
+              }
+              next[k] = v as String;
+            case 'peers_mode':
+              if (!const {'open', 'named'}.contains(v)) {
+                return no(400, '$k must be open or named');
+              }
+              next[k] = v as String;
+            case 'peers':
+            case 'follow':
+              if (v is! String) return no(400, '$k is a list of callsigns');
+              final list = xprsCallsignList(v);
+              final max = k == 'peers' ? 32 : 64;
+              if (list.length > max) return no(400, '$k holds at most $max');
+              for (final c in list) {
+                final ok = _meshCallRe.hasMatch(c) ||
+                    (k == 'follow' && _npubRe.hasMatch(c.toLowerCase()));
+                if (!ok) return no(400, '$k: $c is not a callsign${k == 'follow' ? ' or an npub' : ''}');
+              }
+              next[k] = list.map((c) => c.startsWith('NPUB1') ? c.toLowerCase() : c).join(' ');
             default:
               if (!k.startsWith(pagePrefix) || k.length == pagePrefix.length) {
                 return no(400, 'unknown setting $k');
@@ -1368,6 +1409,7 @@ class WebChatApi {
           }
         }
         _save(_kSettings, jsonEncode(next));
+        onSettings?.call(settings);
         return _adminState(session, peer);
     }
     return no(400, 'action must be claim, release, set, appoint, dismiss or lift');
