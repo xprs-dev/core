@@ -12,6 +12,9 @@
  *   GET  /api/xprs/history  PUBLIC rows only (no `d:`, no mail, no group)
  *   POST /api/xprs/send     a finished wire the visitor signed in the browser
  *   GET/POST /api/admin     the station's administrator and their settings
+ *   GET/POST /api/xprs/file/<ref>  a file by its content reference (XPRS.md
+ *                           7.7): read when held and public, stored when the
+ *                           bytes hash to the reference
  *
  * The administrator is a visitor who proved their key (a session, below).
  * A station with none lets the first such visitor ON ITS OWN NETWORK claim
@@ -47,11 +50,13 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
-import 'package:reticulum/reticulum.dart' show NostrCrypto;
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:reticulum/reticulum.dart' show MediaArchive, NostrCrypto;
 
 import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
+import 'xprs/xprs_files.dart' show XprsFileServer, xprsFileSha, xprsFileExt;
 import 'xprs/xprs_group_mirror.dart';
 import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
@@ -77,7 +82,19 @@ class WebChatRoomKeys {
 class WebChatReply {
   final int status;
   final Map<String, dynamic> json;
-  const WebChatReply(this.status, this.json);
+
+  /// A body that is not JSON (a file by reference): its bytes, its type and
+  /// the headers that go with it. The socket half writes these instead.
+  final Uint8List? bytes;
+  final String? contentType;
+  final Map<String, String> headers;
+  const WebChatReply(this.status, this.json)
+      : bytes = null,
+        contentType = null,
+        headers = const {};
+  const WebChatReply.bytes(this.status, Uint8List this.bytes, String this.contentType,
+      {this.headers = const {}})
+      : json = const {};
 }
 
 class WebChatApi {
@@ -166,6 +183,8 @@ class WebChatApi {
     this.roomKeys,
     this.keep,
     this.roomRows,
+    this.fileStore,
+    this.fileMax = defaultFileMax,
   })  : now = now ?? DateTime.now,
         isLocalPeer = isLocalPeer ?? isPrivateAddress;
 
@@ -189,6 +208,24 @@ class WebChatApi {
     // A call for help is never refused (10.7), whoever asks through here.
     'sos',
   };
+
+  /// Files by reference (XPRS.md 7.7): the content-addressed store they are
+  /// read from and kept in, or null for a host that serves none. Generic: the
+  /// same store every file lane ends in, not a blog's or a page's.
+  final MediaArchive? Function()? fileStore;
+
+  /// The largest file a visitor may store, and read back, through this page.
+  /// A walk-up page is not a bulk lane: larger files travel by `cmd:file`.
+  final int fileMax;
+  static const int defaultFileMax = 2 * 1024 * 1024;
+  static const Map<String, String> fileTypes = {
+    'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+    'gif': 'image/gif', 'webp': 'image/webp', 'avif': 'image/avif',
+    'bmp': 'image/bmp', 'txt': 'text/plain; charset=utf-8',
+    'md': 'text/markdown; charset=utf-8', 'pdf': 'application/pdf',
+    'mp3': 'audio/mpeg', 'ogg': 'audio/ogg', 'mp4': 'video/mp4',
+  };
+  static const String filePath = '/api/xprs/file/';
 
   static const int maxLimit = 200;
   static const int defaultLimit = 30;
@@ -235,7 +272,7 @@ class WebChatApi {
 
   Future<WebChatReply> handle(
       String method, String path, Map<String, String> query, String body,
-      {String peer = ''}) async {
+      {String peer = '', Uint8List? raw}) async {
     if (peer.isNotEmpty && visitors.add(peer)) onVisitors?.call(visitors.length);
     if (method == 'GET' && path == '/api/services') return _services();
     if (method == 'GET' && path == '/api/xprs/history') {
@@ -262,6 +299,11 @@ class WebChatApi {
       final wire = method == 'GET' ? (query['wire'] ?? '') : _wireOf(body);
       return _send(wire, peer);
     }
+    if (path.startsWith(filePath) && fileStore != null) {
+      final ref = path.substring(filePath.length);
+      if (method == 'GET' || method == 'HEAD') return _fileGet(ref);
+      if (method == 'POST') return _filePut(ref, raw, peer);
+    }
     return const WebChatReply(404, {'ok': false, 'error': 'not here'});
   }
 
@@ -272,6 +314,9 @@ class WebChatApi {
       // The station's callsign, which the page shows next to its title.
       'station': selfCallsign(),
       'features': <String, bool>{},
+      // Files by reference (GET/POST /api/xprs/file/<ref>).
+      if (fileStore != null)
+        'file': {'get': true, 'put': true, 'max': fileMax},
       'serve': <String>[],
       'page': {
         'tabs': ['chat', 'traffic', 'alerts'],
@@ -419,6 +464,62 @@ class WebChatApi {
       return Uri.decodeQueryComponent(b.substring(5));
     }
     return b;
+  }
+
+  /// The bytes of a held file, to anyone when its audience is public (§11.2:
+  /// the hash is public, the bytes are not). A visitor proves nothing here, so
+  /// a private file is refused, as an unsigned `cmd:file` is.
+  WebChatReply _fileGet(String ref) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    final sha = _refSha(ref);
+    if (sha == null) return no(400, 'not a file reference');
+    final store = fileStore!();
+    final meta = store?.getMeta(sha);
+    if (store == null || meta == null) return no(404, 'not held');
+    final gate = XprsFileServer.instance.authorize;
+    if (gate != null && !gate(sha, '', sigVerified: false)) {
+      return no(403, 'not a public file');
+    }
+    if (meta.size > fileMax) return no(413, 'larger than this page serves');
+    final bytes = store.get(sha);
+    if (bytes == null) return no(404, 'not held');
+    return WebChatReply.bytes(200, bytes,
+        fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream',
+        headers: {
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'ETag': '"$sha"',
+          'X-Content-Type-Options': 'nosniff',
+        });
+  }
+
+  /// Keep a file a visitor sends, if its bytes hash to the reference it is
+  /// sent under. Kept as a stranger's deposit, which the store may evict.
+  WebChatReply _filePut(String ref, Uint8List? raw, String peer) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    final sha = _refSha(ref);
+    if (sha == null) return no(400, 'not a file reference');
+    if (raw == null || raw.isEmpty) return no(400, 'no bytes');
+    if (raw.length > fileMax) return no(413, 'larger than this station keeps');
+    if (!_allowed(peer)) return no(429, 'slow down');
+    if (crypto.sha256.convert(raw).toString() != sha) {
+      return no(400, 'the bytes do not match the reference');
+    }
+    final store = fileStore!();
+    if (store == null) return no(503, 'no file store yet');
+    store.putHosted(raw, xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref),
+        originPubHex: '', tier: 2);
+    return WebChatReply(200, {'ok': true, 'ref': ref, 'size': raw.length});
+  }
+
+  /// The SHA-256 hex a reference names, when it has the 7.7 shape.
+  static String? _refSha(String ref) {
+    if (!RegExp(r'^([A-Za-z0-9_-]{43}|[0-9a-fA-F]{64})\.[a-z0-9]{1,8}$')
+        .hasMatch(ref)) {
+      return null;
+    }
+    return xprsFileSha(ref);
   }
 
   bool _allowed(String peer) {

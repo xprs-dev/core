@@ -81,6 +81,11 @@ class MeshService {
   MeshService._();
   static final MeshService instance = MeshService._();
 
+  /// The content-addressed store every file lane ends in, once the mesh is
+  /// up (null before). Hosts hand it to whatever serves files by reference.
+  MediaArchive? get media => _media;
+  MediaArchive? _media;
+
   // Politeness (docs/mesh.md §7): the beacon interval adapts to channel
   // load — quiet streets get chatty beacons, saturated streets get
   // presence-only whispers. _beaconInterval is the quiet-street floor.
@@ -467,6 +472,7 @@ class MeshService {
         XprsCatchup.instance.start(cs);
         final mediaArchive = MediaArchive.forDirectory(
             wappsDataStorage(prefs).getAbsolutePath(''));
+        _media = mediaArchive;
         // The one entry point for getting a file's bytes: it checks the
         // archive first, picks the lane by size and reachability, reports
         // progress. Every lane ends in this archive, so onPut is where "the

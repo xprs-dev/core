@@ -282,3 +282,14 @@ cached for 30 seconds. `syncSet()` is the few of them this station asks
 the mirror's pairs, the mesh policy's snapshot) asks these two, never the
 settings directly.
 
+
+- **Files by reference over HTTP** (`WebChatApi`, `/api/xprs/file/<ref>`):
+  GET serves the bytes of a held public file from the injected `fileStore`
+  (the mesh's `MeshService.instance.media`, the store every file lane ends
+  in), gated by `XprsFileServer.instance.authorize` as an unsigned caller;
+  POST keeps bytes that hash to the reference as a stranger's deposit
+  (`putHosted`, tier 2). `WebChatReply.bytes` is the non-JSON reply both
+  socket halves write. The app's share server and the server edition read
+  the request body the same way, so that reading (raw bytes for the file
+  route, text otherwise, one cap each) is a candidate to move here as one
+  `*_io.dart` helper.
