@@ -14,6 +14,7 @@
  * it gets exactly the Reticulum lane's treatment: no sighting, archived only
  * under the mailbox-declaration rule (36.3).
  */
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -21,11 +22,78 @@ import 'dart:typed_data';
 import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../mesh/mesh_service.dart';
+import '../mesh/mesh_store.dart';
+import 'xprs_archive.dart';
 import 'xprs_history_server.dart';
 import 'xprs_id.dart';
+import 'xprs_mailbox.dart';
 import '../receive/packet_gateway.dart';
 import 'xprs_packet.dart';
 import 'xprs_sig.dart';
+import 'xprs_vocab.dart';
+
+/// The stations on an open text connection to THIS station right now, by
+/// callsign (XPRS.md 13.0.2: "over an open connection the archiver
+/// DELIVERS"). A peer is registered when a line it sent VERIFIES against the
+/// key we hold for its `f:` — an unsigned claim on a socket would otherwise
+/// collect somebody else's mail — and forgotten when the socket closes.
+class XprsLinePeers {
+  XprsLinePeers._();
+  static final XprsLinePeers instance = XprsLinePeers._();
+
+  final Map<String, _LinePeer> _peers = {};
+
+  bool get any => _peers.isNotEmpty;
+
+  bool isConnected(String callsign) =>
+      _peers.containsKey(callsign.trim().toUpperCase());
+
+  bool isConnectedOn(String callsign, String label) =>
+      _peers[callsign.trim().toUpperCase()]?.label == label;
+
+  /// One wire down the peer's socket; false when it is not connected.
+  bool sendTo(String callsign, String wire) {
+    final p = _peers[callsign.trim().toUpperCase()];
+    if (p == null) return false;
+    try {
+      p.reply(wire);
+      p.tx++;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void register(String callsign, String label, void Function(String) reply) {
+    final c = callsign.trim().toUpperCase();
+    if (c.isEmpty) return;
+    _peers[c] = _LinePeer(c, label, reply, DateTime.now());
+    LogService.instance.add('XPRS/tcp: $c is on $label (line peer)');
+  }
+
+  void unregister(String label) {
+    _peers.removeWhere((_, p) => p.label == label);
+  }
+
+  List<Map<String, Object?>> get status => [
+        for (final p in _peers.values)
+          {
+            'callsign': p.callsign,
+            'label': p.label,
+            'since': p.since.toIso8601String(),
+            'tx': p.tx,
+          }
+      ];
+}
+
+class _LinePeer {
+  _LinePeer(this.callsign, this.label, this.reply, this.since);
+  final String callsign;
+  final String label;
+  final void Function(String) reply;
+  final DateTime since;
+  int tx = 0;
+}
 
 class XprsTcp {
   XprsTcp._();
@@ -37,6 +105,10 @@ class XprsTcp {
 
   static int served = 0;
 
+  /// Who this archiver is, for a bench that has no MeshService running
+  /// (the mail relay simulation's seam, same shape as XprsMailbox's).
+  static String Function()? selfCallsign;
+
   /// Attach a plain-text connection: returns the sink the TCP server feeds
   /// every chunk into. Matches RnsTcpServerInterface.onPlainText.
   static void Function(Uint8List data) attach(Socket socket, String label) {
@@ -44,15 +116,29 @@ class XprsTcp {
     final buf = StringBuffer();
     LogService.instance
         .add('XPRS/tcp: $label connected (${local ? "lan" : "internet"})');
+    // The server destroys the socket on error or close and tells nobody;
+    // `done` is what we can watch.
+    unawaited(socket.done.then((_) => XprsLinePeers.instance.unregister(label),
+        onError: (_) => XprsLinePeers.instance.unregister(label)));
+    var askedIdentity = false;
 
     void handleLine(String line) {
       final wire = line.trim();
       if (wire.isEmpty) return;
       final p = XprsPacket.parse(wire);
       if (p == null) return;
-      final selfCall = MeshService.instance.tableCallsign.trim();
+      final selfCall =
+          (selfCallsign?.call() ?? MeshService.instance.tableCallsign).trim();
       if (selfCall.isEmpty) return;
       final selfBase = NostrCrypto.bareCallsign(selfCall);
+
+      // `q:mail` is answered on this socket below; said to the history
+      // server FIRST, because the funnel it feeds answers the same ask over
+      // the air a moment later, and the asker got two.
+      if (p.type == 'request' &&
+          (p['q'] ?? '').split(',').map((w) => w.trim()).contains('mail')) {
+        XprsHistoryServer.instance.markAnswered(xprsIdentifier(p));
+      }
 
       final bytes = Uint8List.fromList(utf8.encode(wire));
       if (local) {
@@ -68,6 +154,34 @@ class XprsTcp {
         try {
           socket.add(utf8.encode('$w\n'));
         } catch (_) {}
+      }
+
+      // Who is on this socket (13.0.2). A signed line that verifies against
+      // the key we hold for its author puts that author on the socket; from
+      // then on what we hold for it, and what arrives for it, goes here.
+      final from = NostrCrypto.bareCallsign(p['f'] ?? '');
+      if (from.isNotEmpty &&
+          from != selfBase &&
+          p.has('sig') &&
+          !XprsLinePeers.instance.isConnectedOn(from, label)) {
+        final key = XprsArchive.instance.keyResolver?.call(from);
+        if (xprsVerify(p, key) == XprsSigState.verified) {
+          XprsLinePeers.instance.register(from, label, reply);
+          // Deliver what we hold for it now, not at the next minute sweep.
+          unawaited(XprsMailbox.instance.sweepHeld());
+        } else if (key == null && !askedIdentity) {
+          // A signed line from a station whose key we do not hold: ask for
+          // the binding on the socket (section 18.1), once per connection.
+          // A phone sends it unasked at line-up; a station that does not is
+          // asked, and the answer lands in the archive through the funnel
+          // above, so the NEXT signed line registers it.
+          askedIdentity = true;
+          var ask = XprsPacket.parse('t:request f:$selfBase d:$from '
+              'ts:${xprsNowTs()} q:identity');
+          final d = xprsProfileScalar();
+          if (ask != null && d != null) ask = xprsSign(ask, d);
+          if (ask != null) reply(ask.encode());
+        }
       }
 
       // A reachability test is answered on the socket that asked (section 7's
@@ -89,7 +203,34 @@ class XprsTcp {
         return;
       }
 
+      // `q:mail only:X` (9.12.3): how much mail do we hold for X? Answered on
+      // the socket, zero included — "nothing for you" and "did not hear
+      // you" are different facts.
+      if (p.type == 'request' &&
+          (to.isEmpty || to == selfBase) &&
+          (p['q'] ?? '').split(',').map((w) => w.trim()).contains('mail')) {
+        final only = NostrCrypto.bareCallsign(p['only'] ?? from);
+        if (only.isEmpty) return;
+        final n = MeshStore.instance.ready
+            ? MeshStore.instance.heldWiresFor(only).length
+            : 0;
+        var obs = XprsPacket.parse('t:observation f:$selfBase d:$from '
+            'ts:${xprsNowTs()} s:mail mail:$n only:$only');
+        if (obs != null) {
+          final d = xprsProfileScalar();
+          if (d != null) obs = xprsSign(obs, d);
+          reply(obs.encode());
+        }
+        return;
+      }
+
       // The whole reason this port serves text: catching up from the spool.
+      // Served here, inline, and marked answered so the paced replay the
+      // funnel would also start (the same ask reaches the history server
+      // through the internet lane) does not send the page a second time.
+      if ((p['cmd'] ?? '') == 'history') {
+        XprsHistoryServer.instance.markAnswered(xprsIdentifier(p));
+      }
       final page =
           XprsHistoryServer.instance.serveInline(p, selfBase: selfBase);
       if (page.isNotEmpty) {

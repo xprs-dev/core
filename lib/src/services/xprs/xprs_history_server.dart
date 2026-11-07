@@ -12,7 +12,7 @@
  * presence beacons, and token buckets per requester (a station that declared
  * us, or whose key we hold, gets more than a stranger; another device of OURS
  * is unmetered — section 3.1). The replay bytes are byte-identical to what
- * was stored: no via:, no re-sign — an indexer passes on the author's packet,
+ * was stored: no via:, no re-sign — an archiver passes on the author's packet,
  * and the signature that travels with it is the author's (36.2).
  *
  * Commands arrive through XprsIngest ([install] hooks its onCommand). A
@@ -25,6 +25,7 @@ import 'dart:typed_data';
 
 import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
+import '../mesh/mesh_store.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_files.dart';
@@ -103,6 +104,12 @@ class XprsHistoryServer {
       };
 
   final Map<String, int> _answeredIds = {};
+
+  /// A command answered elsewhere (inline on a text socket, xprs_tcp.dart)
+  /// is not answered again here when the funnel hands it over.
+  void markAnswered(String id) {
+    _answeredIds[id] = DateTime.now().millisecondsSinceEpoch;
+  }
   final Map<String, List<int>> _asksBy = {};
   final List<int> _asksGlobal = [];
   Timer? _chain;
@@ -192,6 +199,29 @@ class XprsHistoryServer {
     if (p.type == 'request' &&
         (p['q'] ?? '').split(',').map((w) => w.trim()).contains('pos')) {
       _onPosAsk(p, selfBase: selfBase);
+      return;
+    }
+    // `q:mail` (9.12.3): how much mail do we hold for `only:`? Zero is
+    // answered too: "nothing for you" and "did not hear you" differ.
+    if (p.type == 'request' &&
+        (p['q'] ?? '').split(',').map((w) => w.trim()).contains('mail')) {
+      final from = _base(p['f'] ?? '');
+      if (from.isEmpty || from == selfBase) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final id = xprsIdentifier(p);
+      _answeredIds.removeWhere((_, t) => now - t > answeredWindow.inMilliseconds);
+      if (_answeredIds.containsKey(id)) return;
+      _answeredIds[id] = now;
+      final only = _base(p['only'] ?? from);
+      final n = MeshStore.instance.ready
+          ? MeshStore.instance.heldWiresFor(only).length
+          : 0;
+      final ans = _signed('t:observation f:$selfBase d:$from ts:${_ts()} '
+          's:mail mail:$n only:$only');
+      if (ans != null) {
+        unawaited(_air('xprs-mail:$from', ans.encode(),
+            const Duration(seconds: 30), to: from));
+      }
       return;
     }
     final cmd = p['cmd'] ?? '';

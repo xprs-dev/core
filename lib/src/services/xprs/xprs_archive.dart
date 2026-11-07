@@ -655,7 +655,7 @@ class XprsArchive {
     // same way the byte cap below already exempts it: this station IS its own
     // archive, and a log that deletes what you said and what was said to you
     // is not one. Everyone else's traffic still ages out — that is the
-    // indexer's job and where the storage actually goes.
+    // archiver's job and where the storage actually goes.
     //
     // Own `observation` beacons are the exception to the exemption: one every
     // 300 s is ~100k rows a year, and a beacon is telemetry rather than
@@ -957,6 +957,19 @@ class XprsArchive {
     final db = _db;
     if (db == null) return 0;
     return db.select('SELECT COUNT(*) c FROM mailbox_decl').first['c'] as int;
+  }
+
+  /// How many stations are cared for here: distinct declarers with an active
+  /// declaration that NAMES this station (12.9.5). This is the archiver's
+  /// load, and what sets its `room:` (13.0.2).
+  int caredFor({int? nowMs}) {
+    final db = _db;
+    if (db == null) return 0;
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    return db.select(
+        'SELECT COUNT(DISTINCT fromc) c FROM mailbox_decl WHERE pos>=0 '
+        'AND (since IS NULL OR since<=?) AND (until IS NULL OR until>=?)',
+        [now, now]).first['c'] as int;
   }
 
   // ── reading the spool ─────────────────────────────────────────────────────

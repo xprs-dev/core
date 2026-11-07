@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:reticulum/reticulum.dart';
 
 import '../log_service.dart';
+import '../power_state.dart';
 import '../i18n/core_i18n.dart';
 import '../i18n/format.dart';
 import '../preferences_service.dart';
@@ -16,7 +17,7 @@ import 'pointer_sync_service.dart';
 import 'package:xprs_core/src/platform/core_host.dart';
 import 'package:xprs_core/src/services/notifications/notification.dart';
 
-/// The host side of the **Indexer** and **Archiver** wapps (docs/NOSTR.md).
+/// The host side of the **Archiver** and **Archiver** wapps (docs/NOSTR.md).
 ///
 /// Two roles a person GRANTS, INSPECTS and REVOKES — which is the whole reason
 /// these exist. Until now the role was inferred from the charger and the WiFi:
@@ -53,7 +54,7 @@ class NodeRoleApi {
   RateRing get queryRing {
     if (_queryRing == null) {
       _queryRing = RateRing.decode(
-          PreferencesService.instanceSync?.indexerQueryRing ?? '');
+          PreferencesService.instanceSync?.archiverQueryRing ?? '');
       _lastQueryTotal = _rns.queryTotals;
       _sampler ??= Timer.periodic(const Duration(minutes: 1), (_) => _sample());
     }
@@ -61,7 +62,7 @@ class NodeRoleApi {
   }
 
   /// The serve rings. Lazily restored from prefs on first read, then advanced by
-  /// the same one-minute sampler that feeds the Indexer's.
+  /// the same one-minute sampler that feeds the Archiver's.
   ({RateRing req, RateRing bw}) get serveRings {
     if (_reqRing == null || _bwRing == null) {
       final p = PreferencesService.instanceSync;
@@ -85,7 +86,7 @@ class NodeRoleApi {
       _lastQueryTotal = total;
       if (delta > 0) ring.add(delta);
       // Persist at most once a minute — the encode is a short string either way.
-      p?.indexerQueryRing = ring.encode();
+      p?.archiverQueryRing = ring.encode();
     }
 
     final q = _rns.serveQuota;
@@ -103,7 +104,7 @@ class NodeRoleApi {
     }
   }
 
-  // ── Indexer ───────────────────────────────────────────────────────────────
+  // ── Archiver ───────────────────────────────────────────────────────────────
 
   /// What this device is doing for the network, and at whose invitation.
   ///
@@ -118,15 +119,17 @@ class NodeRoleApi {
 
     return jsonEncode({
       // What we are, and why.
-      'volunteer': p?.indexerVolunteer ?? 'auto',
-      'serving': _rns.isIndexer,
+      'volunteer': p?.archiverVolunteer ?? 'auto',
+      'powerProfile': PowerState.instance.profileMode,
+      'profile': PowerState.instance.profile.value.name,
+      'serving': _rns.isArchiver,
       'role': role == null
           ? 'leaf'
-          : (role.isIndexer ? 'indexer' : 'leaf'),
+          : (role.isArchiver ? 'archiver' : 'leaf'),
       'wide': role?.wide ?? false,
       'uptimeSec': _rns.uptimeSeconds,
 
-      // The pointer map. An Indexer holds ADDRESSES, never other people's posts
+      // The pointer map. An Archiver holds ADDRESSES, never other people's posts
       // — the number that matters is how many it can answer for, not how many
       // megabytes it is sitting on.
       'pointers': dht?.storedKeys ?? 0,
@@ -147,16 +150,16 @@ class NodeRoleApi {
       'syncApplied': PointerSyncService.instance.totalApplied,
       'syncRemoved': PointerSyncService.instance.totalRemoved,
       'lastSyncMs': PointerSyncService.instance.lastSyncMs,
-      'topics': p?.indexerTopics ?? const <String>[],
+      'topics': p?.archiverTopics ?? const <String>[],
       // The same list as a plain CSV, because the wapp seeds a TEXT FIELD with
       // it — and a text field holding "[]" is a bug wearing quotes.
-      'topicsCsv': (p?.indexerTopics ?? const <String>[]).join(', '),
+      'topicsCsv': (p?.archiverTopics ?? const <String>[]).join(', '),
       'wideActive': role?.wide ?? false,
 
       // The network as NUMBERS. Individual peers are not listed anywhere —
       // there could be millions, and a list of them tells the owner nothing a
       // count cannot.
-      'indexersKnown': _rns.relayDirectory.indexers().length,
+      'archiversKnown': _rns.relayDirectory.archivers().length,
       'peersKnown': _rns.relayDirectory.entries().length,
 
       // The hardware, so the wapp can show a one-line summary and link into
@@ -170,15 +173,15 @@ class NodeRoleApi {
     });
   }
 
-  /// The other Indexers this device knows, as people-widget sections: capacity,
+  /// The other Archivers this device knows, as people-widget sections: capacity,
   /// uptime, hop distance, and whether we sync with them.
   String peersJson() {
     final entries = _rns.relayDirectory.entries();
     final now = DateTime.now().millisecondsSinceEpoch;
 
-    List<Map<String, dynamic>> rows(bool indexers) => [
+    List<Map<String, dynamic>> rows(bool archivers) => [
           for (final e in entries)
-            if (e.announcement.isIndexer == indexers)
+            if (e.announcement.isArchiver == archivers)
               {
                 'id': e.idHex.substring(0, 12),
                 'title': e.idHex.substring(0, 12).toUpperCase(),
@@ -191,7 +194,7 @@ class NodeRoleApi {
     final leaves = rows(false);
     return jsonEncode([
       {
-        'title': 'Indexers (${ix.length})',
+        'title': 'Archivers (${ix.length})',
         'items': ix,
       },
       {
@@ -236,14 +239,20 @@ class NodeRoleApi {
         // auto       — serve when plugged in (the old, inferred behaviour)
         // always     — serve regardless, because the owner said so
         if (!const ['off', 'auto', 'always'].contains(value)) return -1;
-        p.indexerVolunteer = value;
+        p.archiverVolunteer = value;
         p.hostEnabled = value != 'off';
         p.hostCapacityGated = value == 'auto';
         _rns.applyHostingSettings();
-        LogService.instance.add('indexer: volunteer=$value');
+        LogService.instance.add('archiver: volunteer=$value');
+        return 0;
+      case 'powerProfile':
+        // auto — a station while plugged in; station / normal — regardless.
+        if (!const ['auto', 'station', 'normal'].contains(value)) return -1;
+        PowerState.instance.setProfileMode(value);
+        LogService.instance.add('power: profile mode=$value');
         return 0;
       case 'topics':
-        _rns.setIndexerTopics(
+        _rns.setArchiverTopics(
             value.isEmpty ? const [] : value.split(','));
         return 0;
       default:

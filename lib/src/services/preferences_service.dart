@@ -24,6 +24,7 @@ class PreferencesService {
     return _pending ??= () async {
       final service = PreferencesService._();
       service._prefs = await CoreHost.openPreferences();
+      await service._migrateArchiverKeys();
       // The editor's AI tab is gone from the core; its settings, an API key
       // among them, were stored in plaintext. Nothing reads them any more.
       for (final k in const ['ai.providerId', 'ai.baseUrl', 'ai.model',
@@ -382,7 +383,7 @@ class PreferencesService {
   int get xprsArchiveMaxDays => _prefs.getInt('xprs.archiveMaxDays') ?? 365;
   set xprsArchiveMaxDays(int v) => _prefs.setInt('xprs.archiveMaxDays', v);
 
-  /// Favorite indexers: callsigns (in preference order) this station
+  /// Favorite archivers: callsigns (in preference order) this station
   /// declares as its mailboxes with a signed `t:mailbox hold:` (XPRS 13.12).
   /// Empty = no declaration is aired.
   String get xprsMailboxHold => _prefs.getString('xprs.mailboxHold') ?? '';
@@ -468,6 +469,59 @@ class PreferencesService {
 
   bool get xprsArchiverAuto => _prefs.getBool('xprs.archiverAuto') ?? true;
   set xprsArchiverAuto(bool v) => _prefs.setBool('xprs.archiverAuto', v);
+
+  // ── The line lane (XPRS.md 13.0.2) ───────────────────────────────────────
+
+  /// Our own `dial:`: where THIS station answers a TCP connection under the
+  /// one-port rule, announced on the observation beacons while it is a
+  /// public archiver. Empty = not reachable that way (a phone, a box behind
+  /// a NAT it does not control).
+  String get xprsDial => _prefs.getString('xprs.dial') ?? '';
+  set xprsDial(String v) => _prefs.setString('xprs.dial', v.trim());
+
+  /// `room:`: whether this archiver takes new stations. Yes until 12.9.5's
+  /// load reading, or the operator, says no.
+  bool get xprsRoom => _prefs.getBool('xprs.room') ?? true;
+  set xprsRoom(bool v) => _prefs.setBool('xprs.room', v);
+
+  /// How many stations this archiver will take care of (12.9.5): past this
+  /// many active declarations naming it, it announces `room:no`. The
+  /// operator's ceiling, by their disk and bandwidth.
+  int get xprsRoomStations => _prefs.getInt('xprs.roomStations') ?? 500;
+  set xprsRoomStations(int v) => _prefs.setInt('xprs.roomStations', v);
+
+  /// The `dial:` each archiver announced, by callsign, remembered across
+  /// restarts: the station table is in memory, and a pocket device hears an
+  /// archiver's announcement only while attached to a transport (13.0.2).
+  Map<String, String> get xprsArchiverDials {
+    final raw = _prefs.getString('xprs.archiverDials') ?? '';
+    if (raw.isEmpty) return const {};
+    try {
+      final m = jsonDecode(raw);
+      if (m is Map) {
+        return {
+          for (final e in m.entries)
+            if (e.value is String && (e.value as String).isNotEmpty)
+              e.key.toString().toUpperCase(): e.value as String,
+        };
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  /// Remember (or, with null, forget) where [callsign] answers.
+  void rememberArchiverDial(String callsign, String? dial) {
+    final c = callsign.trim().toUpperCase();
+    if (c.isEmpty) return;
+    final m = Map<String, String>.of(xprsArchiverDials);
+    if (dial == null || dial.trim().isEmpty) {
+      if (m.remove(c) == null) return;
+    } else {
+      if (m[c] == dial.trim()) return;
+      m[c] = dial.trim();
+    }
+    _prefs.setString('xprs.archiverDials', jsonEncode(m));
+  }
 
   Future<void> setXprsServeHistory(bool v) async {
     await _prefs.setBool('xprs.serveHistory', v);
@@ -618,12 +672,42 @@ class PreferencesService {
   String get nodeRadios => _prefs.getString('node.radios') ?? '';
   set nodeRadios(String v) => _prefs.setString('node.radios', v);
 
-  // Does the owner volunteer this device as an Indexer? 'off' | 'auto' (serve
+  // The role used to be called "indexer" (renamed 2026-11-06: an archiver
+  // indexes, but what it does for others is archive). Installs that chose a
+  // value under the old keys keep it: copy once, then the old keys are gone.
+  Future<void> _migrateArchiverKeys() async {
+    const moves = {
+      'indexer.volunteer': 'archiver.volunteer',
+      'indexer.queryRing': 'archiver.queryRing',
+      'indexer.topics': 'archiver.topics',
+    };
+    for (final e in moves.entries) {
+      if (!_prefs.containsKey(e.key)) continue;
+      if (!_prefs.containsKey(e.value)) {
+        // The store is typed: a list (queryRing, topics) or a word.
+        List<String>? list;
+        String? word;
+        try {
+          list = _prefs.getStringList(e.key);
+        } catch (_) {}
+        if (list == null) {
+          try {
+            word = _prefs.getString(e.key);
+          } catch (_) {}
+        }
+        if (list != null) await _prefs.setStringList(e.value, list);
+        if (word != null) await _prefs.setString(e.value, word);
+      }
+      await _prefs.remove(e.key);
+    }
+  }
+
+  // Does the owner volunteer this device as an Archiver? 'off' | 'auto' (serve
   // when plugged in — the inferred default) | 'always'. Revoking must be as easy
   // as granting, or it was never really granted.
-  String get indexerVolunteer =>
-      _prefs.getString('indexer.volunteer') ?? 'auto';
-  set indexerVolunteer(String v) => _prefs.setString('indexer.volunteer', v);
+  String get archiverVolunteer =>
+      _prefs.getString('archiver.volunteer') ?? 'auto';
+  set archiverVolunteer(String v) => _prefs.setString('archiver.volunteer', v);
 
   // ── The Archiver (docs/NOSTR.md) ─────────────────────────────────────────
   //
@@ -662,10 +746,10 @@ class PreferencesService {
   bool get archiveMirrorSmall => _prefs.getBool('archive.mirrorSmall') ?? true;
   set archiveMirrorSmall(bool v) => _prefs.setBool('archive.mirrorSmall', v);
 
-  // The Indexer dashboard's requests-per-hour ring (RateRing.encode()). A
+  // The Archiver dashboard's requests-per-hour ring (RateRing.encode()). A
   // dashboard that resets to zero on every restart teaches the owner nothing.
-  String get indexerQueryRing => _prefs.getString('indexer.queryRing') ?? '';
-  set indexerQueryRing(String v) => _prefs.setString('indexer.queryRing', v);
+  String get archiverQueryRing => _prefs.getString('archiver.queryRing') ?? '';
+  set archiverQueryRing(String v) => _prefs.setString('archiver.queryRing', v);
 
   // The Archiver dashboard's 48-hour graphs: requests served and bytes served,
   // one bucket per hour (RateRing.encode()). Persisted, because a graph that
@@ -676,14 +760,14 @@ class PreferencesService {
   String get archiveBwRing => _prefs.getString('archive.bwRing') ?? '';
   set archiveBwRing(String v) => _prefs.setString('archive.bwRing', v);
 
-  // Topics this indexer volunteers for ("what I'm comfortable indexing").
+  // Topics this archiver volunteers for ("what I'm comfortable indexing").
   // Empty = wide when the hardware allows it: index everything heard.
-  List<String> get indexerTopics =>
-      _prefs.getStringList('indexer.topics') ?? const [];
-  set indexerTopics(List<String> v) =>
-      _prefs.setStringList('indexer.topics', v);
+  List<String> get archiverTopics =>
+      _prefs.getStringList('archiver.topics') ?? const [];
+  set archiverTopics(List<String> v) =>
+      _prefs.setStringList('archiver.topics', v);
 
-  // One cursor per indexer we sync pointers with: (epoch, seq). Eight bytes and
+  // One cursor per archiver we sync pointers with: (epoch, seq). Eight bytes and
   // a name, persisted — because the whole reason the cursor is a POSITION and
   // not a time is that a node with no clock can still resume after a reboot.
   String get pointerCursors => _prefs.getString('dht.pointerCursors') ?? '';
@@ -1064,6 +1148,14 @@ class PreferencesService {
   // device connects to as a client; override host/port to point at your own.
   bool get rnsAutoStart => _prefs.getBool('rns.autoStart') ?? true;
   set rnsAutoStart(bool v) => _prefs.setBool('rns.autoStart', v);
+
+  // The power profile (PowerState.profile, docs/performance.md 8.20):
+  //   auto     — a station while plugged in, a normal app on battery
+  //   station  — always a station (the user's always-on machine, or a phone
+  //              whose owner wants it so whatever the charger says)
+  //   normal   — never a station, plugged in or not
+  String get powerProfile => _prefs.getString('power.profile') ?? 'auto';
+  set powerProfile(String v) => _prefs.setString('power.profile', v);
 
   String get rnsBootstrapHost =>
       _prefs.getString('rns.bootstrapHost') ?? 'rns.wisco.network';

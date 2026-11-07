@@ -28,6 +28,8 @@
  * only after the receiving station verified the bytes itself and sent FILE_OK.
  */
 import 'dart:async';
+
+import 'package:xprs_core/src/platform/core_host.dart';
 import 'dart:typed_data';
 
 import 'package:reticulum/reticulum.dart';
@@ -271,6 +273,10 @@ class XprsFileServer {
     _inFlight[held.shaHex] = _Served(cmdId, from, selfBase);
     LogService.instance
         .add('XPRS: cmd:file ${held.name} (${held.size}B) -> $from (202)');
+    // A far requester fetches over a Reticulum link to us (the internet
+    // middle, 11.2.2), which needs us announced through a hub: a phone on
+    // battery brings one up for the transfer and drops it after.
+    unawaited(CoreHost.requestHub('serve:${held.shaHex.substring(0, 8)}', const Duration(minutes: 15)));
     air(202);
     return 202;
   }
@@ -369,7 +375,7 @@ class XprsFileServer {
   bool holds(String shaHex) => _lookUp(shaHex.toLowerCase()) != null;
 
   /// "Who else holds this hash" — the seeder index (§12.9.2, Phase E): the
-  /// sources table and, on an indexer, the provider-record/DHT lookup. Returns
+  /// sources table and, on an archiver, the provider-record/DHT lookup. Returns
   /// callsigns to name in a `q:have` miss's `m:try`. Null = nothing indexed.
   List<String> Function(String shaHex)? holderIndex;
 
@@ -526,6 +532,9 @@ class XprsFileFetch {
     // The completer guards against a double-complete, so the loser is a no-op.
     final net = internetFetch;
     if (net != null) {
+      // The internet middle needs a hub; a phone on battery holds one up
+      // for the fetch (RnsSession) and lets it go when the bytes are in.
+      unawaited(CoreHost.requestHub('fetch:${sha.substring(0, 8)}', const Duration(minutes: 15)));
       unawaited(net(sha, ext, archiver, _destDir[sha]).then((path) {
         if (path != null) _completeFromInternet(sha, path);
       }).catchError((_) => null));

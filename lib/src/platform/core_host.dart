@@ -70,6 +70,14 @@ class CoreHost {
   /// reader, so it takes the battery-friendly cadence.
   static bool Function() anyoneLooking = () => false;
 
+  /// Hold a public hub up for [reason] for [hold] (a phone on battery has
+  /// none; a station's are up anyway). Idempotent: callers ask at the moment
+  /// they know a transfer or a directed wire needs the shared transport, and
+  /// never check first. The app wires it to RnsSession; the default does
+  /// nothing, which is right for a server, whose hubs are always up.
+  static Future<void> Function(String reason, Duration hold) requestHub =
+      (_, __) async {};
+
   /// The device's shared, content-addressed media archive, or null while
   /// storage is not ready (or on the web). Default: none.
   static MediaArchive? Function() mediaArchive = () => null;

@@ -33,7 +33,10 @@ import '../../connections/lora/lora_connection.dart';
 import '../../profile/profile_service.dart';
 import '../log_service.dart';
 import '../preferences_service.dart';
+import '../power_state.dart';
 import '../reticulum/rns_service.dart';
+import 'xprs_line.dart';
+import 'xprs_tcp.dart';
 import 'xprs_ingest.dart';
 import 'xprs_lan.dart';
 import 'xprs_airtime.dart';
@@ -77,6 +80,57 @@ enum XprsSendResult {
 
   /// The medium said no to this frame.
   refused,
+}
+
+/// The line lane (XPRS.md 13.4, 13.0.2): a DIRECTED wire to a station on an
+/// open text socket — an archiver this station dialled, or a peer that
+/// dialled it — goes down that socket, one packet per line. Nothing
+/// undirected belongs here: a socket has one station on the other end, and
+/// the fan-out asks every bearer, so an undirected wire is simply not ours.
+class _LineBearer extends XprsBearer {
+  @override
+  String get name => 'line';
+  @override
+  String get archiveBearer => 'rns'; // the internet lane, as the spool names it
+  @override
+  bool get shortRange => false;
+  @override
+  Future<bool> get active async =>
+      XprsLineLane.instance.anyConnected || XprsLinePeers.instance.any;
+  @override
+  Future<XprsSendResult> send(String wire,
+      {required int part,
+      String slot = 'status',
+      Duration? ttl,
+      bool datagram = false,
+      bool verbatim = false}) async {
+    final p = XprsPacket.parse(wire);
+    final dest = p?['d']?.trim().toUpperCase() ?? '';
+    if (dest.isEmpty) {
+      // An undirected wire is for everybody and a socket is for one station
+      // — except the two that make the socket WORK. The archiver puts a
+      // station on its socket only once a signed line verifies against a
+      // key it holds (XprsTcp), and a phone that met it only through this
+      // socket had given it no key: `t:identity` is the key and `t:mailbox`
+      // the declaration that admits our mail (12.9.5). Both go to every
+      // archiver we dialled; `queued`, not `sent`, so the radios air them
+      // too (a `sent` ends the fan-out).
+      final type = p?.type ?? '';
+      if (type != 'identity' && type != 'mailbox') {
+        return XprsSendResult.refused;
+      }
+      var n = 0;
+      for (final c in XprsLineLane.instance.clients) {
+        if (c.connected && c.send(wire)) n++;
+      }
+      return n > 0 ? XprsSendResult.queued : XprsSendResult.refused;
+    }
+    if (XprsLineLane.instance.sendTo(dest, wire) ||
+        XprsLinePeers.instance.sendTo(dest, wire)) {
+      return XprsSendResult.sent;
+    }
+    return XprsSendResult.refused;
+  }
 }
 
 abstract class XprsBearer {
@@ -214,6 +268,29 @@ class _ReticulumBearer implements XprsBearer {
     final bytes = Uint8List.fromList(utf8.encode(wire));
     final p = XprsPacket.parse(wire);
     final dest = p?['d']?.trim().toUpperCase() ?? '';
+    // A directed wire that reached this bearer was not taken by a socket or
+    // a radio: on a phone on battery that means the hub, which a session
+    // brings up for a while (RnsSession; a no-op for a station).
+    //
+    // Only MAIL is worth a hub. The first version asked for one on every
+    // directed wire, and the catch-up asks every known archiver at least
+    // every ten minutes, the hears report runs every five: the "hub on
+    // request" was a hub always on, with a reconnect every ten minutes on
+    // top (docs/performance.md 8.23). A message or a receipt opens a
+    // session; everything else rides a hub that is up anyway, a path the
+    // local bearers hold, or waits — a catch-up ask is asked again on its
+    // cadence, a deposit goes with the next session, and what is in a
+    // pocket is not lost by not being asked for right now.
+    if (dest.isNotEmpty &&
+        PowerState.instance.profile.value == PowerProfile.normal) {
+      final type = p?.type ?? '';
+      if (type == 'message' || type == 'receipt') {
+        unawaited(CoreHost.requestHub('directed:$dest', const Duration(minutes: 5)));
+      } else if (RnsService.instance.connectedHubs.isEmpty &&
+          !RnsService.instance.reachableByCallsign(dest)) {
+        return XprsSendResult.refused;
+      }
+    }
     // A group's own announcement (10.1) is undirected, so on this lane it is
     // an announce, and the hubs do not cross-forward those (above). Who needs
     // a group's name and picture is its members, and for a folder (10.2) the
@@ -272,6 +349,14 @@ class _ReticulumBearer implements XprsBearer {
             ? XprsSendResult.sent
             : XprsSendResult.queued;
       }
+      // Addressed to a station this node cannot name: no announce from it
+      // has ever been heard, so there is no destination to send to. It used
+      // to fall through to the announce below and answer `sent`, which the
+      // publisher took as done — the wire was filed as carried by `rns` and
+      // reached nobody, since the hubs do not cross-forward announces
+      // (above). `refused` is the truth, and it is what lets the fan-out,
+      // the custody and the archiver deposit keep carrying it.
+      return XprsSendResult.refused;
     }
     return await RnsService.instance.wappBroadcast('xprs', bytes)
         ? XprsSendResult.sent
@@ -486,6 +571,7 @@ class XprsPublisher {
   /// Replaceable for tests; order is presentation only (every active bearer
   /// is used).
   List<XprsBearer> bearers = [
+    _LineBearer(),
     _Ble5Bearer(),
     _LanBearer(),
     _ReticulumBearer(),
@@ -741,10 +827,19 @@ class XprsPublisher {
       return worst == XprsSendResult.sent;
     }
 
+    // A station on an open text socket (XPRS.md 13.0.2) is reached there
+    // first: the archiver we dialled, or a peer that dialled us. It is the
+    // cheapest lane there is and the one the archiver delivers on, so a
+    // caller's preference for a radio does not override it.
+    final want = dest.isNotEmpty &&
+            (XprsLineLane.instance.connectedTo(dest) ||
+                XprsLinePeers.instance.isConnected(dest))
+        ? 'line'
+        : prefer;
     var done = false;
     var preferTried = false;
-    if (prefer != null) {
-      final pick = bearers.where((b) => b.name == prefer);
+    if (want != null) {
+      final pick = bearers.where((b) => b.name == want);
       if (pick.isNotEmpty) {
         preferTried = true;
         done = await tryOne(pick.first);
@@ -755,7 +850,7 @@ class XprsPublisher {
       // LXMF handed to store-and-forward) is not `sent`, and used to send the
       // packet a second time on the same bearer: every chunk of a file went
       // out twice, 542 datagrams for 271 chunks.
-      if (preferTried && b.name == prefer) continue;
+      if (preferTried && b.name == want) continue;
       if (done) {
         report[b.name] = 'unused';
         continue;
@@ -771,8 +866,35 @@ class XprsPublisher {
   /// like one that did from inside this file — the send is fire-and-forget —
   /// so the two are counted, and /api/xprs/archiver reports them. Counters,
   /// not a line per packet (performance.md 8.10).
-  int deposited = 0, depositNoDest = 0;
+  int deposited = 0, depositNoDest = 0, depositedLine = 0;
   int _depositLogMs = 0;
+
+  /// Deposits a phone on battery could not place: no socket to an archiver
+  /// and no hub. Flushed by the next line coming up (MeshService._onLineUp)
+  /// or the next session (RnsSession). Bounded; the oldest goes first.
+  final List<(String, String)> _deferred = [];
+  static const int deferredMax = 64;
+  int get deferredDeposits => _deferred.length;
+
+  void _defer(String what, String wire) {
+    if (_deferred.any((e) => e.$2 == wire)) return;
+    _deferred.add((what, wire));
+    if (_deferred.length > deferredMax) _deferred.removeAt(0);
+  }
+
+  /// A socket or a hub arrived: place what was waiting. Whatever still has
+  /// nowhere to go is kept again by [depositArchivers] itself.
+  void flushDeferredDeposits() {
+    if (_deferred.isEmpty) return;
+    final batch = List.of(_deferred);
+    _deferred.clear();
+    for (final (what, wire) in batch) {
+      depositArchivers([wire], what: what);
+    }
+    LogService.instance.add(
+        'XPRS: ${batch.length} deferred deposit(s) placed, '
+        '${_deferred.length} still waiting');
+  }
 
   /// How one copy reaches one archiver. Null is the real thing (resolve the
   /// archiver's LXMF destination and send); a test injects it to see WHAT is
@@ -810,6 +932,24 @@ class XprsPublisher {
         if (send != null) {
           deposited++;
           send(call, w);
+          continue;
+        }
+        // The socket first (XPRS.md 13.0.2): the archiver we dialled takes
+        // the copy directly, and on a phone on battery this is the only way
+        // a deposit leaves at all. The deposit used to go straight to LXMF,
+        // which on that phone meant a path request on the radio, a failed
+        // delivery and a retry ladder, every five minutes.
+        if (XprsLineLane.instance.sendTo(call, w)) {
+          deposited++;
+          depositedLine++;
+          continue;
+        }
+        // No socket and no hub: kept for the next socket or session rather
+        // than asked of a Reticulum that has no path to give. Presence is
+        // not kept — an observation an hour late is a lie (12.1).
+        if (RnsService.instance.connectedHubs.isEmpty &&
+            PowerState.instance.profile.value == PowerProfile.normal) {
+          if (what != 'observation') _defer(what, w);
           continue;
         }
         final hex = RnsService.instance.lxmfDestForCallsign(call);
@@ -1004,23 +1144,15 @@ class XprsPublisher {
         .join(',');
     if (call.isEmpty || hold.isEmpty) return const {};
 
-    final now = DateTime.now().toUtc();
-    String two(int n) => n.toString().padLeft(2, '0');
-    final ts = '${now.year}-${two(now.month)}-${two(now.day)}_'
-        '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
-
-    var p = XprsPacket.parse(
-        't:mailbox f:${call.toUpperCase()} ts:$ts hold:$hold');
-    if (p == null || !p.fits) return const {};
-    final d = xprsProfileScalar();
-    if (d == null) {
-      LogService.instance.add(
-          'XPRS: mailbox declaration NOT aired — no signing key, and an '
-          'unsigned one must be ignored (13.12)');
+    final wire = mailboxWire(hold);
+    if (wire == null) {
+      if (xprsProfileScalar() == null) {
+        LogService.instance.add(
+            'XPRS: mailbox declaration NOT aired — no signing key, and an '
+            'unsigned one must be ignored (13.12)');
+      }
       return const {};
     }
-    p = xprsSign(p, d);
-    final wire = p.encode();
 
     // Its OWN slot. This used to fall through to the bearer-side default,
     // `status`, and a slot is a rotation key on BLE5 — one frame per slot — so
@@ -1088,16 +1220,48 @@ class XprsPublisher {
   /// an archiver that never shared a radio with us holds our `hears:` claim
   /// as a signature it cannot check, which 12.9.4 says feeds nothing.
   Future<void> depositIdentity() async {
+    final wire = ownIdentityWire();
+    if (wire != null) depositArchivers([wire], what: 'identity');
+  }
+
+  /// The signed key binding of section 9.3 for [call], as one wire, or null
+  /// with no signing key or a packet that does not fit. The ONE builder:
+  /// the airing, the deposit and the line-up handshake all send this.
+  String? identityWire(String call, String npub, {String? ts}) {
+    var p = XprsPacket.parse(
+        't:identity f:${call.toUpperCase()} ts:${ts ?? xprsNowTs()} k:$npub');
+    final d = xprsProfileScalar();
+    if (p == null || d == null) return null;
+    p = xprsSign(p, d);
+    return p.fits ? p.encode() : null;
+  }
+
+  /// [identityWire] for the active profile's own wire callsign, or null
+  /// (no profile, no npub, no key).
+  String? ownIdentityWire() {
     final profile = ProfileService.instance.activeProfile;
     final call = (profile?.wireCallsign ?? '').trim();
     final npub = (profile?.npub ?? '').trim();
+    if (call.isEmpty || !npub.startsWith('npub1')) return null;
+    return identityWire(call, npub);
+  }
+
+  /// The signed `t:mailbox hold:` declaration (13.12) naming [holdCsv], as
+  /// one wire, or null with no callsign, an empty list or no signing key.
+  String? mailboxWire(String holdCsv) {
+    final call =
+        (ProfileService.instance.activeProfile?.wireCallsign ?? '').trim();
+    final hold = holdCsv
+        .split(',')
+        .map((c) => c.trim().toUpperCase())
+        .where((c) => c.isNotEmpty)
+        .join(',');
+    if (call.isEmpty || hold.isEmpty) return null;
+    var p = XprsPacket.parse(
+        't:mailbox f:${call.toUpperCase()} ts:${xprsNowTs()} hold:$hold');
     final d = xprsProfileScalar();
-    if (call.isEmpty || npub.isEmpty || d == null) return;
-    var p = XprsPacket.parse('t:identity f:$call ts:${xprsNowTs()} k:$npub');
-    if (p == null) return;
-    p = xprsSign(p, d);
-    if (!p.fits) return;
-    depositArchivers([p.encode()], what: 'identity');
+    if (p == null || !p.fits || d == null) return null;
+    return xprsSign(p, d).encode();
   }
 
   Future<Map<String, String>> _publishIdentityAs(String call, String npub,
@@ -1107,18 +1271,15 @@ class XprsPublisher {
     final ts = '${now.year}-${two(now.month)}-${two(now.day)}_'
         '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
 
-    var p = XprsPacket.parse('t:identity f:$call ts:$ts k:$npub');
-    if (p == null) return const {};
-    final d = xprsProfileScalar();
-    if (d == null) {
-      LogService.instance.add(
-          'XPRS: identity NOT aired — no signing key (locked profile?), and '
-          'an unsigned identity binds nothing (9.3)');
+    final wire = identityWire(call, npub, ts: ts);
+    if (wire == null) {
+      if (xprsProfileScalar() == null) {
+        LogService.instance.add(
+            'XPRS: identity NOT aired — no signing key (locked profile?), and '
+            'an unsigned identity binds nothing (9.3)');
+      }
       return const {};
     }
-    p = xprsSign(p, d);
-    if (!p.fits) return const {};
-    final wire = p.encode();
 
     final air = await _fanOut([wire], slot: slot);
     final report = air.report;

@@ -293,3 +293,15 @@ settings directly.
   the request body the same way, so that reading (raw bytes for the file
   route, text otherwise, one cap each) is a candidate to move here as one
   `*_io.dart` helper.
+
+- **`CoreHost.requestHub(reason, hold)`**: ask for a public hub for a while,
+  from the core, without knowing who provides it. A phone on battery holds
+  none (the normal profile, app docs/performance.md 8.20); the app wires this
+  to `RnsSession`, and the default does nothing (a server's hubs are always
+  up). Call it at the moment a transfer or a directed wire needs the shared
+  transport (`cmd:file` answered 202, an internet fetch, a wire for the
+  Reticulum bearer), idempotently, never checking first.
+- **The line lane** (`xprs_dial.dart`, `xprs_line.dart` with its `_io`/`_stub`
+  halves): one idle socket from a phone to its archiver (XPRS.md 13.0.2), the
+  conditional export keeping `dart:io` off the web build. Moved here from the
+  app with the battery work.

@@ -18,19 +18,21 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:xprs_core/src/platform/battery.dart';
-import 'package:xprs_core/src/platform/core_host.dart';
 
 import 'package:reticulum/reticulum.dart';
 import '../../profile/profile_service.dart';
 import '../../profile/storage_paths.dart';
 import '../log_service.dart';
+import 'package:xprs_core/src/platform/core_host.dart';
+import '../power_state.dart';
 import '../preferences_service.dart';
 import '../xprs/xprs_airtime.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_profiles.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_catchup.dart';
+import '../xprs/xprs_line.dart';
+import '../xprs/xprs_tcp.dart';
 import '../xprs/xprs_command_courier.dart';
 import '../xprs/xprs_files.dart';
 import '../xprs/xprs_file_acl.dart';
@@ -94,7 +96,6 @@ class MeshService {
   static const Duration _triggerDebounce = Duration(seconds: 4);
 
   final DateTime _startedAt = DateTime.now();
-  BatterySource get _battery => CoreHost.battery;
 
   // `lifetime:` (docs/XPRS.md section 10.5): cumulative service seconds saved
   // by every PREVIOUS run; the current figure is this plus the uptime. Loaded
@@ -114,8 +115,13 @@ class MeshService {
   Timer? _lanBeaconTimer;
   Timer? _sweepTimer;
   Timer? _triggerTimer;
-  bool _powered = false;
-  int _batteryPct = 100;
+  // Power is read in ONE place, PowerState. This service kept its own
+  // battery_plus subscription that disagreed with it on "connected, not
+  // charging", and refreshed the percentage only on a charge-state event, so
+  // a phone unplugged at 90% stayed "90%" until it was plugged in again and
+  // dialBudgetLow() never fired.
+  bool get _powered => PowerState.instance.isPowered;
+  int get _batteryPct => PowerState.instance.batteryLevel;
   int _beaconsHeard = 0;
 
   // Channel-load meter: BLE5 frames heard in a sliding minute (fed by
@@ -148,10 +154,17 @@ class MeshService {
   }
 
   /// Effective beacon interval for the current tier.
+  ///
+  /// An empty room (no XPRS radio heard for five minutes, PowerState.alone)
+  /// is beaconed every three minutes, docs/mesh.md 7's "stable/idle" band:
+  /// the beacon is what lets a newcomer find us, and a newcomer looks for a
+  /// while. The first frame heard brings the 30 s cadence back.
   Duration beaconIntervalNow() => switch (politenessTier()) {
         2 => const Duration(minutes: 5),
         1 => const Duration(seconds: 90),
-        _ => _beaconInterval,
+        _ => PowerState.instance.alone.value
+            ? const Duration(minutes: 3)
+            : _beaconInterval,
       };
 
   /// Battery dial policy: on low battery (and not charging) the node stops
@@ -389,6 +402,11 @@ class MeshService {
               outbound: false);
           unawaited(XprsForwarder.instance.maybeForward(target, wire,
               selfBase: NostrCrypto.bareCallsign(tableCallsign)));
+          // 13.0.2: the recipient is on a socket right now — deliver, do
+          // not wait for the minute sweep.
+          if (XprsLinePeers.instance.isConnected(target)) {
+            unawaited(XprsMailbox.instance.sweepHeld());
+          }
         };
         // Two handlers want t:result: the history poller and the file fetch.
         // Chained rather than replaced — the hook is a single slot, and a
@@ -665,6 +683,8 @@ class MeshService {
           // callsign that does not exist, once a minute, for ever. A LAN peer
           // counts only when the peer IS the recipient.
           ..reachable = ((call) =>
+              XprsLinePeers.instance.isConnected(call) ||
+              XprsLineLane.instance.connectedTo(call) ||
               RnsService.instance.reachableByCallsign(call) ||
               XprsMonitor.instance.heardDirectly(call,
                   within: const Duration(minutes: 10)))
@@ -690,6 +710,12 @@ class MeshService {
           // and the ordinary fan-out otherwise. The wire crosses UNCHANGED —
           // a deposit is not a relay and spends none of 13.1's hops.
           ..sendTo = ((call, wire) async {
+            // A station on an open text socket (13.0.2) gets it there: the
+            // one lane that is private, immediate and costs no airtime.
+            if (XprsLinePeers.instance.sendTo(call, wire) ||
+                XprsLineLane.instance.sendTo(call, wire)) {
+              return true;
+            }
             final hex = RnsService.instance.lxmfDestForCallsign(call);
             if (hex.isNotEmpty &&
                 await RnsService.instance.wappSendTo(
@@ -711,6 +737,7 @@ class MeshService {
         // a report -- release-on-hearing above delivers it ourselves.
         XprsForwarder.instance.heldFor =
             (call) => MeshStore.instance.heldWiresFor(call);
+        XprsLineLane.instance.onClientUp = _onLineUp;
         XprsGossip.instance.onSighting = (call, gateway) {
           final me = NostrCrypto.bareCallsign(tableCallsign);
           if (me.isEmpty || gateway == me) return;
@@ -827,6 +854,7 @@ class MeshService {
       // minutes are exactly when it matters: a phone that has just met the
       // network should not spend five of them with nowhere to leave its mail.
       _reconsiderArchiver();
+    _dialArchivers();
       // lifetime: accumulate service time every 15 min (section 10.5). A kill
       // loses at most that tail, same trade the dongle makes with its NVS.
       if (sweepTick % 15 == 0 && _lifeBaseSec >= 0) {
@@ -834,21 +862,6 @@ class MeshService {
             _lifeBaseSec + DateTime.now().difference(_startedAt).inSeconds;
       }
     });
-
-    // Track power state for the cond byte (desktops report `unknown` = mains).
-    try {
-      final st = await _battery.condition();
-      _powered = st != BatteryCondition.discharging;
-      _batteryPct = await _battery.level();
-      _battery.changes.listen((st) async {
-        _powered = st != BatteryCondition.discharging;
-        try {
-          _batteryPct = await _battery.level();
-        } catch (_) {}
-      });
-    } catch (_) {
-      _powered = true; // no battery API → assume powered (desktop)
-    }
 
     try {
       await _sendBeacon().timeout(const Duration(seconds: 5), onTimeout: () {});
@@ -1386,7 +1399,7 @@ class MeshService {
   ///
   /// **Signed**, which the Bluetooth beacon is not: signing is the default
   /// (section 9.1) and only the advert ceiling argues against it. Here there is
-  /// room, and an unsigned beacon is a callsign anybody can write — an indexer
+  /// room, and an unsigned beacon is a callsign anybody can write — an archiver
   /// deciding whether to spend airtime on us has nothing else to go on.
   /// Fire-and-forget wrapper: airing now awaits the bearer, and neither the
   /// timer nor the startup path has anything to do with the answer.
@@ -1432,6 +1445,8 @@ class MeshService {
       {bool stamped = false}) {
     final held = MeshStore.instance.ready ? MeshStore.instance.pendingCount() : 0;
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
+    final prefs = PreferencesService.instanceSync;
+    final public = prefs?.xprsPublicArchiver ?? false;
     return xprsComposeObservation(
       self: self,
       link: link,
@@ -1442,10 +1457,21 @@ class MeshService {
       uptimeS: upSec,
       lifetimeS: _lifeBaseSec >= 0 ? _lifeBaseSec + upSec : null,
       serve: xprsServeClaim(
-        public: PreferencesService.instanceSync?.xprsPublicArchiver ?? false,
+        public: public,
         spoolReady: XprsArchive.instance.ready,
-        files: (PreferencesService.instanceSync?.archiveQuotaGb ?? 0) > 0,
+        files: (prefs?.archiveQuotaGb ?? 0) > 0,
       ),
+      // 13.0.2: an archiver says where it answers a connection, and whether
+      // it has room. A station that is not one says neither.
+      dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
+      // 12.9.5: the load is the declarations naming us; past the operator's
+      // ceiling, or on their word, newcomers are told to go elsewhere.
+      room: public &&
+              (!(prefs?.xprsRoom ?? true) ||
+                  XprsArchive.instance.caredFor() >=
+                      (prefs?.xprsRoomStations ?? 500))
+          ? 'no'
+          : null,
       signingKey: xprsProfileScalar(),
       ts: stamped ? xprsNowTs() : null,
     );
@@ -1654,6 +1680,63 @@ class MeshService {
   /// with the sender's next screen lock. Now a station that named none adopts
   /// the one volunteer it can hear — which, on a network with a single
   /// always-on node, is that node, without anybody configuring anything.
+  /// The line lane (XPRS.md 13.0.2): dial the archivers this station chose
+  /// that said where they answer, at most two sockets. What an archiver
+  /// announced is remembered in the preferences, because the station table
+  /// is in memory and a pocket device hears the announcement only while it
+  /// is attached to a transport.
+  void _dialArchivers() {
+    final prefs = PreferencesService.instanceSync;
+    if (prefs == null || platform.isWeb) return;
+    final dials = Map<String, String>.of(prefs.xprsArchiverDials);
+    for (final st in XprsMonitor.instance.stations.values) {
+      final d = st.dial;
+      if (d == null) continue;
+      final c = NostrCrypto.bareCallsign(st.callsign);
+      if (dials[c] != d) {
+        dials[c] = d;
+        prefs.rememberArchiverDial(c, d);
+      }
+    }
+    final self = NostrCrypto.bareCallsign(tableCallsign);
+    final want = <String, XprsDial>{};
+    for (final a in prefs.xprsArchivers) {
+      final c = a.trim().toUpperCase();
+      if (c == self) continue;
+      final d = XprsDial.parse(dials[c]);
+      if (d == null) continue;
+      want[c] = d;
+      if (want.length >= 2) break;
+    }
+    unawaited(XprsLineLane.instance.wantAll(want));
+  }
+
+  /// A socket to an archiver came up: ask how much mail it holds for us
+  /// (9.12.3, the cheapest ask) and let the catch-up run its ladder.
+  void _onLineUp(XprsLineClient c) {
+    final self = NostrCrypto.bareCallsign(tableCallsign);
+    if (self.isEmpty) return;
+    // The key first, then the declaration, then the ask. The archiver puts
+    // a station on its socket only once a signed line verifies against a
+    // key it holds (XprsTcp), and a phone that met it only through this
+    // socket had given it none: without these two lines it answered q:mail
+    // and delivered nothing, ever (docs/performance.md 8.23).
+    final pub = XprsPublisher.instance;
+    final identity = pub.ownIdentityWire();
+    if (identity != null) c.send(identity);
+    final hold = XprsCatchup.instance.mailboxHoldCsv();
+    final decl = hold.isEmpty ? null : pub.mailboxWire(hold);
+    if (decl != null) c.send(decl);
+    var ask = XprsPacket.parse(
+        't:request f:$self d:${c.callsign} ts:${xprsNowTs()} q:mail only:$self');
+    final d = xprsProfileScalar();
+    if (ask != null && d != null) ask = xprsSign(ask, d);
+    if (ask != null) c.send(ask.encode());
+    unawaited(XprsCatchup.instance.tick(self));
+    // What was composed with nowhere to put it goes now.
+    pub.flushDeferredDeposits();
+  }
+
   void _reconsiderArchiver() {
     final prefs = PreferencesService.instanceSync;
     if (prefs == null) return;

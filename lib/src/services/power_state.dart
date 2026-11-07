@@ -33,9 +33,24 @@ import 'package:xprs_core/src/platform/core_host.dart';
 import 'package:xprs_core/src/util/observable.dart';
 
 import 'log_service.dart';
+import 'preferences_service.dart';
 import 'package:xprs_core/src/platform/os.dart' as platform;
 
 enum PowerTier { active, idle, battery, low }
+
+/// What this device IS right now, as opposed to what it may cost ([PowerTier]).
+///
+///   station  plugged in (or told to be one): the always-on node — hubs held,
+///            folders published, the transport role, the hub on the LAN.
+///   normal   on battery: a messenger with a radio. Bluetooth presence,
+///            scanning and the digipeater stay on; Reticulum keeps its local
+///            bearers (Bluetooth, LAN) and holds no public hub, publishes
+///            nothing to the DHT, forwards for nobody. The internet is reached
+///            through the archiver, on request (XPRS.md 13.0.2).
+///
+/// Desktops have no battery and are stations. The preference
+/// (`power.profile`: auto / station / normal) overrides the charger.
+enum PowerProfile { normal, station }
 
 class PowerState {
   PowerState._();
@@ -74,6 +89,64 @@ class PowerState {
   bool get isBackgroundSaving =>
       tier.value == PowerTier.battery || tier.value == PowerTier.low;
 
+  /// Plugged in: charging, full, connected-not-charging, or no battery at
+  /// all (a desktop). THE definition, for everybody: MeshService, the
+  /// Wi-Fi Direct coordinator and the capacity governor each used to read
+  /// battery_plus on their own and disagreed on "connected, not charging".
+  bool get isPowered => _powered;
+
+  /// [isPowered] as a notifier, for consumers that act on the change.
+  final Observable<bool> powered = Observable(true);
+
+  /// Last battery percentage read (two-minute poll plus every charge event).
+  int get batteryLevel => _level;
+
+  /// The native heartbeat period for the current tier (BgService.applyTier),
+  /// so a Dart fallback can tell "the service is driving" from "it stopped".
+  int get nativeTickMs => switch (tier.value) {
+        PowerTier.battery => 10000,
+        PowerTier.low => 30000,
+        PowerTier.active || PowerTier.idle => 2000,
+      };
+
+  // ── The room: is anybody there? ──────────────────────────────────────────
+  //
+  // A radio in an empty room costs the same as one in a crowd, and most of
+  // a phone's day is the empty room. The BLE scan is filtered on our marker,
+  // so "when did the scan last deliver a frame" IS "when was another XPRS
+  // radio last heard"; the legacy scan's discovered presence adverts count
+  // too. Five minutes of neither and the room is empty: the scan, the
+  // presence advert and the beacon go to their cheapest settings
+  // (docs/mesh.md 7). The first frame heard turns it back, on the next tick,
+  // with no dwell — a scan-mode change costs a scan start, and after five
+  // silent minutes the budget for one is there.
+
+  /// True when no XPRS radio has been heard for [aloneAfter].
+  final Observable<bool> alone = Observable(false);
+  static const Duration aloneAfter = Duration(minutes: 5);
+  int _lastAirMs = 0;
+
+  /// The BLE service reports, on its tick, when the air last carried a
+  /// neighbour: the scan's last marker frame and the last discovered
+  /// presence advert, as ms since the epoch (0 = never).
+  void noteAir(int lastFrameMs, int lastDiscoveredMs) {
+    final latest = lastFrameMs > lastDiscoveredMs ? lastFrameMs : lastDiscoveredMs;
+    if (latest > _lastAirMs) _lastAirMs = latest;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Never heard anybody since start: measure from start, not from 1970,
+    // or a fresh process would be "alone" before its scan had a chance.
+    final since = _lastAirMs == 0 ? _startedMs : _lastAirMs;
+    final want = now - since >= aloneAfter.inMilliseconds;
+    if (want != alone.value) {
+      LogService.instance.add(want
+          ? 'power: alone (no XPRS radio heard for ${aloneAfter.inMinutes} min)'
+          : 'power: company (an XPRS radio is in range)');
+      alone.value = want;
+    }
+  }
+
+  final int _startedMs = DateTime.now().millisecondsSinceEpoch;
+
   Future<void> start() async {
     if (_running) return;
     _running = true;
@@ -83,6 +156,7 @@ class PowerState {
     // Foreground/background comes from the host (the app's lifecycle
     // observer calls setForeground); the core has no widgets binding.
     tier.addListener(_pushToNative);
+    _profileMode = PreferencesService.instanceSync?.powerProfile ?? 'auto';
     try {
       await _readBattery();
       // Charging state is event-driven; the level has no stream, and two
@@ -159,10 +233,20 @@ class PowerState {
       // A device with no battery (most desktops) reports `unknown` and a bogus
       // 0% — that is mains power, not an emergency. Getting this wrong once
       // left desktops permanently throttled at a phantom 0%.
+      // Plugged in, not necessarily charging: a phone at 100% on a charger
+      // reports connectedNotCharging and is on mains as far as any role is
+      // concerned.
+      // `unknown` is mains on a desktop and a passing glitch on a phone:
+      // BatteryManager reports BATTERY_STATUS_UNKNOWN on some devices for a
+      // moment, and reading it as "plugged in" made that phone a station.
       _powered = state == BatteryCondition.charging ||
           state == BatteryCondition.full ||
-          state == BatteryCondition.unknown;
+          state == BatteryCondition.connectedNotCharging ||
+          (state == BatteryCondition.unknown &&
+              !(platform.isAndroid || platform.isIOS));
       _level = level;
+      if (powered.value != _powered) powered.value = _powered;
+      _recomputeProfile();
       _recompute();
     } catch (_) {}
   }
@@ -201,9 +285,53 @@ class PowerState {
     tier.value = want;
   }
 
+  // ── The profile ──────────────────────────────────────────────────────────
+
+  /// Station or normal; see [PowerProfile]. A desktop, which never reads a
+  /// battery, is a station from the first instant. A phone starts as
+  /// `normal` and is promoted by its charger at [start]: it used to start as
+  /// a station too, and the Reticulum autostart, which fires four seconds
+  /// into boot, read that default on a slow boot and dialled every public
+  /// hub for a phone that was in a pocket (docs/performance.md 8.23).
+  final Observable<PowerProfile> profile = Observable(
+      platform.isAndroid || platform.isIOS
+          ? PowerProfile.normal
+          : PowerProfile.station);
+
+  /// The preference: 'auto' (follow the charger), 'station', 'normal'.
+  String get profileMode => _profileMode;
+  String _profileMode = 'auto';
+
+  /// Change and persist the preference; the profile follows at once (no
+  /// dwell: the user asked, or the charger is a fact).
+  void setProfileMode(String mode) {
+    if (!const ['auto', 'station', 'normal'].contains(mode)) return;
+    _profileMode = mode;
+    PreferencesService.instanceSync?.powerProfile = mode;
+    _recomputeProfile();
+  }
+
+  void _recomputeProfile() {
+    final want = switch (_profileMode) {
+      'station' => PowerProfile.station,
+      'normal' => PowerProfile.normal,
+      // A desktop or a laptop is a station whatever its battery says: it
+      // has no pocket to be in, and the always-on archiver is one of these.
+      _ => _powered || !(platform.isAndroid || platform.isIOS)
+          ? PowerProfile.station
+          : PowerProfile.normal,
+    };
+    if (want == profile.value) return;
+    LogService.instance.add('power: profile ${want.name} '
+        '(${_profileMode == 'auto' ? (_powered ? 'plugged in' : 'on battery') : 'set by the user'})');
+    profile.value = want;
+  }
+
   /// For the diagnostics page and `perf:` lines.
   Map<String, Object?> get status => {
         'tier': tier.value.name,
+        'profile': profile.value.name,
+        'profileMode': _profileMode,
         'screenOn': _screenOn,
         'foreground': _foreground,
         'powered': _powered,
