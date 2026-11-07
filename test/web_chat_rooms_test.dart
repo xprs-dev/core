@@ -428,8 +428,8 @@ void main() {
       expect(a.roomServable(call, 'X3TOWN'), false);
       expect(a.mirrorPairs(), isEmpty);
       // Named: the trusted peers are the room's peers and the neighbours.
-      a.trustedPeer = (c) => c == 'X3TOWN' || c == 'X3HUB';
-      a.trustedPeers = () => ['X3TOWN', 'X3HUB'];
+      await a.handle('POST', '/api/admin', {}, jsonEncode({'action': 'set', 'session': s,
+          'settings': {'peers_mode': 'named', 'peers': 'X3TOWN X3HUB'}}), peer: lan);
       expect(a.roomServable(call, 'X3TOWN'), true);
       expect(a.roomServable(call, 'X3ROGU'), false);
       expect(a.roomPeers(call), ['X3TOWN', 'X3HUB']);
@@ -451,6 +451,55 @@ void main() {
       expect(m['kind'], 'forum');
       expect(list.where((r) => r['call'] == 'X5ROGU'), isEmpty);
       expect(a.mirrorPairs().where((p) => p.group == 'X5MESH').single.peer, 'X3TOWN');
+    });
+  });
+
+  group('a mesh group: the trusted stations are its roster (docs/plan-mesh-trust.md)', () {
+    Future<WebChatReply> roomsDo(WebChatApi a, String s, Map<String, Object?> b) =>
+        a.handle('POST', '/api/rooms', {}, jsonEncode({...b, 'session': s}), peer: lan);
+    test('the owner creates it and invites; the roster is the trusted set; a few are asked', () async {
+      final a = make();
+      final s = await claim(a);
+      await a.handle('POST', '/api/admin', {}, jsonEncode({'action': 'set', 'session': s,
+          'settings': {'peers_mode': 'mesh'}}), peer: lan);
+      final r = await roomsDo(a, s, {'action': 'create', 'name': 'Valley', 'kind': 'mesh', 'visibility': 'private'});
+      expect(r.status, 200);
+      final mesh = r.json['room'] as String;
+      final card = (r.json['rooms'] as List).firstWhere((x) => x['call'] == mesh);
+      expect(card['kind'], 'mesh');
+      expect(card['station_role'], 'owner');
+      expect((await roomsDo(a, s, {'action': 'create', 'name': 'Two', 'kind': 'mesh'})).status, 409, reason: 'one mesh');
+      expect(a.trustedSet(), isEmpty);
+      for (final c in ['X3AAAA', 'X3BBBB', 'X3CCCC', 'X3DDDD', 'X3EEEE', 'X3FFFF']) {
+        expect((await roomsDo(a, s, {'action': 'add', 'call': mesh, 'member': c})).status, 200);
+      }
+      expect(a.trustedSet(), isEmpty, reason: 'invited is not trusted');
+      expect(a.roomServable(mesh, 'X3AAAA'), true, reason: 'an invitee reads its offer');
+      expect(a.roomServable(mesh, 'X3ROGU'), false);
+      final pairs = a.mirrorPairs().where((p) => p.group == mesh).map((p) => p.peer).toSet();
+      expect(pairs, {'X3AAAA', 'X3BBBB', 'X3CCCC', 'X3DDDD', 'X3EEEE', 'X3FFFF'}, reason: 'asked for their acceptance');
+      // Each accepts, signed by its own key; the acts arrive in the record.
+      final keysOf = <String, BigInt>{};
+      var seed2 = 7000;
+      final roster = groups.rosterOf(mesh);
+      for (final c in ['X3AAAA', 'X3BBBB', 'X3CCCC', 'X3DDDD', 'X3EEEE', 'X3FFFF']) {
+        final d = BigInt.from(seed2++) * BigInt.parse('1000003');
+        keysOf[c] = d;
+        keys[c] = XprsCrypto.publicKeyXOnly(d);
+        final offer = roster.offers[c]!;
+        expect(groups.offer(XprsPacket.parse(_signed('t:moderate f:$c d:$mesh ts:${ts()} r:$offer accept:member', d))!,
+            nowMs: clock.millisecondsSinceEpoch), true);
+      }
+      clock = clock.add(const Duration(minutes: 1));
+      expect(a.trustedSet(), {'X3AAAA', 'X3BBBB', 'X3CCCC', 'X3DDDD', 'X3EEEE', 'X3FFFF'});
+      final nb = a.mirrorPairs().where((p) => p.neighbour).map((p) => p.peer).toList();
+      expect(nb, hasLength(WebChatApi.syncFanout), reason: 'a few are asked, not all');
+      expect(a.trustedSet().containsAll(nb), true);
+      // Removed: out of the trusted set at once.
+      expect((await roomsDo(a, s, {'action': 'remove', 'call': mesh, 'member': 'X3AAAA'})).status, 200);
+      expect(a.trustedSet().contains('X3AAAA'), false);
+      expect((await a.handle('POST', '/api/xprs/send', {}, _signed('t:blog f:X1BOBB d:$mesh ts:${ts()} title:t m:x', _bob), peer: lan)).status, 403,
+          reason: 'a mesh holds its roster, not posts');
     });
   });
 

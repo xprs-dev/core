@@ -74,14 +74,14 @@ class XprsMeshPolicy {
   /// `follow`). [followed] is given resolved: an `npub` in `follow` is the
   /// host's to turn into a callsign.
   factory XprsMeshPolicy.fromSettings(Map<String, Object?> s,
-      {Set<String> followed = const {}}) {
+      {Set<String> followed = const {}, Set<String>? peers}) {
     return XprsMeshPolicy(
       reachAlerts: parseReach(s['reach_alerts'], XprsReach.regional),
       reachPosts: parseReach(s['reach_posts'], XprsReach.regional),
       reachChat: parseReach(s['reach_chat'], XprsReach.global),
       followed: {for (final c in followed) _base(c)},
-      named: '${s['peers_mode']}' == 'named',
-      peers: {for (final c in xprsCallsignList(s['peers'])) _base(c)},
+      named: '${s['peers_mode']}' == 'named' || '${s['peers_mode']}' == 'mesh',
+      peers: peers ?? {for (final c in xprsCallsignList(s['peers'])) _base(c)},
     );
   }
 

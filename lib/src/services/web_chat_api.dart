@@ -696,6 +696,7 @@ class WebChatApi {
     WebChatReply no(int status, String why) =>
         WebChatReply(status, {'ok': false, 'error': why});
     final meta = _rooms[room]!;
+    if (meta['kind'] == 'mesh') return no(403, 'a mesh holds its roster, not posts');
     final forum = meta['kind'] == 'forum';
     if (p.type == 'blog') {
       if (!forum) return no(403, 'posts go in a forum room');
@@ -847,6 +848,11 @@ class WebChatApi {
         'moderators': having(XprsRole.mod),
         'invited': having(XprsRole.invited),
       },
+      // A mesh: where this station stands in it, for the administrator.
+      if (meta['kind'] == 'mesh') ...{
+        'station_role': meta['mirrored'] == true ? roleOf(_station, group: call) : 'owner',
+        if (r.offers[_station] != null) 'station_offer': r.offers[_station],
+      },
     };
   }
 
@@ -888,7 +894,7 @@ class WebChatApi {
 
     final visibility = opt('visibility', const {'public', 'private'});
     final posting = opt('posting', const {'members', 'anyone'});
-    final kind = opt('kind', const {'chat', 'forum'});
+    final kind = opt('kind', const {'chat', 'forum', 'mesh'});
     if (visibility == '' || posting == '' || kind == '') {
       return no(400, 'visibility is public or private; posting members or anyone; kind chat or forum');
     }
@@ -903,6 +909,7 @@ class WebChatApi {
       if (name.isEmpty) return no(400, 'a room needs a name');
       final call = roomKeys!.create(name);
       if (call == null) return no(503, 'could not make a key; try again');
+      if (kind == 'mesh' && _meshCall() != null) return no(409, 'this station is already in a mesh');
       rooms[call] = {
         'name': name,
         'about': clean(b['about'], 120),
@@ -919,7 +926,7 @@ class WebChatApi {
       // The administrator moderates the room too: offered, and accepted by
       // their own signature in the page (10.3.1).
       final admin = adminCall;
-      if (admin != null) _roomSign(call, 'grant:$admin role:mod');
+      if (admin != null && kind != 'mesh') _roomSign(call, 'grant:$admin role:mod');
       return _roomListFor(session, call);
     }
     final call = _base('${b['call'] ?? ''}');
@@ -934,6 +941,7 @@ class WebChatApi {
         return no(400, 'owner is the station that holds the room');
       }
       if (rooms.containsKey(call)) return no(409, 'already a room here');
+      if (kind == 'mesh' && _meshCall() != null) return no(409, 'this station is already in a mesh');
       final name = clean(b['name'], 32);
       rooms[call] = {
         'name': name.isEmpty ? call : name,
@@ -1009,18 +1017,35 @@ class WebChatApi {
         if (!_callRe.hasMatch(who) || who == call) {
           return no(400, 'a callsign, please');
         }
-        final why = _roomSign(
-            call,
-            switch (action) {
-              'add' => 'grant:$who',
-              'appoint' => 'grant:$who role:mod',
-              _ => 'revoke:$who',
-            });
+        final body = switch (action) {
+          'add' => 'grant:$who',
+          'appoint' => 'grant:$who role:mod',
+          _ => 'revoke:$who',
+        };
+        // A mesh this station helps run but does not hold the key of: the
+        // act is signed by this station, as the moderator it was made (10.3).
+        final why = meta['mirrored'] == true && meta['kind'] == 'mesh'
+            ? _stationAct(body, to: call, file: true)
+            : _roomSign(call, body);
         if (why != null) return no(409, why);
+        _trustedAt = 0;
+        onSync?.call(call);
+        return _roomListFor(session, call);
+      case 'accept':
+        // This station accepts what a mesh offered it, by its own signature
+        // (26.3.1): the record carries the offer's identifier.
+        final r = groups!.rosterOf(call);
+        final offer = r.offers[_station];
+        if (offer == null) return no(409, 'nothing offered to this station');
+        final role = r.offerRoles[_station] == XprsRole.mod ? 'mod' : 'member';
+        final why = _stationAct('r:$offer accept:$role', to: call, file: true);
+        if (why != null) return no(409, why);
+        _trustedAt = 0;
+        onSync?.call(call);
         return _roomListFor(session, call);
     }
     return no(400,
-        'action must be create, update, close, add, appoint, remove, share, mirror, unmirror or sync');
+        'action must be create, update, close, add, appoint, remove, accept, share, mirror, unmirror or sync');
   }
 
   /// May [group]'s rows be served to [asker] over `cmd:history` (10.10.1)?
@@ -1036,9 +1061,15 @@ class WebChatApi {
     if (meta == null) return null;
     final a = _base(asker);
     if (a.isEmpty || a == _station) return false;
+    if (meta['kind'] == 'mesh') {
+      // Its record to every station on its roster, the invited included (so
+      // an invitee can read what it is offered), and to whoever holds it.
+      if (a == _base('${meta['owner'] ?? ''}')) return true;
+      return (groups?.rosterOf(call).roles[a] ?? XprsRole.none) != XprsRole.none;
+    }
     if (meta['mirrored'] == true) return a == _base('${meta['owner'] ?? ''}');
     if (meta['shared'] != true) return false;
-    if (meta['mesh'] == true) return trustedPeer?.call(a) ?? false;
+    if (meta['mesh'] == true) return isTrusted(a);
     final peers = [for (final x in meta['peers'] as List? ?? const []) '$x'];
     if (peers.contains(a)) return true;
     if (peers.isNotEmpty || meta['visibility'] == 'private') return false;
@@ -1064,24 +1095,87 @@ class WebChatApi {
       return o.isEmpty ? const [] : [o];
     }
     if (meta['shared'] != true) return const [];
-    if (meta['mesh'] == true) return trustedPeers?.call() ?? const [];
+    if (meta['mesh'] == true) return trustedSet().toList();
     return {
       for (final x in meta['peers'] as List? ?? const []) '$x',
       for (final x in meta['seen'] as List? ?? const []) '$x',
     }.toList();
   }
 
-  /// The mesh (docs/plan-mesh-trust.md), from the host: is [call] a trusted
-  /// peer, and who are they. Null or empty: nobody, as in `open` mode.
-  bool Function(String call)? trustedPeer;
-  List<String> Function()? trustedPeers;
+  /// The stations this one trusts (docs/plan-mesh-trust.md): in `named`
+  /// mode the administrator's list; in `mesh` mode the roster of the mesh
+  /// group (members, moderators and the station that holds it, never the
+  /// invited); in `open` mode nobody. Recomputed at most every 30 seconds:
+  /// the roster changes when an act arrives, and this is asked per packet.
+  Set<String> trustedSet() {
+    final t = now().millisecondsSinceEpoch;
+    if (t - _trustedAt < 30000) return _trusted;
+    _trustedAt = t;
+    final s = settings;
+    final mode = '${s['peers_mode']}';
+    final out = <String>{};
+    if (mode == 'named') {
+      out.addAll(xprsCallsignList(s['peers']).map(_base));
+    } else if (mode == 'mesh') {
+      final g = _meshCall();
+      if (g != null && groups != null) {
+        final meta = _rooms[g]!;
+        final owner = _base('${meta['owner'] ?? ''}');
+        if (owner.isNotEmpty) out.add(owner);
+        for (final e in groups!.rosterOf(g).roles.entries) {
+          final c = _base(e.key);
+          if (c.startsWith('X5')) continue; // the group itself, as its admin
+          if (e.value == XprsRole.member || e.value == XprsRole.mod || e.value == XprsRole.admin) {
+            out.add(c);
+          }
+        }
+      }
+    }
+    out.remove(_station);
+    return _trusted = out;
+  }
+
+  Set<String> _trusted = const {};
+  int _trustedAt = 0;
+
+  bool isTrusted(String call) => trustedSet().contains(_base(call));
+
+  /// The mesh group this station is in, held or mirrored: one at most.
+  String? _meshCall() {
+    if (!_hostsRooms) return null;
+    for (final e in _rooms.entries) {
+      if (e.value['kind'] == 'mesh') return e.key;
+    }
+    return null;
+  }
+
+  /// Whom this station asks, of those it trusts (docs/plan-mesh-trust.md):
+  /// every record is a signed original that each member keeps and serves,
+  /// so a few peers carry the mesh as well as all of them, at a fraction of
+  /// the asks. [syncFanout] of them, a different few each week so the load
+  /// spreads, chosen the same way on every restart.
+  static const int syncFanout = 4;
+  List<String> syncSet() {
+    final all = trustedSet().toList();
+    if (all.length <= syncFanout) return all;
+    final week = now().millisecondsSinceEpoch ~/ (7 * 86400000);
+    int h(String c) {
+      var x = 0x811c9dc5;
+      for (final u in '$_station|$c|$week'.codeUnits) {
+        x = ((x ^ u) * 0x01000193) & 0xffffffff;
+      }
+      return x;
+    }
+    all.sort((a, b) => h(a).compareTo(h(b)));
+    return all.take(syncFanout).toList();
+  }
 
   /// A room a trusted peer hosts and shares with the mesh, met in its answer
   /// (XprsGroupMirror.onMeshRoom): mirrored here when it is new.
   void autoMirror(String room, String peer, String nick) {
     if (!_hostsRooms) return;
     final call = _base(room), owner = _base(peer);
-    if (!(trustedPeer?.call(owner) ?? false)) return;
+    if (!isTrusted(owner)) return;
     final rooms = _rooms;
     if (!call.startsWith('X5') || !_callRe.hasMatch(call)) return;
     final have = rooms[call];
@@ -1125,12 +1219,25 @@ class WebChatApi {
     final out = <MirrorPair>[];
     for (final e in _rooms.entries) {
       final meta = e.value;
-      if (meta['mirrored'] == true) {
+      if (meta['kind'] == 'mesh') {
+        // The mesh's own record: with its holder, a few members, and every
+        // station invited and not yet answered (its acceptance is here).
+        final r = groups?.rosterOf(e.key);
+        final peers = <String>{
+          if (meta['mirrored'] == true) _base('${meta['owner'] ?? ''}'),
+          ...syncSet(),
+          for (final x in r?.roles.entries ?? const <MapEntry<String, XprsRole>>[])
+            if (x.value == XprsRole.invited) _base(x.key),
+        }..remove(_station)..remove('');
+        for (final p in peers) {
+          out.add(MirrorPair(group: e.key, peer: p));
+        }
+      } else if (meta['mirrored'] == true) {
         final owner = _base('${meta['owner'] ?? ''}');
         if (owner.isNotEmpty) out.add(MirrorPair(group: e.key, peer: owner));
       } else if (meta['shared'] == true) {
         final peers = meta['mesh'] == true
-            ? <String>{...?trustedPeers?.call()}
+            ? trustedSet()
             : <String>{
                 for (final x in meta['peers'] as List? ?? const []) '$x',
                 for (final x in meta['seen'] as List? ?? const []) '$x',
@@ -1141,7 +1248,7 @@ class WebChatApi {
       }
     }
     // The neighbours (12.9.3): each trusted peer's noticeboard, kept in step.
-    for (final p in trustedPeers?.call() ?? const <String>[]) {
+    for (final p in syncSet()) {
       out.add(MirrorPair(peer: p, kinds: XprsGroupMirror.neighbourKinds));
     }
     return out;
@@ -1192,7 +1299,7 @@ class WebChatApi {
   }
 
   /// Sign [body] as this station about its own rooms, file it and air it.
-  String? _stationAct(String body) {
+  String? _stationAct(String body, {String? to, bool file = false}) {
     final g = groups;
     final st = _station;
     final sign = signAsStation;
@@ -1201,12 +1308,18 @@ class WebChatApi {
     String two(int n) => n.toString().padLeft(2, '0');
     final stamp = '${ts.year}-${two(ts.month)}-${two(ts.day)}_'
         '${two(ts.hour)}:${two(ts.minute)}:${two(ts.second)}';
-    final p = sign('t:moderate f:$st d:$st ts:$stamp $body');
+    final p = sign('t:moderate f:$st d:${to ?? st} ts:$stamp $body');
     if (p == null) return 'this station cannot sign';
     if (!g.offer(p, nowMs: now().millisecondsSinceEpoch)) {
       return 'the act was not taken';
     }
-    (publish ?? receive)(p.encode());
+    // A mesh's act is filed and travels by the mesh's own asks (10.10.1),
+    // never aired: the record is the members' business.
+    if (file) {
+      keep!(p.encode());
+    } else {
+      (publish ?? receive)(p.encode());
+    }
     return null;
   }
 
@@ -1438,8 +1551,8 @@ class WebChatApi {
               }
               next[k] = v as String;
             case 'peers_mode':
-              if (!const {'open', 'named'}.contains(v)) {
-                return no(400, '$k must be open or named');
+              if (!const {'open', 'named', 'mesh'}.contains(v)) {
+                return no(400, '$k must be open, named or mesh');
               }
               next[k] = v as String;
             case 'peers':
@@ -1469,6 +1582,7 @@ class WebChatApi {
           }
         }
         _save(_kSettings, jsonEncode(next));
+        _trustedAt = 0;
         onSettings?.call(settings);
         return _adminState(session, peer);
     }

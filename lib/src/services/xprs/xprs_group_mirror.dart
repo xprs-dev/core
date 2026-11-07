@@ -135,7 +135,9 @@ class XprsGroupMirror {
   /// this station asked for it: what you asked for, you keep.
   bool askedFor(XprsPacket p) {
     if (_groups.contains(_base(p['d'] ?? '')) ||
-        _groups.contains(_base(p['f'] ?? ''))) return true;
+        _groups.contains(_base(p['f'] ?? ''))) {
+      return true;
+    }
     // A neighbour's answer: one of the kinds asked for, while the ask is out.
     final pair = _pendingNeighbour();
     return pair != null && pair.kinds.split(',').contains(p.type);

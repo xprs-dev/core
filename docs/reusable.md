@@ -272,3 +272,13 @@ re-baseline that refuses to hide a new violation) is described in
 
 | `LogService.onLine` | `services/log_service.dart` | a host that prints the log as it is kept (the server edition writes it to stdout / the journal) |
 | `HeartbeatKeepAlive` | `platform/heartbeat_keep_alive.dart` | the core's heartbeat on a host with no native one (server, desktop): a Dart tick at a period the host passes, running only while listened to; hold/release delegated |
+
+### The trusted stations — `WebChatApi.trustedSet()` / `syncSet()`
+
+One answer to "whom does this station trust": the administrator's list in
+`named` mode, a mesh group's roster in `mesh` mode, nobody in `open` mode,
+cached for 30 seconds. `syncSet()` is the few of them this station asks
+(`syncFanout`, rotated weekly). Whatever needs the trusted stations (serving,
+the mirror's pairs, the mesh policy's snapshot) asks these two, never the
+settings directly.
+
