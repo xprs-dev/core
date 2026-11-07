@@ -133,7 +133,10 @@ XprsMeshVerdict xprsMeshAdmits(
     _ => policy.reachChat,
   };
   if (!xprsReachAdmits(cap, xprsBearerReach(bearer))) return XprsMeshVerdict.drop;
-  if (policy.named && kind != 'chat') {
+  // Named mode governs what comes from other stations, on the radio or the
+  // internet; a visitor on this station's own network (its page, its LAN)
+  // is this station's own community.
+  if (policy.named && kind != 'chat' && xprsBearerReach(bearer) != XprsReach.local) {
     if (policy.peers.contains(from)) return XprsMeshVerdict.keep;
     for (final v in (p['via'] ?? '').split(',')) {
       if (policy.peers.contains(XprsMeshPolicy._base(v))) return XprsMeshVerdict.keep;

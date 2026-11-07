@@ -48,6 +48,7 @@ void main() {
   test('named mode: an alert or a post on the air is kept from a peer, through a peer, or not at all', () {
     const pol = XprsMeshPolicy(named: true, peers: {'X3TOWN'});
     expect(v(alert, 'lora', pol), XprsMeshVerdict.drop, reason: 'a stranger in LoRa range');
+    expect(v(alert, 'wifi', pol), XprsMeshVerdict.keep, reason: 'a visitor on the station\'s own network');
     String relayed(String via) => alert.replaceFirst(' m:', ' via:$via m:');
     expect(v(relayed('X3ROGU'), 'lora', pol), XprsMeshVerdict.drop);
     expect(v(relayed('X3ROGU,X3TOWN'), 'lora', pol), XprsMeshVerdict.keep, reason: 'relayed by a peer');

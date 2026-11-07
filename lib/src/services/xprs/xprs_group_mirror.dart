@@ -37,12 +37,15 @@ import 'xprs_packet.dart';
 import 'xprs_publisher.dart';
 import 'xprs_vocab.dart' show xprsParseTs, xprsNowTs;
 
-/// One group kept in step with one peer station.
+/// One group kept in step with one peer station; or, with no group, a
+/// neighbour (12.9.3): the peer's community publications of [kinds].
 class MirrorPair {
-  const MirrorPair({required this.group, required this.peer});
-  final String group;
+  const MirrorPair({this.group, required this.peer, this.kinds = XprsGroupMirror.kinds});
+  final String? group;
   final String peer;
-  String get key => '$peer|$group';
+  final String kinds;
+  bool get neighbour => group == null;
+  String get key => '$peer|${group ?? '*'}';
 }
 
 class _State {
@@ -73,6 +76,14 @@ class XprsGroupMirror {
   static const Duration identityWindow = Duration(days: 400);
   static const int maxPagesPerTick = 10;
   static const String kinds = 'blog,message,reaction,moderate,identity';
+
+  /// What neighbours keep alive for each other (12.9.3): the noticeboard.
+  static const String neighbourKinds = 'info,warning,blog,identity';
+
+  /// A room a trusted peer hosts and shares with the mesh, met in its answer
+  /// to a neighbour ask: (the room's callsign, the peer, its nick or '').
+  /// The host mirrors it when it is new here (docs/plan-mesh-trust.md).
+  void Function(String room, String peer, String nick)? onMeshRoom;
   static const String _markPrefix = 'mirror.mark.';
 
   // ── seams ──────────────────────────────────────────────────────────────
@@ -123,15 +134,35 @@ class XprsGroupMirror {
   /// keeps such a row on the followed shelf (XprsIngest.askedFor), because
   /// this station asked for it: what you asked for, you keep.
   bool askedFor(XprsPacket p) {
-    if (_groups.isEmpty) return false;
-    return _groups.contains(_base(p['d'] ?? '')) ||
-        _groups.contains(_base(p['f'] ?? ''));
+    if (_groups.contains(_base(p['d'] ?? '')) ||
+        _groups.contains(_base(p['f'] ?? ''))) return true;
+    // A neighbour's answer: one of the kinds asked for, while the ask is out.
+    final pair = _pendingNeighbour();
+    return pair != null && pair.kinds.split(',').contains(p.type);
+  }
+
+  /// The one neighbour ask out within its grace, or null when none or more
+  /// than one (then nothing is attributed: the next tick asks again).
+  MirrorPair? _pendingNeighbour() {
+    MirrorPair? found;
+    final now = nowMs();
+    for (final key in _pending.values) {
+      final s = _state[key];
+      if (s == null || now - s.askedAtMs > askGrace.inMilliseconds) continue;
+      final pair = _pairOf(key);
+      if (!pair.neighbour) continue;
+      if (found != null) {
+        return null;
+      }
+      found = pair;
+    }
+    return found;
   }
 
   /// Ask every pair that is due. Called once a minute by the host.
   Future<void> tick() async {
     final list = pairs();
-    _groups = {for (final p in list) p.group};
+    _groups = {for (final p in list) if (p.group != null) p.group!};
     final keys = {for (final p in list) p.key};
     _state.removeWhere((k, _) => !keys.contains(k));
     if (_self.isEmpty) return;
@@ -161,7 +192,7 @@ class XprsGroupMirror {
 
   Future<void> _ask(MirrorPair pair, _State s, int now,
       {required bool continuation}) async {
-    final known = haveKey?.call(pair.group) ?? true;
+    final known = pair.neighbour || (haveKey?.call(pair.group!) ?? true);
     s.identityOnly = !known;
     if (!continuation) {
       s.windowTsMs = now;
@@ -173,8 +204,9 @@ class XprsGroupMirror {
         ? _mark(pair) ?? now - firstWindow.inMilliseconds
         : now - identityWindow.inMilliseconds;
     final wire = StringBuffer('t:command f:$_self d:${pair.peer} '
-        'ts:${xprsNowTs(now)} cmd:history only:${pair.group} '
-        'kind:${known ? kinds : 'identity'} since:${xprsNowTs(since)}');
+        'ts:${xprsNowTs(now)} cmd:history '
+        '${pair.neighbour ? '' : 'only:${pair.group} '}'
+        'kind:${pair.neighbour ? pair.kinds : (known ? pair.kinds : 'identity')} since:${xprsNowTs(since)}');
     if (s.untilMs != null) wire.write(' until:${xprsNowTs(s.untilMs!)}');
     final p = XprsPacket.parse(wire.toString());
     if (p == null || !p.fits) return;
@@ -208,7 +240,10 @@ class XprsGroupMirror {
     switch (code) {
       case 429:
         refused++;
-        s.nextAtMs = now + refusedFor.inMilliseconds;
+        // `m:busy`: one replay at a time on that channel, and it was another
+        // asker's; a minute is enough. Over budget is the peer's authority.
+        s.nextAtMs = now +
+            ((p['m'] ?? '').trim() == 'busy' ? interval : refusedFor).inMilliseconds;
         return;
       case 206:
         pagesIn++;
@@ -254,11 +289,36 @@ class XprsGroupMirror {
     if (_pending.isEmpty) return;
     final from = _base(p['f'] ?? ''), to = _base(p['d'] ?? '');
     final now = nowMs();
+    // A room a neighbour hosts and shares with the mesh: its identity, or a
+    // post to it, in the neighbour's answer. The host decides whether it is new.
+    final nb = _pendingNeighbour();
+    if (nb != null && onMeshRoom != null) {
+      if (p.type == 'identity' && from.startsWith('X5')) {
+        onMeshRoom!(from, nb.peer, p['nick'] ?? '');
+      } else if (p.type == 'blog' && to.startsWith('X5')) {
+        onMeshRoom!(to, nb.peer, '');
+      }
+    }
+    // A mirrored room's identity in answer to its own ask: the name for a
+    // room first met by a post (the host renames only such a one).
+    if (onMeshRoom != null && p.type == 'identity' && _groups.contains(from)) {
+      for (final key in _pending.values) {
+        final pair = _pairOf(key);
+        if (pair.group == from) {
+          onMeshRoom!(from, pair.peer, p['nick'] ?? '');
+          break;
+        }
+      }
+    }
     for (final key in _pending.values) {
       final s = _state[key];
       if (s == null || now - s.askedAtMs > askGrace.inMilliseconds) continue;
-      final group = key.split('|').last;
-      if (from != group && to != group) continue;
+      final pair = _pairOf(key);
+      if (pair.neighbour) {
+        if (!pair.kinds.split(',').contains(p.type)) continue;
+      } else if (from != pair.group && to != pair.group) {
+        continue;
+      }
       s.rowsThisAsk++;
       s.rowsWindow++;
       rows++;
@@ -269,7 +329,10 @@ class XprsGroupMirror {
 
   MirrorPair _pairOf(String key) {
     final i = key.indexOf('|');
-    return MirrorPair(peer: key.substring(0, i), group: key.substring(i + 1));
+    final g = key.substring(i + 1);
+    return g == '*'
+        ? MirrorPair(peer: key.substring(0, i), kinds: neighbourKinds)
+        : MirrorPair(peer: key.substring(0, i), group: g);
   }
 
   int? _mark(MirrorPair pair) {
@@ -286,7 +349,7 @@ class XprsGroupMirror {
         for (final e in _state.entries)
           {
             'peer': _pairOf(e.key).peer,
-            'group': _pairOf(e.key).group,
+            'group': _pairOf(e.key).group ?? '*',
             'mark': _mark(_pairOf(e.key)),
             'interval_s': e.value.intervalMs ~/ 1000,
             'asking': e.value.askId != null,

@@ -414,6 +414,46 @@ void main() {
     });
   });
 
+  group('the mesh (docs/plan-mesh-trust.md): a room shared with it, and the neighbours', () {
+    test('a mesh room is served to trusted peers, who mirror it on their own', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = (await a.handle('POST', '/api/rooms', {}, jsonEncode({'action': 'create', 'name': 'Radio',
+          'kind': 'forum', 'visibility': 'public', 'posting': 'anyone', 'session': s}), peer: lan)).json['room'] as String;
+      // Nobody trusted yet (open mode): shared with the mesh means with no one.
+      expect((await a.handle('POST', '/api/rooms', {}, jsonEncode({'action': 'share', 'call': call, 'mesh': true, 'session': s}), peer: lan)).status, 200);
+      final r = (await rooms(a, s)).single;
+      expect(r['mesh'], true);
+      expect(r['shared'], true);
+      expect(a.roomServable(call, 'X3TOWN'), false);
+      expect(a.mirrorPairs(), isEmpty);
+      // Named: the trusted peers are the room's peers and the neighbours.
+      a.trustedPeer = (c) => c == 'X3TOWN' || c == 'X3HUB';
+      a.trustedPeers = () => ['X3TOWN', 'X3HUB'];
+      expect(a.roomServable(call, 'X3TOWN'), true);
+      expect(a.roomServable(call, 'X3ROGU'), false);
+      expect(a.roomPeers(call), ['X3TOWN', 'X3HUB']);
+      final pairs = a.mirrorPairs();
+      expect(pairs.where((p) => p.group == call).map((p) => p.peer), ['X3TOWN', 'X3HUB']);
+      expect(pairs.where((p) => p.neighbour).map((p) => p.peer), ['X3TOWN', 'X3HUB']);
+      expect(pairs.where((p) => p.neighbour).first.kinds, 'info,warning,blog,identity');
+      // A peer's mesh room met in its answer is mirrored here, once, and
+      // named by its identity when that comes; a stranger's is not.
+      a.autoMirror('X5MESH', 'X3TOWN', '');
+      a.autoMirror('X5MESH', 'X3TOWN', 'antennas');
+      a.autoMirror('X5MESH', 'X3TOWN', 'Other');
+      a.autoMirror('X5ROGU', 'X3ROGU', 'Junk');
+      final list = await rooms(a, s);
+      final m = list.firstWhere((r) => r['call'] == 'X5MESH');
+      expect(m['mirrored'], true);
+      expect(m['owner'], 'X3TOWN');
+      expect(m['name'], 'Antennas');
+      expect(m['kind'], 'forum');
+      expect(list.where((r) => r['call'] == 'X5ROGU'), isEmpty);
+      expect(a.mirrorPairs().where((p) => p.group == 'X5MESH').single.peer, 'X3TOWN');
+    });
+  });
+
   group('alerts (10.10.2)', () {
     String alert(String call, BigInt key) =>
         _signed('t:warning f:$call kind:outage sev:watch ts:${ts()} m:power cut', key);

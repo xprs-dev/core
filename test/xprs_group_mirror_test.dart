@@ -128,6 +128,14 @@ void main() {
     expect(sent, hasLength(2));
   });
 
+  test('429 m:busy is a moment: asked again a minute later', () async {
+    await m.tick();
+    result(429, m_: 'busy');
+    now += XprsGroupMirror.interval.inMilliseconds;
+    await m.tick();
+    expect(sent, hasLength(2));
+  });
+
   test('an ask nobody answered is given up after its grace, and asked again', () async {
     await m.tick();
     now += XprsGroupMirror.askGrace.inMilliseconds + XprsGroupMirror.interval.inMilliseconds;
@@ -153,6 +161,28 @@ void main() {
     m.unknownSigner('X3MIRR');
     await Future<void>.delayed(Duration.zero);
     expect(sent, hasLength(2), reason: 'never our own');
+  });
+
+  test('a neighbour (12.9.3): the noticeboard asked for without only:, its answer asked-for, its rooms met', () async {
+    m.pairs = () => const [MirrorPair(peer: owner, kinds: XprsGroupMirror.neighbourKinds)];
+    final met = <String>[];
+    m.onMeshRoom = (room, peer, nick) => met.add('$room $peer $nick');
+    await m.tick();
+    final p = XprsPacket.parse(sent.single)!;
+    expect(p.has('only'), false);
+    expect(p['kind'], 'info,warning,blog,identity');
+    expect(p['d'], owner);
+    // While the ask is out, an alert, a post or an identity is its answer.
+    expect(m.askedFor(XprsPacket.parse('t:warning f:X1RD89 ts:2026-11-06_11:59:00 kind:fire m:x')!), true);
+    expect(m.askedFor(XprsPacket.parse('t:message f:X1RD89 ts:2026-11-06_11:59:00 m:x')!), false);
+    m.noteHeard(XprsPacket.parse('t:identity f:X5MESH ts:2026-11-06_11:50:00 k:npub1x nick:antennas')!);
+    m.noteHeard(XprsPacket.parse('t:blog f:X1RD89 d:X5POST ts:2026-11-06_11:51:00 title:t m:x')!);
+    expect(met, ['X5MESH $owner antennas', 'X5POST $owner ']);
+    result(200);
+    expect(m.rows, 2);
+    expect(m.askedFor(XprsPacket.parse('t:warning f:X1RD89 ts:2026-11-06_11:59:00 kind:fire m:x')!), false,
+        reason: 'answered: nothing more is attributed');
+    m.onMeshRoom = null;
   });
 
   test('a mirrored group\'s packets are asked-for rows, whoever wrote them', () async {

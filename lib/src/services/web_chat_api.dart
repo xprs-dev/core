@@ -52,7 +52,7 @@ import 'package:reticulum/reticulum.dart' show NostrCrypto;
 import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
-import 'xprs/xprs_group_mirror.dart' show MirrorPair;
+import 'xprs/xprs_group_mirror.dart';
 import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
 import 'xprs/xprs_packet.dart';
@@ -826,6 +826,7 @@ class WebChatApi {
       // Sharing with other stations (10.10.1): the peers it lists, and the
       // ones that asked for it and were answered.
       'shared': meta['shared'] == true,
+      'mesh': meta['mesh'] == true,
       if (meta['shared'] == true) ...{
         'peers': [for (final x in meta['peers'] as List? ?? const []) '$x'],
         'seen': [for (final x in meta['seen'] as List? ?? const []) '$x'],
@@ -953,7 +954,12 @@ class WebChatApi {
     switch (action) {
       case 'share':
         if (meta['mirrored'] == true) return no(400, 'a mirrored room is shared by its owner');
-        final shared = b['shared'] == true;
+        // With the mesh (docs/plan-mesh-trust.md): served to every trusted
+        // peer, who mirrors it on its own; a shared room, with the peers
+        // being whoever the administrator trusts at the time.
+        final mesh = b['mesh'] == true;
+        final shared = b['shared'] == true || mesh;
+        meta['mesh'] = mesh;
         final peers = <String>[
           for (final x in b['peers'] is List ? b['peers'] as List : const [])
             if (_callRe.hasMatch(_base('$x')) && _base('$x') != _station) _base('$x'),
@@ -1032,6 +1038,7 @@ class WebChatApi {
     if (a.isEmpty || a == _station) return false;
     if (meta['mirrored'] == true) return a == _base('${meta['owner'] ?? ''}');
     if (meta['shared'] != true) return false;
+    if (meta['mesh'] == true) return trustedPeer?.call(a) ?? false;
     final peers = [for (final x in meta['peers'] as List? ?? const []) '$x'];
     if (peers.contains(a)) return true;
     if (peers.isNotEmpty || meta['visibility'] == 'private') return false;
@@ -1057,11 +1064,58 @@ class WebChatApi {
       return o.isEmpty ? const [] : [o];
     }
     if (meta['shared'] != true) return const [];
+    if (meta['mesh'] == true) return trustedPeers?.call() ?? const [];
     return {
       for (final x in meta['peers'] as List? ?? const []) '$x',
       for (final x in meta['seen'] as List? ?? const []) '$x',
     }.toList();
   }
+
+  /// The mesh (docs/plan-mesh-trust.md), from the host: is [call] a trusted
+  /// peer, and who are they. Null or empty: nobody, as in `open` mode.
+  bool Function(String call)? trustedPeer;
+  List<String> Function()? trustedPeers;
+
+  /// A room a trusted peer hosts and shares with the mesh, met in its answer
+  /// (XprsGroupMirror.onMeshRoom): mirrored here when it is new.
+  void autoMirror(String room, String peer, String nick) {
+    if (!_hostsRooms) return;
+    final call = _base(room), owner = _base(peer);
+    if (!(trustedPeer?.call(owner) ?? false)) return;
+    final rooms = _rooms;
+    if (!call.startsWith('X5') || !_callRe.hasMatch(call)) return;
+    final have = rooms[call];
+    if (have != null) {
+      // Met first by a post, named by its identity when that arrives.
+      if (have['mirrored'] == true && have['owner'] == owner && have['name'] == call && nick.isNotEmpty) {
+        have['name'] = _nickName(nick);
+        rooms[call] = have;
+        _saveRooms(rooms);
+      }
+      return;
+    }
+    rooms[call] = _mirroredMeta(owner, nick.isEmpty ? call : _nickName(nick), 'forum', 'public', 'anyone');
+    _saveRooms(rooms);
+    onSync?.call(call);
+  }
+
+  /// A room's nick is a label (`antenna-talk`, _roomIdentity); its name
+  /// reads as words: `Antenna talk`.
+  static String _nickName(String nick) {
+    final w = nick.replaceAll('-', ' ').trim();
+    return w.isEmpty ? nick : w[0].toUpperCase() + w.substring(1);
+  }
+
+  Map<String, Object?> _mirroredMeta(String owner, String name, String kind, String visibility, String posting) => {
+        'name': name,
+        'about': '',
+        'kind': kind,
+        'visibility': visibility,
+        'posting': visibility == 'private' ? 'members' : posting,
+        'mirrored': true,
+        'owner': owner,
+        'created': now().millisecondsSinceEpoch,
+      };
 
   /// Every (group, peer) this station keeps in step (XprsGroupMirror): a
   /// mirrored room with its owner, a shared room with each peer it lists or
@@ -1075,14 +1129,20 @@ class WebChatApi {
         final owner = _base('${meta['owner'] ?? ''}');
         if (owner.isNotEmpty) out.add(MirrorPair(group: e.key, peer: owner));
       } else if (meta['shared'] == true) {
-        final peers = <String>{
-          for (final x in meta['peers'] as List? ?? const []) '$x',
-          for (final x in meta['seen'] as List? ?? const []) '$x',
-        };
+        final peers = meta['mesh'] == true
+            ? <String>{...?trustedPeers?.call()}
+            : <String>{
+                for (final x in meta['peers'] as List? ?? const []) '$x',
+                for (final x in meta['seen'] as List? ?? const []) '$x',
+              };
         for (final p in peers) {
           out.add(MirrorPair(group: e.key, peer: p));
         }
       }
+    }
+    // The neighbours (12.9.3): each trusted peer's noticeboard, kept in step.
+    for (final p in trustedPeers?.call() ?? const <String>[]) {
+      out.add(MirrorPair(peer: p, kinds: XprsGroupMirror.neighbourKinds));
     }
     return out;
   }

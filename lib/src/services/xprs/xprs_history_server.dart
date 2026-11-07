@@ -255,7 +255,12 @@ class XprsHistoryServer {
       return;
     }
     final servingRoom = roomVerdict == true;
-    if (!selfIsAsking && !freely && !servingRoom && !_budgetAllows(from, now)) {
+    // A trusted peer (docs/plan-mesh-trust.md) keeps this station's
+    // noticeboard in step on a standing ask beside its routine catch-up: the
+    // two land in one second, and a 429 would hold the mesh back for ten
+    // minutes. It is metered by its own cadence, as a shared room is.
+    final peerAsking = trusted?.call(_base(from)) ?? false;
+    if (!selfIsAsking && !freely && !servingRoom && !peerAsking && !_budgetAllows(from, now)) {
       refused429++;
       refusedBudget++;
       LogService.instance
@@ -334,7 +339,13 @@ class XprsHistoryServer {
     if (hostedRoom != null) {
       rows.removeWhere((r) {
         final toc = _base(r['to'] as String? ?? '');
-        return toc.startsWith('X5') && hostedRoom!(toc, from) == false;
+        if (toc.startsWith('X5') && hostedRoom!(toc, from) == false) return true;
+        // A room's identity in an untargeted answer (a neighbour's ask) is
+        // an invitation to mirror it: only a room this station hosts and
+        // shares with the asker goes out that way.
+        final fromc = _base(r['from'] as String? ?? '');
+        return onlyBase.isEmpty && fromc.startsWith('X5') &&
+            (r['type'] == 'identity') && hostedRoom!(fromc, from) != true;
       });
     }
     answered++;
@@ -371,7 +382,10 @@ class XprsHistoryServer {
       } else {
         refused429++;
         refusedBusy++;
-        _airControl(selfBase, from, cmdId, 429);
+        // Busy, not over budget: the channel is replaying to somebody else
+        // for a few seconds. Said so, so a standing ask retries in a minute
+        // rather than keeping 429's ten-minute distance.
+        _airControl(selfBase, from, cmdId, 429, m: 'busy');
         return;
       }
     }
@@ -544,7 +558,13 @@ class XprsHistoryServer {
     if (hostedRoom != null) {
       rows.removeWhere((r) {
         final toc = _base(r['to'] as String? ?? '');
-        return toc.startsWith('X5') && hostedRoom!(toc, from) == false;
+        if (toc.startsWith('X5') && hostedRoom!(toc, from) == false) return true;
+        // A room's identity in an untargeted answer (a neighbour's ask) is
+        // an invitation to mirror it: only a room this station hosts and
+        // shares with the asker goes out that way.
+        final fromc = _base(r['from'] as String? ?? '');
+        return onlyBase.isEmpty && fromc.startsWith('X5') &&
+            (r['type'] == 'identity') && hostedRoom!(fromc, from) != true;
       });
     }
     answered++;
