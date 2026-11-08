@@ -167,9 +167,14 @@ class PublicName {
             _extraAt == null ||
             DateTime.now().difference(_extraAt!) > extraNamesEvery)) {
       try {
-        _extra = await extraNames!(v4: addrs.v4?.address, v6: addrs.v6?.address);
+        final got = await extraNames!(v4: addrs.v4?.address, v6: addrs.v6?.address);
         _extraAt = DateTime.now();
-        if (_extra.isNotEmpty) log('public name: named ${_extra.join(', ')}');
+        if (got.isNotEmpty && got.join(',') != _extra.join(',')) {
+          log('public name: named ${got.join(', ')}');
+          // A new name is tested at the next round, not after the backoff.
+          _nextProbe = DateTime.fromMillisecondsSinceEpoch(0);
+        }
+        _extra = got;
       } catch (e) {
         log('public name: names: $e');
       }
@@ -213,8 +218,20 @@ class PublicName {
         have = certNames;
       }
     }
-    final untested = names.where((n) => !have.contains(n)).toList();
+    var untested = names.where((n) => !have.contains(n)).toList();
     if (untested.isEmpty || DateTime.now().isBefore(_nextProbe)) return;
+    // A name just written into DNS takes a minute to reach the world; a test
+    // before that gets NXDOMAIN and the CA's resolvers remember it for an
+    // hour. Such a name waits for the next round, outside the backoff.
+    final waiting = <String>[];
+    for (final n in untested.where(_extra.contains)) {
+      if (!await _resolves(n)) waiting.add(n);
+    }
+    if (waiting.isNotEmpty) {
+      log('public name: ${waiting.join(', ')} not in DNS yet; testing next round');
+      untested = untested.where((n) => !waiting.contains(n)).toList();
+      if (untested.isEmpty) return;
+    }
 
     final open = await _probe(untested);
     final https = [for (final e in open.entries) if (e.value.$2) e.key];
@@ -228,6 +245,14 @@ class PublicName {
       log('public name: port 443 is closed, so no HTTPS yet');
     }
     if (https.length < untested.length) _later();
+  }
+
+  static Future<bool> _resolves(String name) async {
+    try {
+      return (await InternetAddress.lookup(name)).isNotEmpty;
+    } on SocketException {
+      return false;
+    }
   }
 
   void _later() {

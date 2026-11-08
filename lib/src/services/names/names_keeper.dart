@@ -348,6 +348,7 @@ class NamesKeeper {
       store.put(r);
       return true;
     } on NamesDnsBusy {
+      log('names: the zone\'s API asked to wait; ${r.label} is written from the sweep');
       return false;
     } catch (e) {
       log('names: DNS write for ${r.label} failed: $e');
