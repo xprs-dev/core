@@ -94,7 +94,7 @@ class PublicName {
   /// name in the certificate being served, http://name/ for a name open on
   /// port 80 only. Empty until a test from outside succeeded.
   List<String> get urls => [
-        if (_https != null) for (final n in _served) 'https://$n/',
+        if (_https != null) for (final n in _ordered(_served)) 'https://$n/',
         for (final n in _httpOnly)
           if (_https == null || !_served.contains(n)) 'http://$n/',
       ];
@@ -185,6 +185,9 @@ class PublicName {
       if (addrs.v4 != null) nipName(addrs.v4!),
     ];
     _names = names;
+    // The certificate may already cover a better name than the one
+    // published (a keeper's name learned after the nip.io one): say so.
+    if (_https != null) _publishPrimary();
 
     // An address changed and the name we published no longer points here:
     // withdraw it (the announcement then says url:-) and stop serving it.
@@ -434,9 +437,21 @@ class PublicName {
     http
       ..httpsPort = options.httpsPort
       ..redirectHosts = names.toSet();
-    // The CA only follows redirects to 443, so a reachable https name is
-    // on 443 from outside even when the server listens elsewhere (UPnP maps).
-    _setUrl('https://${names.first}/');
+    _publishPrimary();
+  }
+
+  /// The names in the order of preference: the keeper's names first (the
+  /// order of [_names]), then whatever the certificate has beyond them.
+  List<String> _ordered(List<String> served) => [
+        for (final n in _names) if (served.contains(n)) n,
+        for (final n in served) if (!_names.contains(n)) n,
+      ];
+
+  /// The CA only follows redirects to 443, so a reachable https name is on
+  /// 443 from outside even when the server listens elsewhere (UPnP maps).
+  void _publishPrimary() {
+    final o = _ordered(_served);
+    if (o.isNotEmpty) _setUrl('https://${o.first}/');
   }
 
   void _setUrl(String u) {
