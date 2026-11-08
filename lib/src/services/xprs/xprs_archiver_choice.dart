@@ -27,7 +27,9 @@
  * every hour spreads its mail over every volunteer it ever heard, and none of
  * them holds the whole conversation. So an adopted archiver is kept until it
  * goes silent for [kForgetAfter], and the operator naming one at any time
- * overrides all of this (12.3: "the depositor chooses too").
+ * overrides all of this (12.3: "the depositor chooses too"). The one
+ * exception is rule 3 itself: a radio-only archiver, adopted because it was
+ * all there was, gives way to an internet or LAN volunteer once one is heard.
  */
 library;
 
@@ -91,9 +93,21 @@ class XprsArchiverChoice {
       // Kept unless it has been silent past the forget window — and "not in
       // the fresh list" is not silence, it is only "not heard lately".
       final seen = offers.where((o) => o.callsign.toUpperCase() == cur);
-      if (still.isNotEmpty ||
-          (seen.isNotEmpty &&
-              nowMs - seen.first.lastHeardMs <= kForgetAfter.inMilliseconds)) {
+      // ...except that rule 3 outranks loyalty. A radio-only archiver was
+      // adopted because it was the only volunteer in earshot (a fresh phone
+      // beside an ESP32 station hears it over BLE first); it is a fallback,
+      // and an internet or LAN volunteer that turns up later is the archiver
+      // rule 3 wanted all along. Kept, a C61 deposited its mail with a board
+      // it can only reach within a few metres, and sent it every "where is"
+      // question about LAN stations that board had never heard.
+      final curOffGrid =
+          seen.isNotEmpty && seen.every((o) => o.offGrid);
+      final better = curOffGrid && fresh.any((o) => !o.offGrid);
+      if (!better &&
+          (still.isNotEmpty ||
+              (seen.isNotEmpty &&
+                  nowMs - seen.first.lastHeardMs <=
+                      kForgetAfter.inMilliseconds))) {
         return cur;
       }
       // NOTHING BETTER TO MOVE TO: keep the one we have.
