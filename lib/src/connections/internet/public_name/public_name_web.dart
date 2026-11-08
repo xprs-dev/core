@@ -19,6 +19,8 @@ class PublicName {
   final void Function(String?)? onUrl;
   String? get url => null;
   String? get publicIPv4 => null;
+  List<String> get urls => const [];
+  List<String> get pending => const [];
 
   Future<void> start() async {}
   Future<void> check() async {}

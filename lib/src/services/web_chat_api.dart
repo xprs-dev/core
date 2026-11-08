@@ -79,6 +79,14 @@ class WebChatRoomKeys {
 }
 
 /// One answer: a status and a JSON body.
+/// Where the internet reaches a station's web chat (WebChatApi.addresses):
+/// the addresses that work now and the names not yet shown reachable.
+class WebAddresses {
+  const WebAddresses({this.urls = const [], this.pending = const []});
+  final List<String> urls;
+  final List<String> pending;
+}
+
 class WebChatReply {
   final int status;
   final Map<String, dynamic> json;
@@ -361,17 +369,22 @@ class WebChatApi {
 
   WebChatReply _services() {
     final app = appPath();
+    final where = addresses?.call();
     return WebChatReply(200, {
       'ok': true,
       // The station's callsign, which the page shows next to its title.
       'station': selfCallsign(),
+      // Where the internet reaches this web chat (API-HTTP.md): what works
+      // now, and the names whose ports the router has not let in yet.
+      if (where != null) 'urls': where.urls,
+      if (where != null) 'urls_pending': where.pending,
       'features': <String, bool>{},
       // Files by reference (GET/POST /api/xprs/file/<ref>).
       if (fileStore != null)
         'file': {'get': true, 'put': true, 'max': fileMax},
       'serve': <String>[],
       'page': {
-        'tabs': ['chat', 'traffic', 'alerts'],
+        'tabs': ['chat', 'traffic', 'alerts', if (where != null) 'station'],
         // Who may post an alert through this station (10.10.2).
         'alerts': settings['who_may_alert'],
         // What the page defines for itself and the administrator set
@@ -1640,6 +1653,12 @@ class WebChatApi {
   /// Told after the administrator changed the settings, with the new map:
   /// the host rebuilds what reads them on a hot path (the mesh policy).
   void Function(Map<String, Object> settings)? onSettings;
+
+  /// Where the internet reaches this web chat, from the host's public-name
+  /// service (the server edition): reported on /api/services as `urls` and
+  /// `urls_pending`, and the page then offers its Station view. Null: the
+  /// host has no such service (a hotspot, the app).
+  WebAddresses Function()? addresses;
 
   static final RegExp _meshCallRe = RegExp(r'^X[1-5][A-Z0-9]{2,5}$');
   static final RegExp _npubRe = RegExp(r'^npub1[a-z0-9]{58}$');

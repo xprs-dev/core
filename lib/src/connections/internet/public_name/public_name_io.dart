@@ -72,9 +72,29 @@ class PublicName {
   DateTime _nextProbe = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _backoff = const Duration(minutes: 15);
   String? url;
+  List<String> _names = const [];
+  List<String> _served = const [];
+  List<String> _httpOnly = const [];
 
   /// The public IPv4 last found (null before the first check, or none).
   String? get publicIPv4 => _last?.v4?.address;
+
+  /// Where the internet reaches this web chat now: https://name/ for every
+  /// name in the certificate being served, http://name/ for a name open on
+  /// port 80 only. Empty until a test from outside succeeded.
+  List<String> get urls => [
+        if (_https != null) for (final n in _served) 'https://$n/',
+        for (final n in _httpOnly)
+          if (_https == null || !_served.contains(n)) 'http://$n/',
+      ];
+
+  /// Names this machine's addresses give that nobody can reach yet: the
+  /// router has not let ports 80 and 443 in for that address, or the test
+  /// has not run. Shown to the operator so they know what to open.
+  List<String> get pending => [
+        for (final n in _names)
+          if (!(_https != null && _served.contains(n)) && !_httpOnly.contains(n)) n,
+      ];
 
   String get _tls => options.dir;
   File get _stateFile => File('$_tls/state.json');
@@ -134,6 +154,7 @@ class PublicName {
       if (addrs.v6 != null) nipName(addrs.v6!),
       if (addrs.v4 != null) nipName(addrs.v4!),
     ];
+    _names = names;
 
     // An address changed and the name we published no longer points here:
     // withdraw it (the announcement then says url:-) and stop serving it.
@@ -142,6 +163,8 @@ class PublicName {
       log('public name: $current no longer points here');
       await _https?.stop();
       _https = null;
+      _served = const [];
+      _httpOnly = const [];
       http.redirectHosts = {};
       url = null;
       onUrl?.call(null);
@@ -173,6 +196,7 @@ class PublicName {
     final httpOnly = [
       for (final e in open.entries) if (e.value.$1 && !e.value.$2) e.key,
     ];
+    _httpOnly = httpOnly;
     if (https.isNotEmpty) await _issue([...have, ...https]);
     if (have.isEmpty && https.isEmpty && httpOnly.isNotEmpty) {
       _setUrl('http://${httpOnly.first}/');
@@ -351,10 +375,12 @@ class PublicName {
     } catch (e) {
       log('public name: cannot serve HTTPS on ${options.httpsPort}: $e');
       _https = null;
+      _served = const [];
       http.redirectHosts = {};
       return;
     }
     _https = s;
+    _served = names;
     http
       ..httpsPort = options.httpsPort
       ..redirectHosts = names.toSet();

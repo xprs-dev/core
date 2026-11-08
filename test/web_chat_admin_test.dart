@@ -72,6 +72,20 @@ void main() {
     expect((r.json['page'] as Map)['admin'], true);
   });
 
+  test('services says where the internet reaches the web chat when the host '
+      'knows, and the page then gets its Station view', () async {
+    final a = make();
+    var r = await a.handle('GET', '/api/services', {}, '');
+    expect(r.json.containsKey('urls'), isFalse);
+    expect((r.json['page'] as Map)['tabs'], isNot(contains('station')));
+    a.addresses = () => const WebAddresses(
+        urls: ['https://1-2-3-4.nip.io/'], pending: ['2a02-1--5.nip.io']);
+    r = await a.handle('GET', '/api/services', {}, '');
+    expect(r.json['urls'], ['https://1-2-3-4.nip.io/']);
+    expect(r.json['urls_pending'], ['2a02-1--5.nip.io']);
+    expect((r.json['page'] as Map)['tabs'], contains('station'));
+  });
+
   test('with no admin, a proven visitor on the network claims it', () async {
     final a = make();
     final s = await session(a, 'X1ALIC', _alice, lan);

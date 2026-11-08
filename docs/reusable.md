@@ -313,6 +313,10 @@ topic to the wapp that shows it (`routeCoreNotification`,
 - `discoverPublicAddresses`, `askPublicAddress`, `nipName`, `isPublic`,
   `isEui64` (`public_address_io.dart`) — what the internet sees of this
   machine, by one UDP DNS query (TXT ip.nip.io), no HTTP service.
+- `PublicName.urls` / `PublicName.pending` + `WebChatApi.addresses` — what
+  works now and which names still wait for the router, for the page's
+  Station view (`/api/services` `urls`, `urls_pending`); any host that
+  serves the web chat on the internet wires the two in one line.
 - `XprsPublisher.setPublicUrl` / `XprsProfiles.urlFor` — a host announces
   where it serves the web chat (6.3.2 `url:`, a decoration field) and a screen
   reads another station's; `PublicName.onUrl` feeds the first.
