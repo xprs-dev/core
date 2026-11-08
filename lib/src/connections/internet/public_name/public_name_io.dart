@@ -65,6 +65,17 @@ class PublicName {
   /// Called with the public URL whenever it changes (null: none).
   final void Function(String?)? onUrl;
 
+  /// Names for this station beyond the nip.io ones, asked for its public
+  /// addresses (the names keeper of XPRS.md 13.0.3: `x3ptzm.xprs.dev`, from
+  /// the keeper's client, or from the keeper itself on the keeper's host).
+  /// Asked when the addresses change and every [extraNamesEvery] otherwise,
+  /// again each round while it returns nothing. They go first: the first
+  /// reachable name is the one published as the station's URL.
+  Future<List<String>> Function({String? v4, String? v6})? extraNames;
+  static const Duration extraNamesEvery = Duration(days: 7);
+  List<String> _extra = const [];
+  DateTime? _extraAt;
+
   AcmeWebServer? _https;
   Timer? _timer;
   bool _busy = false;
@@ -150,7 +161,21 @@ class PublicName {
     }
     if (options.upnp) await _openPorts(addrs, quiet: !changed);
 
+    if (extraNames != null &&
+        (changed ||
+            _extra.isEmpty ||
+            _extraAt == null ||
+            DateTime.now().difference(_extraAt!) > extraNamesEvery)) {
+      try {
+        _extra = await extraNames!(v4: addrs.v4?.address, v6: addrs.v6?.address);
+        _extraAt = DateTime.now();
+        if (_extra.isNotEmpty) log('public name: named ${_extra.join(', ')}');
+      } catch (e) {
+        log('public name: names: $e');
+      }
+    }
     final names = [
+      ..._extra,
       if (addrs.v6 != null) nipName(addrs.v6!),
       if (addrs.v4 != null) nipName(addrs.v4!),
     ];

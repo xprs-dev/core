@@ -17,6 +17,7 @@ class PublicName {
   final AcmeWebServer http;
   final AcmeWebServer Function() newServer;
   final void Function(String?)? onUrl;
+  Future<List<String>> Function({String? v4, String? v6})? extraNames;
   String? get url => null;
   String? get publicIPv4 => null;
   List<String> get urls => const [];

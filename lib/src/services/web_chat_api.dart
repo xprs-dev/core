@@ -60,6 +60,7 @@ import 'xprs/xprs_files.dart' show XprsFileServer, xprsFileSha, xprsFileExt;
 import 'xprs/xprs_group_mirror.dart';
 import 'xprs/xprs_groups.dart';
 import 'xprs/xprs_id.dart';
+import 'names/names_keeper.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_parts.dart';
 import 'xprs/xprs_mesh_policy.dart';
@@ -352,6 +353,16 @@ class WebChatApi {
     if (path == '/api/session') {
       if (method == 'GET') return _challenge(peer);
       if (method == 'POST') return _prove(_wireOf(body), peer);
+    }
+    if (path == '/api/names' && names != null) {
+      if (method == 'GET') {
+        final (status, json) = names!.challenge(peer);
+        return WebChatReply(status, json);
+      }
+      if (method == 'POST') {
+        final (status, json) = await names!.claim(_wireOf(body), peer);
+        return WebChatReply(status, json);
+      }
     }
     if (path == '/api/xprs/send' && (method == 'POST' || method == 'GET')) {
       // GET with ?wire= is the fallback the page uses when a captive WebView
@@ -1653,6 +1664,10 @@ class WebChatApi {
   /// Told after the administrator changed the settings, with the new map:
   /// the host rebuilds what reads them on a hot path (the mesh policy).
   void Function(Map<String, Object> settings)? onSettings;
+
+  /// The names keeper (XPRS.md 13.0.3, `/api/names`), on a host that keeps a
+  /// zone for other stations. Null: this station keeps no names.
+  NamesKeeper? names;
 
   /// Where the internet reaches this web chat, from the host's public-name
   /// service (the server edition): reported on /api/services as `urls` and

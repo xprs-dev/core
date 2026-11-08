@@ -323,6 +323,27 @@ topic to the wapp that shows it (`routeCoreNotification`,
 - `UpnpGateway` (`upnp_io.dart`) — SSDP discovery, IPv4 port mappings
   (falls back to a permanent lease), IPv6 pinholes, the router's public IPv4.
 
+## Names for stations (`services/names/`)
+
+- `NamesKeeper` (`names_keeper.dart`, pure Dart) — `<callsign>.<zone>` for
+  any station that proves its key (XPRS.md 13.0.3): the challenge, the
+  signed `t:service dial:` claim checked in order (shape, signature, key
+  derives the callsign, nonce, timestamp, source address), the six-month
+  lock per label, rate limits, reserved labels, the sweep and the operator's
+  release. Storage (`NamesStore`, with `MemoryNamesStore`) and DNS
+  (`NamesDns`) are seams, so a test drives it with fakes and a host picks
+  its store. `isClaimableAddress` / `normalizeAddress` are the public-address
+  rules for any service that takes an address from a client.
+- `DesecDns` (`desec_dns_io.dart`) — `NamesDns` over deSEC's bulk RRset
+  API, 429 as `NamesDnsBusy`; the token never leaves it.
+- `NamesClient` (`names_client_io.dart`) — the station side: one claim per
+  address family over a connection of that family (`HttpClient.connectionFactory`
+  pinned to a looked-up address), which is how any client proves it can
+  send from the address it names.
+- `PublicName.extraNames` — the hook by which a host adds names it got
+  elsewhere to the ones tested and certified; they go first, so the first
+  reachable becomes the station's URL.
+
 ## Moving code here from the app
 
 1. Cut the edges first: a file moves when nothing it imports is Flutter, a
