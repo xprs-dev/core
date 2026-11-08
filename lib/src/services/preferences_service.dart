@@ -1035,6 +1035,13 @@ class PreferencesService {
   Future<void> setOnboardingComplete(bool v) =>
       _prefs.setBool('onboarding.complete', v);
 
+  // The set of refused permissions (sorted keys, comma-joined) whose home
+  // banner the person dismissed; a different set shows it again.
+  String get permissionsBannerDismissed =>
+      _prefs.getString('permissions.banner.dismissed') ?? '';
+  Future<void> setPermissionsBannerDismissed(String v) =>
+      _prefs.setString('permissions.banner.dismissed', v);
+
   // The first-run tour of Status, Chat and Mesh (AppsIntroPage), shown once.
   bool get appsIntroSeen => _prefs.getBool('intro.apps.seen') ?? false;
   Future<void> setAppsIntroSeen(bool v) => _prefs.setBool('intro.apps.seen', v);

@@ -301,6 +301,13 @@ settings directly.
   up). Call it at the moment a transfer or a directed wire needs the shared
   transport (`cmd:file` answered 202, an internet fetch, a wire for the
   Reticulum bearer), idempotently, never checking first.
+- **`CoreHost.radioAllowed()` + `RnsService.radioGranted()`**: whether the
+  host may use Bluetooth right now (an Android runtime permission the person
+  can refuse). While false, no BLE interface is built (`start(mode:'ble5'|
+  'ble')` throws "Bluetooth not granted", the edge bridge is skipped), so the
+  node never reports itself up on a radio it cannot use. The host calls
+  `radioGranted()` when it turns true; a node up on a hub adds its BLE side
+  then. Default: allowed (the server edition never asks).
 - **The line lane** (`xprs_dial.dart`, `xprs_line.dart` with its `_io`/`_stub`
   halves): one idle socket from a phone to its archiver (XPRS.md 13.0.2), the
   conditional export keeping `dart:io` off the web build. Moved here from the

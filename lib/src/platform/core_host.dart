@@ -124,6 +124,12 @@ class CoreHost {
   /// wake locks from it, docs/performance.md 8.11). Default: nobody to tell.
   static Future<void> Function(String tier) pushPowerTier = (_) async {};
 
+  /// Whether the host may use Bluetooth right now (an Android runtime
+  /// permission the person can refuse). False keeps every BLE interface from
+  /// being built; the host calls RnsService.radioGranted once it turns true.
+  /// Default: allowed.
+  static bool Function() radioAllowed = () => true;
+
   /// The BLE5 advert radio. Default: none.
   static AdvertRadio radio = const NoAdvertRadio();
 

@@ -1723,6 +1723,10 @@ class RnsService {
 
   Future<void> _enableBleBridge() async {
     if (_bleBridge || _transport == null || _id == null) return;
+    // Not granted (Android runtime permission): an interface built now would
+    // be deaf and mute while every log said it was up. [radioGranted] comes
+    // back here the moment the person allows it.
+    if (!CoreHost.radioAllowed()) return;
     try {
       // The chunking radio, not the bare Ble5Radio: an announce that does not
       // fit one extended advert used to have nowhere to go and was dropped.
@@ -1765,6 +1769,14 @@ class RnsService {
 
   /// Whether this node is acting as a BLE↔internet edge-bridge.
   bool get isBleBridge => _bleBridge && (_transport?.edgeBridge ?? false);
+
+  /// The host was just allowed to use Bluetooth (CoreHost.radioAllowed turned
+  /// true mid-session). A node already up on a hub adds its BLE side now; one
+  /// that is down is brought up over BLE by the autostart's next tick.
+  Future<void> radioGranted() async {
+    if (!isUp) return;
+    await _enableBleBridge();
+  }
 
   // ── WiFi Direct data plane ──
   // The P2P group is formed/joined by the WiFi Direct coordinator (BLE
@@ -4681,6 +4693,9 @@ class RnsService {
           await _attachTcpUplink(host, port);
           break;
         case 'ble':
+          if (!CoreHost.radioAllowed()) {
+            throw StateError('Bluetooth not granted on this host');
+          }
           final radio = CoreHost.newGattRnsRadio();
           if (radio == null) throw StateError('no BLE GATT radio on this host');
           final b = RnsBleInterface(
@@ -4692,6 +4707,9 @@ class RnsService {
           _ifaces.add(b);
           break;
         case 'ble5':
+          if (!CoreHost.radioAllowed()) {
+            throw StateError('Bluetooth not granted on this host');
+          }
           final radio = CoreHost.newBle5RnsRadio();
           if (radio == null || !await radio.supported()) {
             throw StateError('BLE5 extended advertising unsupported');
