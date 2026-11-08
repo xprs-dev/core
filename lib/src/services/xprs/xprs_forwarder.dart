@@ -74,6 +74,13 @@ class XprsForwarder {
   /// is a new place to send, whatever the radio re-air ladder says.
   List<String> Function(String call)? heldFor;
 
+  /// Is [call] a visitor THIS station serves through its web page
+  /// (XprsArchive.servesVisitor)? Then this station is the holder: the mail
+  /// is delivered through the page, and handing it toward a gateway or an
+  /// always-on archiver would move it away from the one station that can
+  /// deliver it.
+  bool Function(String call)? servesVisitor;
+
   /// One forward per (packet, gateway). Bounded; a restart forgets, which is
   /// the right trade (a duplicate forward is airtime; a burnt hop is a
   /// delivery).
@@ -111,8 +118,9 @@ class XprsForwarder {
 
     // We ARE the gateway: 12.8.1's release-on-hearing (or the mailbox sweep)
     // delivers, and forwarding would hand our neighbour's mail to somebody
-    // further away.
-    if (_canDeliver(to)) {
+    // further away. A visitor served through our web page is the same case
+    // with the page as the lane: the station is the holder.
+    if (_canDeliver(to) || _serves(to)) {
       selfDelivers++;
       return const [];
     }
@@ -239,6 +247,9 @@ class XprsForwarder {
   bool _canDeliver(String call) =>
       (canDeliver ?? XprsMailbox.instance.reachable)?.call(call) ?? false;
 
+  bool _serves(String call) =>
+      (servesVisitor ?? XprsArchive.instance.servesVisitor)(call);
+
   List<String> _holders(String call) =>
       (holdersOf ?? XprsArchive.instance.holdersFor)(call);
 
@@ -284,5 +295,6 @@ class XprsForwarder {
     holdersOf = null;
     sightingsOf = null;
     namedArchivers = null;
+    servesVisitor = null;
   }
 }

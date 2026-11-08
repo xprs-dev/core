@@ -34,6 +34,7 @@ import '../log_service.dart';
 import '../receive/core_state.dart';
 import 'xprs_id.dart';
 import 'xprs_archive_policy.dart';
+import 'xprs_directory.dart' show XprsDirectoryEntry;
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
 import 'xprs_sig.dart';
@@ -211,6 +212,23 @@ class XprsArchive {
         )''');
       db.execute(
           'CREATE INDEX IF NOT EXISTS idx_decl_from ON mailbox_decl(fromc)');
+      // Visitors this station serves through its web page (12.7, 12.8.3):
+      // callsigns that proved their key on `/api/session` and were offered
+      // this station as their mailbox. The station is their holder until they
+      // declare one (13.12): their mail is shelved protected, delivered
+      // through the page, and counted in `room:`.
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS served_visitors(
+          call  TEXT PRIMARY KEY,
+          since INTEGER NOT NULL,
+          last  INTEGER NOT NULL
+        )''');
+      _served
+        ..clear()
+        ..addAll([
+          for (final r in db.select('SELECT call FROM served_visitors'))
+            r['call'] as String,
+        ]);
       // XPRS.md 7.8.2: what a verified withdrawal destroyed. Identifiers only,
       // no text, so a replayed original or edit is refused instead of bringing
       // the words back.
@@ -239,6 +257,7 @@ class XprsArchive {
     _flushTimer = null;
     _db?.dispose();
     _db = null;
+    _served.clear();
   }
 
   /// The person, with any device suffix removed: `X1ABCD-1` -> `X1ABCD`
@@ -918,16 +937,27 @@ class XprsArchive {
   /// L1 of the gossip layers (36.9.4): who [baseCallsign] declared as its
   /// mailboxes, in the declaration's own order of preference (13.12). The
   /// narrowest active window wins (13.12.1); windowed beats open-ended.
+  ///
+  /// A visitor this station serves through its page ([servesVisitor]) and
+  /// who has not declared yet is held HERE: the answer is this station, so
+  /// a holder of their mail anywhere routes it to the page that delivers
+  /// it (12.8.1 consults exactly this). Their own declaration, once made,
+  /// replaces that answer — the recipient's word beats the offer.
   List<String> holdersFor(String baseCallsign, {int? nowMs}) {
     final db = _db;
     if (db == null) return const [];
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final base = _base(baseCallsign);
     final rows = db.select(
         'SELECT wire FROM mailbox_decl WHERE fromc=? '
         'AND (since IS NULL OR since<=?) AND (until IS NULL OR until>=?) '
         'ORDER BY (until IS NULL) ASC, ts DESC LIMIT 1',
-        [_base(baseCallsign), now, now]);
-    if (rows.isEmpty) return const [];
+        [base, now, now]);
+    if (rows.isEmpty) {
+      return _served.contains(base) && _selfBase.isNotEmpty
+          ? [_selfBase]
+          : const [];
+    }
     final p = XprsPacket.parse(rows.first['wire'] as String);
     if (p == null) return const [];
     return (p['hold'] ?? '')
@@ -938,10 +968,13 @@ class XprsArchive {
   }
 
   /// Whether [baseCallsign] currently has an active declaration naming us —
-  /// the admission ticket for its Reticulum-borne traffic (§36.3).
+  /// the admission ticket for its Reticulum-borne traffic (§36.3). A visitor
+  /// this station serves is declared by the offer it accepted
+  /// ([servesVisitor]): its mail is admitted the same way.
   bool hasActiveDecl(String baseCallsign, {int? nowMs}) {
     final db = _db;
     if (db == null) return false;
+    if (_served.contains(_base(baseCallsign))) return true;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     // pos>=0: only declarations that NAME US are an admission ticket --
     // the table now also holds everyone else's declarations for routing
@@ -960,16 +993,104 @@ class XprsArchive {
   }
 
   /// How many stations are cared for here: distinct declarers with an active
-  /// declaration that NAMES this station (12.9.5). This is the archiver's
-  /// load, and what sets its `room:` (13.0.2).
+  /// declaration that NAMES this station (12.9.5), plus the visitors this
+  /// station serves through its page and who have not declared yet (one
+  /// station counted once). This is the archiver's load, and what sets its
+  /// `room:` (13.0.2).
   int caredFor({int? nowMs}) {
     final db = _db;
     if (db == null) return 0;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     return db.select(
-        'SELECT COUNT(DISTINCT fromc) c FROM mailbox_decl WHERE pos>=0 '
-        'AND (since IS NULL OR since<=?) AND (until IS NULL OR until>=?)',
+        'SELECT COUNT(*) c FROM ('
+        'SELECT fromc c FROM mailbox_decl WHERE pos>=0 '
+        'AND (since IS NULL OR since<=?) AND (until IS NULL OR until>=?) '
+        'UNION SELECT call c FROM served_visitors)',
         [now, now]).first['c'] as int;
+  }
+
+  // ── served visitors (12.7, 12.8.3: the station as a visitor's mailbox) ───
+
+  /// Callsigns in `served_visitors`, mirrored in RAM: the receive funnel asks
+  /// [servesVisitor] per directed packet and must not pay a query for it.
+  final Set<String> _served = {};
+
+  /// This station offered itself as [call]'s mailbox (WebChatApi
+  /// `/api/session`, `offer`), or [call] came back: insert, or refresh `last`.
+  void noteServed(String call, {int? nowMs}) {
+    final db = _db;
+    final c = _base(call);
+    if (db == null || c.isEmpty) return;
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    db.execute(
+        'INSERT INTO served_visitors(call,since,last) VALUES(?,?,?) '
+        'ON CONFLICT(call) DO UPDATE SET last=excluded.last',
+        [c, now, now]);
+    _served.add(c);
+  }
+
+  /// [call] was heard again through the page: refresh `last` when it is a
+  /// visitor this station serves; nothing otherwise (the offer is
+  /// [noteServed]'s, made when the station has room).
+  void touchServed(String call, {int? nowMs}) {
+    final c = _base(call);
+    if (!_served.contains(c)) return;
+    _db?.execute('UPDATE served_visitors SET last=? WHERE call=?',
+        [nowMs ?? DateTime.now().millisecondsSinceEpoch, c]);
+  }
+
+  /// Is [call] a visitor this station is the mailbox of? One set lookup.
+  bool servesVisitor(String call) => _served.contains(_base(call));
+
+  /// Every served visitor: callsign, when the offer was made, when last seen.
+  List<({String call, int sinceMs, int lastMs})> servedVisitors(
+      {int max = 10000}) {
+    final db = _db;
+    if (db == null) return const [];
+    return [
+      for (final r in db.select(
+          'SELECT call,since,last FROM served_visitors ORDER BY last DESC '
+          'LIMIT ?',
+          [max]))
+        (
+          call: r['call'] as String,
+          sinceMs: (r['since'] as num).toInt(),
+          lastMs: (r['last'] as num).toInt(),
+        ),
+    ];
+  }
+
+  /// Forget [call] as a served visitor (its declaration now names somebody
+  /// else, or the operator said so). Its archived mail stays where it is.
+  void forgetServed(String call) {
+    final c = _base(call);
+    _db?.execute('DELETE FROM served_visitors WHERE call=?', [c]);
+    _served.remove(c);
+  }
+
+  /// The lines of this station's directory (12.9): every callsign the spool
+  /// holds a record from, with the freshest record's own `ts:`, and every
+  /// served visitor with when it was last seen. Bounded by [limit]; one
+  /// indexed GROUP BY, run by the announcer every ten minutes on a public
+  /// archiver and nowhere else.
+  List<XprsDirectoryEntry> directoryEntries({int limit = 10000}) {
+    final db = _db;
+    if (db == null) return const [];
+    final out = <String, int>{};
+    for (final r in db.select(
+        "SELECT fromc, MAX(pts) m FROM packets WHERE fromc <> '' "
+        'GROUP BY fromc ORDER BY fromc LIMIT ?',
+        [limit])) {
+      out[r['fromc'] as String] = (r['m'] as num).toInt();
+    }
+    for (final v in servedVisitors(max: limit)) {
+      final was = out[v.call];
+      if (was == null || v.lastMs > was) out[v.call] = v.lastMs;
+    }
+    final calls = out.keys.toList()..sort();
+    return [
+      for (final c in calls.take(limit)) XprsDirectoryEntry(c, out[c]!),
+    ];
   }
 
   // ── reading the spool ─────────────────────────────────────────────────────
@@ -1048,10 +1169,20 @@ class XprsArchive {
     /// whole window (spec/API-HTTP.md, `room`). Combine with [to] = [''] for
     /// the undirected traffic a room shows.
     String? room,
+    /// Exactly one packet, by its section 5 identifier: the primary key, so
+    /// one row and no scan. What a message's Info page reads to say how that
+    /// message travelled (its wire, `via:`, bearer, signal, when it was heard
+    /// and how many copies collapsed onto it).
+    String? id,
   }) {
     final db = _db;
     if (db == null) return const [];
     final where = StringBuffer('1=1');
+    final args = <Object?>[];
+    if (id != null && id.trim().isNotEmpty) {
+      where.write(' AND id = ?');
+      args.add(id.trim().toLowerCase());
+    }
     if (room != null && room.isNotEmpty) {
       // The header is the wire up to ` m:`, padded so ` scope:local ` matches
       // at its end too; text after m: never decides the room.
@@ -1069,7 +1200,6 @@ class XprsArchive {
           return const [];
       }
     }
-    final args = <Object?>[];
     if (ownOnly) where.write(' AND own = 1');
     if (from != null && from.trim().isNotEmpty) {
       where.write(' AND fromc = ?');

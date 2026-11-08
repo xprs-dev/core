@@ -149,6 +149,18 @@ class XprsGossip {
         'CREATE INDEX IF NOT EXISTS idx_gl_call_ts '
         'ON gossip_live(callsign, ts)',
       );
+      // Pointers from other archivers' directories (12.9): which archiver
+      // lists which callsign, and how fresh its last hearing was. Pointers
+      // only, never the content behind them; bounded by [directoryMaxRows].
+      db.execute(
+        'CREATE TABLE IF NOT EXISTS directory_ptr('
+        'callsign TEXT NOT NULL, archiver TEXT NOT NULL,'
+        'last_ts INTEGER NOT NULL,'
+        'PRIMARY KEY(callsign, archiver))',
+      );
+      db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_dp_last ON directory_ptr(last_ts)',
+      );
       _db = db;
     } catch (e) {
       LogService.instance.add('Gossip: store failed to open: $e');
@@ -169,11 +181,18 @@ class XprsGossip {
 
   /// This station heard [callsign] itself, with no `via:`. The one feed that
   /// needs no signature — our own radio is its own witness.
+  ///
+  /// [shortRange] overrides what the bearer word says about L2: a hearing
+  /// that came through the station's HTTP API on bearer `lan` is radio truth
+  /// only when the visitor is actually on the station's own network, and a
+  /// visitor from across the internet writes the live layer alone. Null
+  /// reads the bearer ([kShortRange]), which is every radio hearing.
   void noteDirect(
     String callsign,
     String selfCallsign, {
     required String bearer,
     int? nowMs,
+    bool? shortRange,
   }) {
     final db = _db;
     if (db == null || callsign.isEmpty || selfCallsign.isEmpty) return;
@@ -192,11 +211,74 @@ class XprsGossip {
       _directLastMs.remove(_directLastMs.keys.first);
     }
     _noteLive(db, callsign, selfCallsign, bearer, now, selfCallsign);
-    if (kShortRange.contains(bearer)) {
+    if (shortRange ?? kShortRange.contains(bearer)) {
       _noteVisit(db, callsign, selfCallsign, bearer, now);
     }
     accepted++;
     _maybeSweep(db, now);
+  }
+
+  // ── directory pointers (12.9) ─────────────────────────────────────────────
+
+  /// How many pointer rows the table keeps; the stalest leave first.
+  static int directoryMaxRows = 50000;
+
+  /// Another archiver's directory, as (callsign, last heard) pairs: keep a
+  /// pointer per line saying [archiver] lists that callsign. One
+  /// transaction per file; a listing larger than the cap is cut to its
+  /// freshest lines before it is written, so the table is never the file.
+  void notePointers(String archiver, Iterable<(String, int)> entries) {
+    final db = _db;
+    final a = archiver.trim().toUpperCase();
+    if (db == null || a.isEmpty) return;
+    final rows = entries
+        .map((e) => (e.$1.trim().toUpperCase(), e.$2))
+        .where((e) => e.$1.isNotEmpty && e.$1 != a)
+        .toList()
+      ..sort((x, y) => y.$2.compareTo(x.$2));
+    final keep = rows.length > directoryMaxRows
+        ? rows.sublist(0, directoryMaxRows)
+        : rows;
+    db.execute('BEGIN');
+    try {
+      for (final (call, ts) in keep) {
+        db.execute(
+          'INSERT INTO directory_ptr(callsign,archiver,last_ts) VALUES(?,?,?) '
+          'ON CONFLICT(callsign,archiver) DO UPDATE SET '
+          'last_ts=MAX(last_ts, excluded.last_ts)',
+          [call, a, ts],
+        );
+      }
+      // The cap: stalest pointers leave, whoever wrote them.
+      db.execute(
+        'DELETE FROM directory_ptr WHERE rowid IN '
+        '(SELECT rowid FROM directory_ptr ORDER BY last_ts DESC '
+        'LIMIT -1 OFFSET ?)',
+        [directoryMaxRows],
+      );
+      db.execute('COMMIT');
+    } catch (e) {
+      db.execute('ROLLBACK');
+      LogService.instance.add('Gossip: directory pointers failed: $e');
+    }
+  }
+
+  /// The archivers whose directories list [callsign], freshest hearing
+  /// first (12.9: the peers "whose directories list it" are what a 404's
+  /// `m:try` names after the callsign's own holders).
+  List<String> keepersOf(String callsign, {int max = 8}) {
+    final db = _db;
+    if (db == null) return const [];
+    final call = callsign.trim().toUpperCase();
+    if (call.isEmpty) return const [];
+    return [
+      for (final r in db.select(
+        'SELECT archiver FROM directory_ptr WHERE callsign=? '
+        'ORDER BY last_ts DESC LIMIT ?',
+        [call, max],
+      ))
+        r['archiver'] as String,
+    ];
   }
 
   /// Cheap pre-check for the ingest hot path: would a `hears:` claim from
@@ -503,6 +585,9 @@ class XprsGossip {
       'live': db == null
           ? 0
           : db.select('SELECT COUNT(*) c FROM gossip_live').first['c'],
+      'pointers': db == null
+          ? 0
+          : db.select('SELECT COUNT(*) c FROM directory_ptr LIMIT 1').first['c'],
       'accepted': accepted,
       'refusedUnsigned': refusedUnsigned,
       'refusedQuota': refusedQuota,
@@ -514,6 +599,7 @@ class XprsGossip {
   void debugReset() {
     _db?.execute('DELETE FROM gossip_visits');
     _db?.execute('DELETE FROM gossip_live');
+    _db?.execute('DELETE FROM directory_ptr');
     _signerLastMs.clear();
     _directLastMs.clear();
     _lastSweepMs = 0;

@@ -138,6 +138,13 @@ class PacketGateway {
   /// radio person would call it, and what the monitor and archive file it
   /// under. [serverSide] matters only on a GATT session, where the same
   /// bytes mean different things to the two roles.
+  ///
+  /// [viaApi] marks a wire handed in by the station's HTTP API (the web chat
+  /// page): heard on bearer `lan`, delivered through the page, and never a
+  /// station a held packet can be re-aired to (XprsIngest.heard). An
+  /// internal flag, never a word on the wire. [localLink] says whether that
+  /// visitor is on the station's own network, which is what decides whether
+  /// the hearing is radio truth for the gossip's durable layer (12.9.4).
   RxVerdict receive(
     Uint8List bytes, {
     required String bearer,
@@ -145,6 +152,8 @@ class PacketGateway {
     String peer = '',
     int rssi = 0,
     bool serverSide = false,
+    bool viaApi = false,
+    bool? localLink,
   }) {
     if (bytes.isEmpty) {
       ignored++;
@@ -181,6 +190,8 @@ class PacketGateway {
         selfCallsign: MeshService.instance.tableCallsign,
         selfAliases: MeshService.instance.tableAliases,
         rssi: rssi,
+        viaApi: viaApi,
+        localLink: localLink,
       );
       try {
         onXprsPacket?.call(p, bearer, peer, rssi, text);

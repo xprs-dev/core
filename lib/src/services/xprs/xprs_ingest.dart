@@ -32,6 +32,7 @@ import '../log_service.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_archive_policy.dart';
+import 'xprs_directory.dart' show XprsDirectoryConsumer;
 import 'xprs_mesh_policy.dart';
 import 'xprs_climate.dart';
 import 'xprs_groups.dart';
@@ -87,7 +88,13 @@ class XprsIngest {
   /// recognise. Set by MeshService to the release-on-hearing trigger of
   /// section 36.8.1 -- the receiver throttles and checks for held mail; this
   /// funnel only reports the fact.
-  static void Function(String callsign, String bearer)? onDirectHeard;
+  ///
+  /// `viaApi` says the hearing came through the station's HTTP API (a
+  /// browser on the web chat page, bearer `lan`): the receiver reports the
+  /// hearing to its archivers like any other, and re-airs nothing, because
+  /// a browser is delivered to through the page and hears no LAN datagram.
+  static void Function(String callsign, String bearer, {bool viaApi})?
+      onDirectHeard;
 
   /// A `t:message` for a THIRD party, off the Reticulum lane -- somebody is
   /// handing this station mail to hold (36.7) or to move along (36.8.1).
@@ -307,12 +314,27 @@ class XprsIngest {
   /// open (performance.md 4.2).
   static bool Function(XprsPacket p)? askedFor;
 
-  static Tier _shelfFor(String fromBase, bool forUs, XprsPacket p) {
+  static Tier _shelfFor(String fromBase, bool forUs, XprsPacket p,
+      {bool served = false}) {
     final t = _tierOf(fromBase, forUs);
     if (t == Tier.stranger && (askedFor?.call(p) ?? false)) {
       return Tier.followed;
     }
+    // Mail of a visitor this station serves through its page (12.7: the
+    // station is their mailbox): held protected, never evicted as a
+    // stranger's, because the page is the only lane that delivers it.
+    if (t == Tier.stranger && served) return Tier.followed;
     return t;
+  }
+
+  /// Is this directed packet a served visitor's mail -- to or from a
+  /// callsign this station is the mailbox of (XprsArchive.servesVisitor)?
+  /// Two set lookups, and only for a packet that carries `d:`.
+  static bool _servedMail(XprsPacket p, String fromBase) {
+    final to = _base(p['d'] ?? '');
+    if (to.isEmpty) return false;
+    final a = XprsArchive.instance;
+    return a.servesVisitor(to) || a.servesVisitor(fromBase);
   }
 
   /// Followed by callsign rather than by key (a device): one set lookup, the
@@ -322,18 +344,29 @@ class XprsIngest {
 
   /// A packet heard over the air or over a local link. The complete receive
   /// surface calls this: BLE 0x41, BLE 0x58, and the courier's session lane.
+  ///
+  /// [viaApi]: the packet was handed in by the station's HTTP API (the web
+  /// chat page), on bearer `lan`. An INTERNAL flag, never on the wire: the
+  /// visitor is heard like anybody (monitor, gossip, `hears:`), and is
+  /// delivered to through the page rather than by a re-air. [localLink]
+  /// then says whether the browser is on the station's own network, which
+  /// is what makes the hearing radio truth for the durable gossip layer
+  /// (12.9.4): a visitor from across the internet writes the live layer only.
   static void heard(
     XprsPacket p, {
     required String bearer,
     required String selfCallsign,
     Set<String> selfAliases = const {},
     int rssi = 0,
+    bool viaApi = false,
+    bool? localLink,
   }) {
     XprsMonitor.instance.offer(
       p,
       bearer: bearer,
       selfCallsign: selfCallsign,
       rssi: rssi,
+      viaApi: viaApi,
     );
 
     // Exact-callsign skip, NOT base: our own echo is noise, but another of
@@ -373,13 +406,19 @@ class XprsIngest {
     // says nothing about whether WE can hear its author, so noteDirect and
     // the 36.8.1 release trigger stay behind the `via:` gate.
     if (!p.has('via')) {
-      XprsGossip.instance.noteDirect(from, self, bearer: gb);
+      XprsGossip.instance.noteDirect(from, self,
+          bearer: gb, shortRange: viaApi ? localLink : null);
       try {
-        onDirectHeard?.call(from, gb);
+        onDirectHeard?.call(from, gb, viaApi: viaApi);
       } catch (e) {
         LogService.instance.add('XPRS: direct-heard hook failed: $e');
       }
     }
+
+    // Another archiver's directory announcement (12.9): a `t:service` with
+    // `file:<ref>.xdir` from an archiver this station leans on. Two string
+    // checks when it is not one.
+    if (p.type == 'service') XprsDirectoryConsumer.instance.offer(p);
 
     // `hears:` is NOT behind that gate, and putting it there was the reason a
     // station could never see more than one hop of its own mesh.
@@ -489,13 +528,16 @@ class XprsIngest {
         self: _base(selfCallsign),
         askedFor: askedFor?.call(p) ?? false);
     if (meshVerdict == XprsMeshVerdict.drop) meshDropped++;
+    // A served visitor's mail (12.7): to or from a callsign this station is
+    // the mailbox of. Shelved protected below, whatever the stranger quota.
+    final served = !forUs && _servedMail(p, _base(from));
     final shelf = meshVerdict == XprsMeshVerdict.drop
         ? null
         : xprsAdmitTier(
-      tier: _shelfFor(_base(from), forUs, p),
+      tier: _shelfFor(_base(from), forUs, p, served: served),
       type: p.type,
       publication: _isPublication(p),
-      declared: false, // the declaration rule is the internet lane's
+      declared: served, // otherwise the declaration rule is the internet lane's
       internet: false,
       policy: policy,
       addressedToUs: forUs,
@@ -994,6 +1036,10 @@ class XprsIngest {
       XprsProfiles.instance.offer(fromC, p);
     }
 
+    // An archiver's directory announcement reaches us over the hubs too
+    // (12.9: the announcement is one of the four things that cross).
+    if (p.type == 'service') XprsDirectoryConsumer.instance.offer(p);
+
     // A GROUP ACT OFF THE INTERNET LANE. The radio lane feeds every
     // `t:moderate` to the roster ("it goes HERE, in the funnel, the one place
     // every bearer reaches"); this lane archived it and never did, so a grant
@@ -1162,7 +1208,9 @@ class XprsIngest {
     // original packets, so a station that discarded them answers every such
     // ask with a 404 by construction.
     final shelf = xprsAdmitTier(
-      tier: _shelfFor(fromC, false, p),
+      // A served visitor's mail is shelved protected here as on the radio
+      // lane (12.7): the page is the only lane that delivers it.
+      tier: _shelfFor(fromC, false, p, served: _servedMail(p, fromC)),
       type: p.type,
       publication: _isPublication(p),
       declared: XprsArchive.instance.hasActiveDecl(fromC) ||

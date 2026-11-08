@@ -236,6 +236,18 @@ class XprsStation {
   /// so without this every "who do I hear" list would quietly include stations
   /// on the far side of a digipeater, which section 10.6.3 forbids.
   int lastDirectMs = 0;
+
+  /// Whether the FRESHEST hearing came through the station's HTTP API (a
+  /// browser on the web chat page) rather than off a radio or the LAN
+  /// socket. Internal: never a word on the wire. Such a station is at our
+  /// ear for `hears:` and is delivered to through the page, but it is not a
+  /// station a held packet can be re-aired to.
+  bool viaApi = false;
+
+  /// The last hearing that was NOT through the API: the evidence a holder
+  /// needs before re-airing mail to this station ([XprsMonitor.heardDirectly]
+  /// with `radioOnly`). Zero for a visitor known only through the page.
+  int lastRadioMs = 0;
 }
 
 class XprsMonitor {
@@ -323,6 +335,10 @@ class XprsMonitor {
     required String selfCallsign,
     int rssi = 0,
     int? nowMs,
+    /// The packet came through the station's HTTP API (the web chat page),
+    /// delivered on bearer `lan` by the page rather than heard on a radio.
+    /// Recorded on the entry; see [XprsStation.viaApi].
+    bool viaApi = false,
   }) {
     if (!kBearers.contains(bearer)) return;
     final from = (p['f'] ?? '').trim().toUpperCase();
@@ -350,6 +366,8 @@ class XprsMonitor {
     _recent.remove(from); // heard again: back in earshot
     st.bearer = bearer;
     st.bearers[bearer] = now;
+    st.viaApi = viaApi;
+    if (!viaApi) st.lastRadioMs = now;
     // The station's own `link:` (10.6.1) -- what IT says it is on, which
     // survives being re-aired by somebody else. See `bearersDeclared`.
     //
@@ -420,6 +438,24 @@ class XprsMonitor {
     // No `via:` means this arrived from the sender's own transmitter.
     if (!p.has('via')) st.lastDirectMs = now;
 
+    _bump();
+  }
+
+  /// A visitor proved their key on the station's web page (WebChatApi
+  /// `/api/session`) and said nothing else yet: a synthetic sighting on
+  /// `lan`, through the API, so the visitor is at this station's ear —
+  /// listed by [directlyHeardOn] (`'lan'`) and named in `hears:` — without
+  /// a packet having been heard. No ring entry: nothing was on the air.
+  void noteVisitor(String callsign, {required int nowMs}) {
+    final c = callsign.trim().toUpperCase();
+    if (c.isEmpty) return;
+    final st = _stations.putIfAbsent(c, () => XprsStation(c, 'lan', nowMs));
+    _recent.remove(c);
+    st.bearer = 'lan';
+    st.bearers['lan'] = nowMs;
+    st.lastMs = nowMs;
+    st.lastDirectMs = nowMs;
+    st.viaApi = true;
     _bump();
   }
 
@@ -578,13 +614,24 @@ class XprsMonitor {
   /// peer exists" makes every callsign on earth look reachable, which is how a
   /// station ends up re-airing mail once a minute to a callsign that has never
   /// existed.
+  ///
+  /// [radioOnly] leaves out a hearing that came through the station's HTTP
+  /// API: a visitor on the web page is delivered to through the page
+  /// (WebChatApi reads its mail from the archive), and a held packet
+  /// re-aired on the LAN for it reaches a browser never. The mailbox's
+  /// `reachable` asks with it; `hears:` and presence do not.
   bool heardDirectly(String callsign,
-      {Duration within = const Duration(minutes: 10), int? nowMs}) {
+      {Duration within = const Duration(minutes: 10),
+      int? nowMs,
+      bool radioOnly = false}) {
     final c = callsign.trim().toUpperCase();
     if (c.isEmpty) return false;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     final st = _stations[c];
-    if (st != null && now - st.lastMs <= within.inMilliseconds) return true;
+    if (st != null) {
+      final last = radioOnly ? st.lastRadioMs : st.lastMs;
+      if (last > 0 && now - last <= within.inMilliseconds) return true;
+    }
     final r = _remote[c];
     return r != null && now - r <= within.inMilliseconds;
   }

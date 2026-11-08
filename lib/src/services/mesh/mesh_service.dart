@@ -47,6 +47,7 @@ import '../reticulum/rns_service.dart';
 import '../social/archiver_service.dart';
 import '../xprs/xprs_history_server.dart';
 import '../xprs/xprs_ingest.dart';
+import '../xprs/xprs_directory.dart';
 import '../xprs/xprs_gossip.dart';
 import '../xprs/xprs_observation.dart';
 import '../xprs/xprs_group_keys.dart';
@@ -56,6 +57,8 @@ import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_archiver_choice.dart';
 import '../xprs/xprs_mailbox.dart';
 import '../xprs/xprs_outbox.dart';
+import '../receive/wapp_delivery.dart';
+import '../xprs/xprs_key_wait.dart';
 import '../xprs/xprs_receipt.dart';
 import '../xprs/xprs_bridge.dart';
 import '../xprs/xprs_digipeat.dart';
@@ -367,6 +370,25 @@ class MeshService {
         XprsOutbox.instance.init(
             wappsDataStorage(prefs).getAbsolutePath('xprs_outbox.sqlite3'));
         stage('outbox restore');
+        // Direct messages waiting for their recipient's key (6.2, 6.4: sealed
+        // by default). Same profile-encrypted store: these are words. The
+        // wait looks for the key on the station itself (q:identity) and on
+        // the chosen archivers (12.12.1), and seals and sends on arrival.
+        XprsKeyWait.instance
+          ..keyFor = ((c) => RnsService.instance.pubkeyForCallsign(c))
+          ..ask = ((c) {
+            unawaited(XprsPublisher.instance.askIdentity(c));
+            XprsFetch.instance.requestKey(c, reason: 'message waiting');
+          })
+          ..seal = ((dest, text) {
+            final r = XprsSend.instance.message(dest, text, private: true);
+            return r.form == 'x' ? r.id : '';
+          })
+          ..report = ((held, peer, state, {String newId = ''}) =>
+              WappDelivery.instance.deliverStatus(
+                  id: held, peer: peer, state: state, newId: newId))
+          ..init(wappsDataStorage(prefs)
+              .getAbsolutePath('xprs_key_wait.sqlite3'));
         // A group act whose signer we hold no key for is parked, not lost; ask
         // that station for its binding now rather than at its next periodic
         // announcement (18.1). That is the invitee's acceptance (26.3.1)
@@ -402,6 +424,15 @@ class MeshService {
               outbound: false);
           unawaited(XprsForwarder.instance.maybeForward(target, wire,
               selfBase: NostrCrypto.bareCallsign(tableCallsign)));
+          // 12.8.3 step 1 on a served visitor's behalf: a browser on this
+          // station's page has no archiver of its own, so the station it
+          // stands next to leaves the copy with ITS archivers, verbatim,
+          // after the same window its own mail gets.
+          final author = XprsPacket.parse(wire)?['f'] ?? '';
+          if (author.isNotEmpty &&
+              XprsArchive.instance.servesVisitor(author)) {
+            XprsMailbox.instance.armDeposit(wire, onBehalf: true);
+          }
           // 13.0.2: the recipient is on a socket right now — deliver, do
           // not wait for the minute sweep.
           if (XprsLinePeers.instance.isConnected(target)) {
@@ -682,12 +713,20 @@ class MeshService {
           // neighbour is on the wire — and the bench duly re-aired mail to a
           // callsign that does not exist, once a minute, for ever. A LAN peer
           // counts only when the peer IS the recipient.
+          //
+          // And NOT a visitor known only through the web page: a browser is
+          // delivered to through the page (WebChatApi reads its mail from
+          // the archive) and hears no LAN datagram, so a held copy re-aired
+          // for it is airtime spent on nobody. `radioOnly` leaves those out.
           ..reachable = ((call) =>
               XprsLinePeers.instance.isConnected(call) ||
               XprsLineLane.instance.connectedTo(call) ||
               RnsService.instance.reachableByCallsign(call) ||
               XprsMonitor.instance.heardDirectly(call,
-                  within: const Duration(minutes: 10)))
+                  within: const Duration(minutes: 10), radioOnly: true))
+          // A served visitor's deposit is cancelled by a receipt this
+          // station HEARD for it, since the packet is in no outbox here.
+          ..receiptSeen = ((id) => MeshStore.instance.wasReceived(id))
           ..held = (() => [
                 for (final target in MeshStore.instance.heldTargets())
                   for (final row in MeshStore.instance.releasableFor(target,
@@ -737,6 +776,7 @@ class MeshService {
         // a report -- release-on-hearing above delivers it ourselves.
         XprsForwarder.instance.heldFor =
             (call) => MeshStore.instance.heldWiresFor(call);
+        _wireDirectory(mediaArchive);
         XprsLineLane.instance.onClientUp = _onLineUp;
         XprsGossip.instance.onSighting = (call, gateway) {
           final me = NostrCrypto.bareCallsign(tableCallsign);
@@ -847,6 +887,9 @@ class MeshService {
       // its recipients speak, it simply gains a path to them, and without this
       // minute it would hold their mail for ever while they sat online.
       unawaited(XprsMailbox.instance.sweepHeld());
+      // A public archiver's directory (12.9): recomposed every ten minutes
+      // (the announcer's own gate), announced only when it changed.
+      unawaited(XprsDirectoryAnnouncer.instance.tick());
       // Who we hear, repeated to our archivers on its period (12.1).
       _reportHeard();
       // Who we lean on, reconsidered every minute (12.3). Cheap — a scan of a
@@ -904,6 +947,9 @@ class MeshService {
     } catch (e) {
       LogService.instance.add('XPRS: could not replay stored groups: $e');
     }
+    // The key bindings are back: what waited for one we now hold goes, and
+    // the rest are looked for again.
+    XprsKeyWait.instance.resume();
   }
 
   /// An XPRS frame on subtype `0x58` — a discovery beacon, or carried mail.
@@ -1466,15 +1512,144 @@ class MeshService {
       dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
       // 12.9.5: the load is the declarations naming us; past the operator's
       // ceiling, or on their word, newcomers are told to go elsewhere.
-      room: public &&
-              (!(prefs?.xprsRoom ?? true) ||
-                  XprsArchive.instance.caredFor() >=
-                      (prefs?.xprsRoomStations ?? 500))
-          ? 'no'
-          : null,
+      room: public && !_hasRoom() ? 'no' : null,
       signingKey: xprsProfileScalar(),
       ts: stamped ? xprsNowTs() : null,
     );
+  }
+
+  /// 13.0.2: does this archiver take new stations? The operator's word
+  /// first, then the load: declarations naming us plus the visitors served
+  /// through the page (12.9.5, XprsArchive.caredFor) against the ceiling.
+  /// The one answer behind `room:` on the observation and the directory
+  /// announcement, and behind the offer a visitor gets on `/api/session`.
+  bool _hasRoom() {
+    final prefs = PreferencesService.instanceSync;
+    return (prefs?.xprsRoom ?? true) &&
+        XprsArchive.instance.caredFor() < (prefs?.xprsRoomStations ?? 500);
+  }
+
+  // ── A visitor on the web page (WebChatApi, 12.7 / 12.8.3) ────────────────
+
+  /// A visitor proved their key on this station's page (`/api/session`):
+  /// heard on `lan` through the API, with no packet. In the monitor, so
+  /// `hears:` names them and a holder of their mail learns where they are;
+  /// in gossip, as radio truth only when [local] (12.9.4: a browser across
+  /// the internet is a live sighting, not a visit); and the served record is
+  /// touched. Then the release-on-hearing path runs its REPORT half only --
+  /// a browser hears no re-air.
+  void visitorHeard(String call, {required bool local}) {
+    final c = NostrCrypto.bareCallsign(call).trim().toUpperCase();
+    final self = NostrCrypto.bareCallsign(tableCallsign).trim().toUpperCase();
+    if (c.isEmpty || self.isEmpty || c == self) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    XprsMonitor.instance.noteVisitor(c, nowMs: now);
+    XprsGossip.instance
+        .noteDirect(c, self, bearer: 'lan', nowMs: now, shortRange: local);
+    XprsArchive.instance.touchServed(c, nowMs: now);
+    _onDirectHeard(c, 'lan', viaApi: true);
+  }
+
+  /// Offer this station as [call]'s mailbox (12.7): its callsign when it is
+  /// a public archiver with room (13.0.2), recording the visitor as served
+  /// (XprsArchive.noteServed) so their mail is shelved protected, counted in
+  /// `room:` and routed here by 12.8.1 until they declare otherwise. Null
+  /// when this station is not one, or is full -- a visitor already served
+  /// keeps their place (`room:` governs who may arrive, 13.0.2).
+  String? offerMailbox(String call) {
+    final public = PreferencesService.instanceSync?.xprsPublicArchiver ?? false;
+    final self = NostrCrypto.bareCallsign(tableCallsign).trim().toUpperCase();
+    final c = NostrCrypto.bareCallsign(call).trim().toUpperCase();
+    if (!public || !XprsArchive.instance.ready) return null;
+    if (self.isEmpty || c.isEmpty || c == self) return null;
+    final a = XprsArchive.instance;
+    if (!a.servesVisitor(c) && !_hasRoom()) return null;
+    a.noteServed(c);
+    return self;
+  }
+
+  /// How many packets this station holds for [call] and would hand over
+  /// (9.12.3): the custody rows waiting, which is what the sweep and the
+  /// page deliver. The archive's rows are the record, not the count: a row
+  /// stays filed after the page delivered it and the receipt released it.
+  int mailFor(String call) => MeshStore.instance.ready
+      ? MeshStore.instance.heldWiresFor(call, max: 1000).length
+      : 0;
+
+  /// The directory this public archiver publishes and the ones it reads
+  /// (12.9), wired to this device's file store, lanes and preferences.
+  void _wireDirectory(MediaArchive mediaArchive) {
+    XprsDirectoryAnnouncer.instance
+      ..isPublic =
+          (() => PreferencesService.instanceSync?.xprsPublicArchiver ?? false)
+      ..entries = (() => XprsArchive.instance.directoryEntries())
+      ..count = (() => XprsArchive.instance.countOf())
+      ..selfCallsign = (() => NostrCrypto.bareCallsign(tableCallsign))
+      ..signingKey = xprsProfileScalar
+      ..serve = (() =>
+          xprsServeClaim(
+              public: true,
+              spoolReady: XprsArchive.instance.ready,
+              files:
+                  (PreferencesService.instanceSync?.archiveQuotaGb ?? 0) > 0) ??
+          'archive')
+      ..dial = (() {
+        final d = PreferencesService.instanceSync?.xprsDial ?? '';
+        return d.isEmpty ? null : d;
+      })
+      ..room = (() => _hasRoom() ? null : 'no')
+      ..store = ((bytes, sha, previous) {
+        // Into the one content store every file lane ends in, offered by
+        // its digest like any held file; the previous listing is no longer
+        // offered (its bytes age out under the store's own eviction).
+        final token = mediaArchive.putBytes(bytes, XprsDirectory.ext,
+            name: 'directory');
+        XprsFileServer.instance.hold(XprsHeldFile(
+          archiveToken: token,
+          shaHex: sha,
+          size: bytes.length,
+          name: 'directory.${XprsDirectory.ext}',
+          ext: XprsDirectory.ext,
+        ));
+        if (previous != null) XprsFileServer.instance.drop(previous);
+      })
+      ..air = ((wire) async {
+        await XprsPublisher.instance
+            .publishWire(wire, verbatim: true, slot: 'service');
+      })
+      ..deposit = ((wire) =>
+          XprsPublisher.instance.depositArchivers([wire], what: 'service'));
+    XprsDirectoryConsumer.instance
+      ..named =
+          (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
+      ..fetchText = ((archiver, sha) async {
+        final self = NostrCrypto.bareCallsign(tableCallsign);
+        if (self.isEmpty) return null;
+        // The cheap lane: XprsFileFetch races the internet middle against
+        // the radio bulk lane and verifies the bytes against the digest.
+        final path = await XprsFileFetch.instance.fetch(
+            archiver: archiver,
+            shaHex: sha,
+            selfCallsign: self,
+            ext: XprsDirectory.ext,
+            timeout: const Duration(minutes: 10));
+        if (path == null) return null;
+        try {
+          // Bounded before it is read, and streamed in: a listing is a
+          // few hundred kilobytes at most (XprsDirectory.maxBytes), and a
+          // file past that is not one.
+          final f = fs.file(path);
+          if (await f.length() > XprsDirectory.maxBytes) return null;
+          final chunks = BytesBuilder(copy: false);
+          await for (final c in f.openRead()) {
+            chunks.add(c);
+            if (chunks.length > XprsDirectory.maxBytes) return null;
+          }
+          return utf8.decode(chunks.takeBytes(), allowMalformed: true);
+        } catch (_) {
+          return null;
+        }
+      });
   }
 
   // ── Who we hear, told to our archivers (12.1) ─────────────────────────────
@@ -1813,7 +1988,7 @@ class MeshService {
   /// half minute however chatty their beacons.
   final Map<String, int> _releaseTriedMs = {};
 
-  void _onDirectHeard(String callsign, String bearer) {
+  void _onDirectHeard(String callsign, String bearer, {bool viaApi = false}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final last = _releaseTriedMs[callsign] ?? 0;
     if (now - last < 30000) return;
@@ -1835,6 +2010,11 @@ class MeshService {
     if (!_hearsReporter.reported.contains(callsign.split('-').first)) {
       _reportHeard();
     }
+    // Heard through the web page: the report above is the whole of what the
+    // hearing owes. A browser reads its mail from the archive through the
+    // page (WebChatApi.archivePublicRows) and hears no LAN datagram, so a
+    // re-air here would spend the LAN on a copy nobody receives.
+    if (viaApi) return;
     final pending = MeshStore.instance.releasableFor(callsign,
         selfCallsign: tableCallsign, alsoSelf: _aliases);
     if (pending.isEmpty) return;

@@ -107,6 +107,13 @@ class XprsMailbox {
   /// Whether a receipt for this identifier has come back yet.
   String? Function(String id)? outboxState;
 
+  /// Whether a verified receipt naming this identifier was HEARD, for a
+  /// packet that is not in our outbox: a served visitor's mail (12.8.3 step
+  /// 1 done on their behalf), whose receipt comes to this station as a
+  /// custodian rather than as the sender. The custody store's received-set
+  /// (MeshStore.wasReceived) is the device default.
+  bool Function(String id)? receiptSeen;
+
   /// The stations a callsign declared as its mailboxes (12.8.1 step 1).
   List<String> Function(String callsign)? holdersOf;
 
@@ -142,13 +149,22 @@ class XprsMailbox {
   /// packets and does not read them: a chat message, a file description, a
   /// group act and a receipt are all mail addressed to somebody who may be
   /// asleep, and the chat wapp has no idea any of this happens.
-  void armDeposit(String wire) {
+  ///
+  /// [onBehalf] arms it for a packet somebody ELSE wrote: a visitor this
+  /// station serves through its web page (XprsArchive.servesVisitor) has no
+  /// archiver of their own, so the station it is standing next to does
+  /// 12.8.3 step 1 for them — the copy leaves verbatim, with no `via:`,
+  /// exactly as the author's own deposit would.
+  void armDeposit(String wire, {bool onBehalf = false}) {
     final p = XprsPacket.parse(wire);
     if (p == null) return;
     final dest = (p['d'] ?? '').trim().toUpperCase();
     final self = (selfCallsign?.call() ?? '').trim().toUpperCase();
     if (dest.isEmpty || self.isEmpty) return;
-    if ((p['f'] ?? '').trim().toUpperCase() != self) return; // only our own
+    final from = (p['f'] ?? '').trim().toUpperCase();
+    if (!onBehalf && from != self) return; // only our own
+    if (onBehalf && (from.isEmpty || from == self)) return;
+    if (dest == self) return; // nobody deposits mail for themselves with themselves
     if (!xprsAddressesStation(dest)) return; // a group has no mailbox (12.8.1)
     if (!xprsMayCarry(p)) return; // 13.11.1: local is for the bearers in range
     if (p.has('via')) return; // relayed traffic is not ours to deposit
@@ -200,6 +216,14 @@ class XprsMailbox {
     final state = outboxState?.call(ident);
     if (state != null && state != 'sent') {
       // Delivered or read: the copy would be spent on a message that arrived.
+      XprsMailboxCounters.depositSkipped++;
+      return 0;
+    }
+    // Not ours to track in the outbox (a served visitor's packet): the
+    // custody store knows whether a verified receipt for it was heard inside
+    // the window, and a receipt cancels the deposit exactly as an outbox
+    // state would.
+    if (state == null && (receiptSeen?.call(ident) ?? false)) {
       XprsMailboxCounters.depositSkipped++;
       return 0;
     }

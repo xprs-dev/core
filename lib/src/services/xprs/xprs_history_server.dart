@@ -396,7 +396,7 @@ class XprsHistoryServer {
                   for (final c in roomPeers?.call(asked) ?? const <String>[])
                     if (c != from && c != selfBase) c,
                 ].take(3).toList()
-              : XprsGossip.instance.tryCandidates(asked, selfBase: selfBase);
+              : tryFor(asked, selfBase: selfBase, asker: from);
       _airControl(selfBase, from, cmdId, 404,
           m: tries.isEmpty ? null : 'try ${tries.join(',')}');
       return;
@@ -727,6 +727,32 @@ class XprsHistoryServer {
   /// (spec section 3.1). One definition, shared, so the person/device
   /// split cannot drift between the archive, the ingest and the server.
   static String _base(String c) => NostrCrypto.bareCallsign(c);
+
+  /// Who a 404 names in `m:try` for a callsign this station does not hold
+  /// (12.9), in order: the callsign's own declared holders (13.12, "the
+  /// recipient's word beats every observation"), then the archivers whose
+  /// directories list it, then whoever gossip saw it at. Never this station
+  /// or the asker, each once, at most [max].
+  static List<String> tryFor(String asked,
+      {required String selfBase, String asker = '', int max = 3}) {
+    final a = _base(asked);
+    if (a.isEmpty) return const [];
+    final self = _base(selfBase), who = _base(asker);
+    final out = <String>[];
+    for (final c in [
+      ...XprsArchive.instance.holdersFor(a),
+      ...XprsGossip.instance.keepersOf(a, max: max + 2),
+      ...XprsGossip.instance.tryCandidates(a, selfBase: self, max: max + 2),
+    ]) {
+      final b = _base(c);
+      if (b.isEmpty || b == self || b == who || b == a || out.contains(b)) {
+        continue;
+      }
+      out.add(b);
+      if (out.length >= max) break;
+    }
+    return out;
+  }
 
   /// Tests only: forget budgets, dedup and any running chain.
   void reset() {

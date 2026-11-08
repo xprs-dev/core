@@ -80,6 +80,75 @@ virtual air. `debugReset()` clears state AND the seams. Reuse this shape for
 anything whose failure only shows between machines. The app's
 `test/support/mail_relay_sim.dart` is the simulation that runs it.
 
+### A visitor heard through the API — the `viaApi` pattern
+
+A browser on the station's web page is a station the core HEARS, not a
+second kind of peer: the host hands its wire to `PacketGateway.receive`
+on bearer `lan` with `viaApi: true, localLink: <on our network?>`, and
+`XprsIngest.heard` carries the same two flags. Nothing new reaches the
+wire. What the flag changes, in one place each: `XprsMonitor.offer`
+marks the entry (`XprsStation.viaApi`, `lastRadioMs`) so
+`heardDirectly(radioOnly: true)` excludes a page-only visitor (the
+mailbox's `reachable` asks with it: a browser hears no re-air);
+`XprsGossip.noteDirect(shortRange:)` writes the durable layer only for a
+visitor on the station's own network (12.9.4); `onDirectHeard(..., viaApi:)`
+lets the receiver report the hearing and skip the re-air. A visitor who
+only proved a session is `XprsMonitor.noteVisitor` (a synthetic `lan`
+sighting) and `MeshService.visitorHeard`. Reuse the flag for any lane
+that delivers through something other than the air (a socket page, a
+push channel) rather than inventing a bearer word.
+
+### The station as a visitor's mailbox — `XprsArchive.noteServed` / `servesVisitor`
+
+`served_visitors(call, since, last)` plus a RAM set: `noteServed` (the
+offer), `touchServed` (seen again), `servesVisitor` (one lookup, safe on
+the receive path), `servedVisitors`, `forgetServed`. The archive answers
+for a served visitor as if it had declared this station: `holdersFor`
+returns `[self]` until a real declaration, `hasActiveDecl` is true,
+`caredFor` counts it toward `room:`. The funnel shelves their mail
+`Tier.followed` (protected), `XprsForwarder` never forwards it away, and
+`XprsMailbox.armDeposit(onBehalf: true)` deposits their outgoing mail
+with the station's archivers (12.8.3 step 1 for somebody who has no
+archiver). The seam that decides whether to offer is
+`MeshService.offerMailbox` (public archiver with room, `_hasRoom`).
+
+### `WebChatApi` visitor seams — `receiveFrom`, `onVisitor`, `holdersOf`, `offerMailbox`, `mailFor`
+
+`receiveFrom(wire, {local})` replaces `receive` when a host can say where
+the browser is; `onVisitor(call, {local})` fires on a proven session.
+`/api/session` then answers `holders` (list), `offer` (this station, only
+when nobody holds) and `mail` (count); `/api/services` says
+`page.mailbox: true` when `holdersOf` and `mailFor` are wired. A
+`t:mailbox` or `t:receipt` through `/api/xprs/send` must verify against a
+key the station knows (409 `identity unknown`, 400 `forged`), because
+both are acted on by whoever hears them. Both hosts (server `Station`,
+app `ShareAppService`) wire the same five lines.
+
+### `XprsDirectory` — who keeps what, between archivers (XPRS.md 12.9)
+
+`services/xprs/xprs_directory.dart`: `XprsDirectory.compose/parse` (the
+`XDIR1` listing, sorted, one line per callsign), `shaOf`, `refOf`,
+`announces(p)`. `XprsDirectoryAnnouncer` publishes it from the minute
+sweep every ten minutes, only when the digest changed, as a signed
+`t:service … file:<ref>.xdir` aired and deposited; every side effect is a
+seam (`entries`, `count`, `store`, `air`, `deposit`, …). `XprsDirectoryConsumer`
+reads a named archiver's announcement once per (archiver, digest) through
+an injected `fetchText` and keeps POINTERS in `XprsGossip.notePointers` /
+`keepersOf` (`directory_ptr`, bounded by `directoryMaxRows`). The archive's
+lines are `XprsArchive.directoryEntries`. `XprsHistoryServer.tryFor` is
+the one composer of a 404's `m:try`: holders, keepers, then gossip.
+
+### `XprsKeyWait` — a send held until the key it needs arrives
+
+`services/xprs/xprs_key_wait.dart`: a direct message that cannot be sealed yet
+waits under a held id (6 hex, the §5 shape), persisted in the profile store,
+bounded and expiring; the core looks for the key (`ask`: `q:identity` and
+`XprsFetch.requestKey`), and `keyLearned` (called from
+`RnsService.recordCallsignPubkey`) seals and sends it, reporting the real id
+(`report`, which becomes `xprs.status.tx` with `newId`). Every seam injected
+(`test/xprs_key_wait_test.dart`). The pattern for any send blocked on a fact
+the core learns later.
+
 ### `XprsGatewayDedup` — one message, however many gateways
 
 XPRS.md 9.11.5: two gateways that translate one Meshtastic transmission across

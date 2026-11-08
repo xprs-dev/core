@@ -64,6 +64,7 @@ export 'src/services/xprs/xprs_callsign.dart';
 export 'src/services/xprs/xprs_digipeat.dart';
 export 'src/services/xprs/xprs_gateway_dedup.dart';
 export 'src/services/xprs/xprs_id.dart';
+export 'src/services/xprs/xprs_directory.dart';
 export 'src/services/xprs/xprs_mailbox.dart';
 export 'src/services/xprs/xprs_owned_stations.dart';
 export 'src/services/xprs/xprs_packet.dart';

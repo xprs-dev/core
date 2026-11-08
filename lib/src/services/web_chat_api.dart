@@ -117,6 +117,35 @@ class WebChatApi {
   /// as for a packet heard on any other bearer.
   final void Function(String wire) receive;
 
+  /// The same door, told where the visitor is: `local` says the browser is
+  /// on this station's own network ([isLocalPeer]). Used instead of
+  /// [receive] when set. The host hands both to the gateway as heard on
+  /// bearer `lan` through the API (`viaApi: true, localLink: local`,
+  /// XprsIngest.heard): the visitor is at the station's ear, and a hearing
+  /// from its own network is radio truth for the gossip's durable layer
+  /// while one from across the internet is a live sighting only (12.9.4).
+  final void Function(String wire, {required bool local})? receiveFrom;
+
+  /// A visitor proved their key (`POST /api/session`): the host hears them
+  /// on `lan` through the API without a packet (MeshService.visitorHeard),
+  /// so they are in `hears:` and a holder of their mail learns where they are.
+  final void Function(String call, {required bool local})? onVisitor;
+
+  /// Who holds mail for a callsign, in preference order (13.12,
+  /// XprsArchive.holdersFor): the session reply's `holders`. A visitor this
+  /// station serves and who has not declared yet is held here.
+  final List<String> Function(String call)? holdersOf;
+
+  /// Offer this station as the visitor's mailbox (12.7): the station's
+  /// callsign when it is a public archiver with room (13.0.2), else null.
+  /// Asked only for a visitor with no holder; the page then declares it with
+  /// a signed `t:mailbox hold:` posted through `/api/xprs/send`.
+  final String? Function(String call)? offerMailbox;
+
+  /// How many packets this station holds for a callsign and would hand over
+  /// (9.12.3's `q:mail`): the session reply's `mail`.
+  final int Function(String call)? mailFor;
+
   /// Whether the core would air this packet (a closed group this station
   /// does not belong to is not ours to post into).
   final bool Function(XprsPacket p) mayAir;
@@ -185,8 +214,17 @@ class WebChatApi {
     this.roomRows,
     this.fileStore,
     this.fileMax = defaultFileMax,
+    this.receiveFrom,
+    this.onVisitor,
+    this.holdersOf,
+    this.offerMailbox,
+    this.mailFor,
   })  : now = now ?? DateTime.now,
         isLocalPeer = isLocalPeer ?? isPrivateAddress;
+
+  /// Whether this host tells a visitor where their mail is kept and how much
+  /// waits (`holders`, `mail` on `/api/session`; `page.mailbox`).
+  bool get _mailboxWired => holdersOf != null && mailFor != null;
 
   /// What a visitor may read: conversation, not machinery. An identity is a
   /// public broadcast and is how a browser finds the key a callsign is bound
@@ -207,6 +245,11 @@ class WebChatApi {
     'warning', 'info',
     // A call for help is never refused (10.7), whoever asks through here.
     'sos',
+    // Where the visitor's mail is kept (9.12), and the acknowledgement that
+    // releases a held copy (9.7.1, 12.8.3 step 5). Both are ACTED on by
+    // whoever hears them, so both must verify against a key this station
+    // knows before they pass (`_send`).
+    'mailbox', 'receipt',
   };
 
   /// Files by reference (XPRS.md 7.7): the content-addressed store they are
@@ -278,6 +321,7 @@ class WebChatApi {
     if (method == 'GET' && path == '/api/xprs/history') {
       return _history(query, peer);
     }
+    if (method == 'GET' && path == '/api/xprs/mail') return _mail(query);
     if (path == '/api/admin') {
       if (method == 'GET') return _adminState(query['session'], peer);
       if (method == 'POST') return _adminAct(body, peer);
@@ -331,6 +375,10 @@ class WebChatApi {
         'config': false,
         // This host gives a visitor who proves their key their own mail.
         'session': true,
+        // And tells them where their mail is kept and how much waits
+        // (`holders`, `offer`, `mail` on `/api/session`), and takes their
+        // signed `t:mailbox` and `t:receipt` through `/api/xprs/send`.
+        if (_mailboxWired) 'mailbox': true,
         // And has an administrator (GET/POST /api/admin).
         'admin': true,
         // And moderators (XPRS.md 10.10).
@@ -383,17 +431,92 @@ class WebChatApi {
       _sessions.remove(_sessions.keys.first);
     }
     final token = _token(16);
-    _sessions[token] = (call: from.split('-').first, until: t.add(sessionLife));
-    return WebChatReply(200, {'ok': true, 'session': token, 'call': from});
+    final call = from.split('-').first;
+    _sessions[token] = (call: call, until: t.add(sessionLife));
+    // The visitor is at this station's ear now, through the page.
+    onVisitor?.call(call, local: isLocalPeer(peer));
+    // Where their mail is kept (13.12), and the offer to keep it here when
+    // nobody does yet (12.7): the page answers the offer with a signed
+    // declaration, and the next session sees the holder, not the offer.
+    final holders = holdersOf?.call(call);
+    final offer = offerMailbox != null && (holders == null || holders.isEmpty)
+        ? offerMailbox!(call)
+        : null;
+    return WebChatReply(200, {
+      'ok': true,
+      'session': token,
+      'call': from,
+      if (holdersOf != null) 'holders': holders ?? const <String>[],
+      if (offer != null && offer.isNotEmpty) 'offer': offer,
+      if (mailFor != null) 'mail': mailFor!(call),
+    });
+  }
+
+  /// `GET /api/xprs/mail?call=X&session=` (spec/API-HTTP.md): what this
+  /// station holds FOR a callsign. Mail belongs to its two parties (XPRS.md
+  /// 12.7), so the session must prove `call` itself or be the
+  /// administrator's; the history shape, filtered to records addressed to
+  /// `call`. This is what a returning visitor asks first (12.8.2), and the
+  /// page asks it once per session when the reply said mail waits.
+  WebChatReply _mail(Map<String, String> q) {
+    WebChatReply no(int status, String why) =>
+        WebChatReply(status, {'ok': false, 'error': why});
+    final call = (q['call'] ?? '').trim().toUpperCase();
+    if (call.isEmpty) return no(400, 'mail needs call=');
+    final who = sessionCall(q['session']);
+    final owner = _adminOf(q['session']) != null;
+    if (!owner && (who == null || _base(who) != _base(call))) {
+      return no(403, 'mail needs a session for that callsign');
+    }
+    final limit =
+        (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
+    final rows = [
+      for (final r in publicRows(
+        sinceMs: _when(q['since']),
+        untilMs: _when(q['until']),
+        types: readable.toList(),
+        visitor: call,
+        limit: limit,
+      ))
+        if (_base('${r['to'] ?? ''}') == _base(call)) r,
+    ];
+    return WebChatReply(200, {
+      'ok': true,
+      'count': rows.length,
+      'held': held(readable.toList()),
+      'time': 'synced',
+      'rows': rows,
+    });
   }
 
   /// `room=` (spec/API-HTTP.md): one of the three chat rooms, else none.
   static String? _room(String? v) =>
       const {'local', 'regional', 'global'}.contains(v) ? v : null;
 
+  /// When each proven visitor was last reported heard for a page poll, so a
+  /// browser polling every few seconds costs one hearing a minute (the
+  /// gossip and the release path throttle at that order themselves).
+  final Map<String, int> _pollHeardMs = {};
+  static const int _pollHeardEveryMs = 60000;
+
   WebChatReply _history(Map<String, String> q, String peer) {
     final hosted = _hostedRoom(q['room']);
     if (hosted != null) return _roomHistory(hosted, q);
+    // A page polling with a proven session is the visitor still here: the
+    // hearing 12.8.1 waits for, kept fresh while they read (a session proved
+    // once and a page left open for an hour would otherwise fall out of
+    // `hears:` after eleven minutes).
+    final who = sessionCall(q['session']);
+    if (who != null && onVisitor != null) {
+      final t = now().millisecondsSinceEpoch;
+      if (t - (_pollHeardMs[who] ?? 0) >= _pollHeardEveryMs) {
+        _pollHeardMs[who] = t;
+        if (_pollHeardMs.length > maxSessions) {
+          _pollHeardMs.remove(_pollHeardMs.keys.first);
+        }
+        onVisitor!(who, local: isLocalPeer(peer));
+      }
+    }
     // The Local room is the station's own neighbourhood: kept from visitors
     // outside its network when the administrator says so (the default).
     final hideLocal = localPrivate && !isLocalPeer(peer);
@@ -588,11 +711,27 @@ class WebChatApi {
       // the signature must hold; with none known it is relayed as
       // unverified, which is what every receiver will conclude for
       // themselves.
-      final state = xprsVerify(p, keyOf(base(from)));
+      final key = keyOf(base(from));
+      final state = xprsVerify(p, key);
       if (state == XprsSigState.forged) return no(400, 'forged');
+      // A mailbox declaration or a receipt is ACTED on, not only relayed: a
+      // forged declaration collects somebody else's mail (9.12), a forged
+      // receipt deletes a message from every holder (9.7.1). The funnel
+      // will act only on a verified one, so an unverifiable one is refused
+      // here, where the page can fix it: send the identity first (409), or
+      // sign with the key that callsign is bound to (400).
+      if (p.type == 'mailbox' || p.type == 'receipt') {
+        if (key == null) return no(409, 'identity unknown');
+        if (state != XprsSigState.verified) return no(400, 'forged');
+      }
     }
     final w = p.encode();
-    receive(w);
+    final door = receiveFrom;
+    if (door != null) {
+      door(w, local: isLocalPeer(peer));
+    } else {
+      receive(w);
+    }
     return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
   }
 
