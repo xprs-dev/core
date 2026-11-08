@@ -974,9 +974,20 @@ class MeshService {
         .split(',')
         .where((c) => c.isNotEmpty)
         .toList();
-    LogService.instance.add(
-        'Mesh: XPRS beacon from $from ($rssi dBm) — '
-        '${heard.length} of ${peers ?? heard.length} peers listed');
+    // Once a minute per station, or when what it says changed. A board
+    // beacons and its neighbours digipeat it, so this used to be two lines a
+    // second from one station: a quarter of the 200-line log, which pushed
+    // out everything else (measured on a C61 beside two ESP32 stations).
+    final summary = '${heard.length}/${peers ?? heard.length}';
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final last = _beaconLog[from];
+    if (last == null || last.$2 != summary || nowMs - last.$1 >= 60000) {
+      _beaconLog[from] = (nowMs, summary);
+      if (_beaconLog.length > 256) _beaconLog.remove(_beaconLog.keys.first);
+      LogService.instance.add(
+          'Mesh: XPRS beacon from $from ($rssi dBm) — '
+          '${heard.length} of ${peers ?? heard.length} peers listed');
+    }
     // The sender is by definition directly heard, so this is a sighting like
     // any other: it registers the address for dialling -- unless the packet
     // carries `via:`, in which case the address we heard it from is the
@@ -999,6 +1010,9 @@ class MeshService {
   String? Function()? ourLxmfDest;
 
   int _xprsBeaconsHeard = 0;
+
+  /// When each station's beacon was last logged, and what it said then.
+  final Map<String, (int, String)> _beaconLog = {};
 
   /// XPRS discovery beacons heard from other stations.
   int get xprsBeaconsHeard => _xprsBeaconsHeard;
