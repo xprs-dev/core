@@ -363,12 +363,23 @@ class WappDelivery {
   /// Its own topic, because it is not a packet somebody heard -- it is an
   /// answer about one of ours. A wapp subscribes to draw the tick it used to
   /// assert on its own.
+  ///
+  /// [newId] is set when a message that waited for its recipient's key
+  /// (XprsKeyWait) finally went: [id] is the held id the wapp keyed the
+  /// bubble on, and [newId] the §5 identifier it is known by from now on.
   int deliverStatus({
     required String id,
     required String peer,
     required String state,
+    String newId = '',
   }) =>
-      _publish('xprs.status.tx', {'id': id, 'peer': peer, 'state': state});
+      _publish('xprs.status.tx', {
+        'id': id,
+        'peer': peer,
+        'state': state,
+        if (newId.isNotEmpty) 'newId': newId,
+        if (newId.isNotEmpty) 'sealed': true,
+      });
 
   int _publish(String topic, Map<String, dynamic> row) {
     final n = WappEventBroker.instance.publish('core', topic, jsonEncode(row));

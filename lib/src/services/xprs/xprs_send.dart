@@ -45,6 +45,7 @@ import 'xprs_airtime.dart';
 import 'xprs_body.dart';
 import 'xprs_file_lift.dart';
 import 'xprs_id.dart';
+import 'xprs_key_wait.dart';
 import 'xprs_outbox.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
@@ -66,7 +67,8 @@ class XprsSendOutcome {
     this.foreign = false,
   });
 
-  /// 'x' sealed, 'm' plain, '' nothing was sent.
+  /// 'x' sealed, 'm' plain, 'h' held until the recipient's key arrives
+  /// (XprsKeyWait; [id] is then the held id), '' nothing was sent.
   final String form;
 
   /// §5 identifier of the packet (of the REASSEMBLED packet when split, which
@@ -85,12 +87,14 @@ class XprsSendOutcome {
   bool get ok => form.isNotEmpty;
 
   /// The integer a wasm caller reads: 1 sealed, 2 plain, 3 plain to a node
-  /// of another network through a gateway, -1 asked to seal and could not
+  /// of another network through a gateway, 4 held in the outbox until the
+  /// recipient's key arrives (sealed then), -1 asked to seal and could not
   /// yet (no key heard), -3 asked to seal a message to another network,
   /// which can never be sealed, 0 malformed or refused for another reason.
   int get code {
     if (form == 'x') return 1;
     if (form == 'm') return foreign ? 3 : 2;
+    if (form == 'h') return 4;
     return switch (refusal) {
       XprsSealRefusal.noRecipientKey => -1,
       XprsSealRefusal.foreignNetwork => -3,
@@ -177,8 +181,14 @@ class XprsSend {
   /// ORIGINAL, never of an earlier edit. Everything else is the same send: the
   /// edit is sealed the way the original was, split like any message, carried
   /// and receipted as a packet of its own.
+  ///
+  /// [holdForKey] turns the no-key refusal into a wait: the words are kept in
+  /// the outbox ([XprsKeyWait]), the key is looked for, and the message leaves
+  /// sealed when it lands. The answer is then form `h` with a held id. Never
+  /// for a correction: an edit names an original that went out, and the
+  /// person is better told than left with a correction that may never go.
   XprsSendOutcome message(String to, String text,
-      {required bool private, String editOf = ''}) {
+      {required bool private, String editOf = '', bool holdForKey = false}) {
     final dest = to.trim().toUpperCase();
     // Not simply the active callsign: a conversation keeps the callsign it
     // began under (XprsSelf), so somebody who wrote to EA/CT1ABC is answered
@@ -227,7 +237,15 @@ class XprsSend {
     if (!built.ok) {
       refused++;
       if (built.refusal == XprsSealRefusal.noRecipientKey) {
-        // §18.1: ask for the key rather than wait for the next announcement.
+        if (holdForKey && original.isEmpty) {
+          // Not a refusal after all: it waits, and the wait looks for the key
+          // (the station's own q:identity and the archivers, XprsKeyWait).
+          refused--;
+          final held = XprsKeyWait.instance.hold(dest, text);
+          return XprsSendOutcome(form: 'h', id: held, parts: 0);
+        }
+        // Section 8 / 29.1: ask for the key rather than wait for the next
+        // announcement.
         unawaited(XprsPublisher.instance.askIdentity(dest));
       }
       LogService.instance
@@ -264,6 +282,11 @@ class XprsSend {
   /// it. The words in it are nobody's to give back afterwards, which is the
   /// wapp's side of the promise: it destroys its own copy.
   XprsSendOutcome withdraw(String to, String id) {
+    // A message still waiting for its key never left: taking it back is
+    // dropping it from the outbox, and there is nothing to say on the air.
+    if (XprsKeyWait.instance.release(id)) {
+      return XprsSendOutcome(form: 'm', id: id.trim().toLowerCase(), parts: 0);
+    }
     final dest = to.trim().toUpperCase();
     // The same name the conversation uses, or a withdrawal would come from a
     // different callsign than the message it withdraws (XPRS.md 7.8).

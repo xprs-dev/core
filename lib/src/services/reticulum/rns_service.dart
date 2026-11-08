@@ -30,6 +30,7 @@ import 'package:hex/hex.dart';
 
 import '../mesh/mesh_service.dart';
 import '../mesh/mesh_courier.dart';
+import '../xprs/xprs_key_wait.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_archive_policy.dart';
 import '../xprs/xprs_station_policy.dart';
@@ -493,6 +494,9 @@ class RnsService {
       }
       // Learning a followed callsign's key may unblock fetching its profile.
       _maybeFetchFollowedProfile(c);
+      // ...and it is what a message waiting in the outbox for this person
+      // was waiting for: seal it and send it now (XprsKeyWait).
+      XprsKeyWait.instance.keyLearned(c);
       // ...and it may be the moment we learn that a name we have been hearing
       // belongs to someone we follow. Promote it on the spot: one comparison
       // here, versus deriving a callsign from a key on every packet.

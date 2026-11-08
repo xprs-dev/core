@@ -60,6 +60,10 @@ class XprsFetch {
   /// `since:` is the newest message held from it.
   static const Duration firstWindow = Duration(days: 30);
 
+  /// How far back a key fetch asks. A binding is re-announced every half hour
+  /// (29.1), so anything an archiver kept is inside this.
+  static const Duration identityWindow = Duration(days: 365);
+
   /// How long an unanswered ask holds the fetch before the next candidate
   /// is tried. XprsCatchup's figure, for the same reason.
   static const Duration askGrace = Duration(seconds: 40);
@@ -97,7 +101,29 @@ class XprsFetch {
   /// Somebody wants [call]'s recent messages. Returns true when a fetch was
   /// opened; false when one is open already, one ran recently, the station
   /// is in earshot, or there is nobody to ask.
-  bool requestStation(String call, {String reason = ''}) {
+  bool requestStation(String call, {String reason = ''}) =>
+      _request(call, _kMessage, reason: reason);
+
+  /// Somebody needs [call]'s key: a message waits sealed-to-be in this
+  /// station's outbox (XprsKeyWait). XPRS.md 12.12.1: "a station resolving a
+  /// callsign across the internet sends `cmd:history kind:identity ... only:X`
+  /// with `d:` naming a chosen always-on archiver", and an archiver keeps
+  /// `t:identity` as a publication (12.1), so the binding is there to be
+  /// replayed. The answer enters through the receive door like any replay,
+  /// where `XprsIngest` verifies the self-signature and binds the key.
+  ///
+  /// Not skipped in earshot: a station in the room is asked `q:identity`
+  /// directly as well, but one that has not answered is exactly why the key
+  /// is still missing. One page is enough; the newest binding is the one.
+  bool requestKey(String call, {String reason = ''}) =>
+      _request(call, _kIdentity, reason: reason);
+
+  static const String _kMessage = 'message';
+  static const String _kIdentity = 'identity';
+  static String _keyOf(String kind, String call) =>
+      kind == _kMessage ? call : '$kind:$call';
+
+  bool _request(String call, String kind, {String reason = ''}) {
     final c = _base(call);
     final self = _base(selfCallsign?.call() ?? XprsArchive.instance.selfCallsign);
     if (c.isEmpty || self.isEmpty || c == self || !xprsAddressesStation(c)) {
@@ -105,9 +131,11 @@ class XprsFetch {
     }
     requested++;
     final now = nowMs();
-    if (_open.containsKey(c) ||
-        now - (_lastMs[c] ?? 0) < everyPerStation.inMilliseconds ||
-        (inEarshot?.call(c) ?? XprsMonitor.instance.heardDirectly(c))) {
+    final key = _keyOf(kind, c);
+    if (_open.containsKey(key) ||
+        now - (_lastMs[key] ?? 0) < everyPerStation.inMilliseconds ||
+        (kind == _kMessage &&
+            (inEarshot?.call(c) ?? XprsMonitor.instance.heardDirectly(c)))) {
       skipped++;
       return false;
     }
@@ -129,10 +157,10 @@ class XprsFetch {
       skipped++;
       return false;
     }
-    _lastMs[c] = now;
+    _lastMs[key] = now;
     if (_lastMs.length > _rememberMax) _lastMs.remove(_lastMs.keys.first);
-    _open[c] = _Fetch(c, candidates, self);
-    LogService.instance.add('XPRS fetch: $c asked for'
+    _open[key] = _Fetch(c, candidates, self, kind);
+    LogService.instance.add('XPRS fetch: $c${kind == _kMessage ? "" : " ($kind)"} asked for'
         '${reason.isEmpty ? "" : " ($reason)"}, ${candidates.length} '
         'archiver(s) to try (12.6)');
     unawaited(tick());
@@ -193,12 +221,15 @@ class XprsFetch {
       f.oldestMs = null;
     }
     final since = f.sinceMs ??= () {
+      // A key binding is re-announced, never revised by an older one: ask far
+      // back, and the newest-first page brings the one that counts.
+      if (f.kind == _kIdentity) return now - identityWindow.inMilliseconds;
       final held = newestHeldMs?.call(f.call) ??
           XprsArchive.instance.newestPts(f.call, types: const ['message']);
       return held ?? now - firstWindow.inMilliseconds;
     }();
     final wire = StringBuffer('t:command f:${f.self} d:$archiver '
-        'ts:${xprsNowTs(now)} cmd:history kind:message only:${f.call} '
+        'ts:${xprsNowTs(now)} cmd:history kind:${f.kind} only:${f.call} '
         'since:${xprsNowTs(since)}');
     if (untilMs != null) wire.write(' until:${xprsNowTs(untilMs)}');
     final p = XprsPacket.parse(wire.toString());
@@ -262,7 +293,9 @@ class XprsFetch {
             _lastGood.remove(_lastGood.keys.first);
           }
         }
-        if (code == 206 && f.rowsThisAsk > 0 && f.pages + 1 < maxPages) {
+        if (code == 206 &&
+            f.rowsThisAsk > 0 &&
+            f.pages + 1 < (f.kind == _kIdentity ? 1 : maxPages)) {
           // More held than served: continue before the oldest row this page
           // brought (11.2.1), and only if that is progress.
           final oldest = f.oldestMs;
@@ -328,7 +361,8 @@ class XprsFetch {
   bool askedFor(XprsPacket p) => _open.isNotEmpty && _owner(p) != null;
 
   _Fetch? _owner(XprsPacket p) {
-    if (!XprsArchive.kXprsTalk.contains(p.type)) return null;
+    final talk = XprsArchive.kXprsTalk.contains(p.type);
+    if (!talk && p.type != _kIdentity) return null;
     final now = nowMs();
     final from = _base(p['f'] ?? '');
     final to = _base(p['d'] ?? '');
@@ -336,15 +370,21 @@ class XprsFetch {
       if (f.askId == null || now - f.askedAtMs > askGrace.inMilliseconds) {
         continue;
       }
-      if (from == f.call || to == f.call) return f;
+      // A key fetch owns the station's own t:identity and nothing else.
+      if (f.kind == _kIdentity) {
+        if (!talk && from == f.call) return f;
+        continue;
+      }
+      if (talk && (from == f.call || to == f.call)) return f;
     }
     return null;
   }
 
   void _close(_Fetch f, String why) {
-    _open.remove(f.call);
+    _open.remove(_keyOf(f.kind, f.call));
     if (f.askId != null) _pending.remove(f.askId);
-    LogService.instance.add('XPRS fetch: ${f.call} — $why');
+    LogService.instance.add('XPRS fetch: ${f.call}'
+        '${f.kind == _kMessage ? "" : " (${f.kind})"} — $why');
   }
 
   Map<String, dynamic> get json => {
@@ -383,8 +423,10 @@ class XprsFetch {
 }
 
 class _Fetch {
-  _Fetch(this.call, this.candidates, this.self);
+  _Fetch(this.call, this.candidates, this.self, this.kind);
   final String call;
+  /// The packet type asked for: `message`, or `identity` for a key.
+  final String kind;
   final String self;
   final List<String> candidates;
   final Set<String> viaRedirect = {};
