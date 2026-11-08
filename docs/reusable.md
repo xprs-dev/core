@@ -341,6 +341,7 @@ re-baseline that refuses to hide a new violation) is described in
 
 | `LogService.onLine` | `services/log_service.dart` | a host that prints the log as it is kept (the server edition writes it to stdout / the journal) |
 | `HeartbeatKeepAlive` | `platform/heartbeat_keep_alive.dart` | the core's heartbeat on a host with no native one (server, desktop): a Dart tick at a period the host passes, running only while listened to; hold/release delegated |
+| `WebChatApi.hostSwitches` + `WebChatApi.settingsKey` | `services/web_chat_api.dart` | a true/false the HOST owns (the server's `auto_update`) set from Administration like any setting, stored with the station's and reported in `settings`; the host reads it back from its KeyValueStore under `settingsKey` even when the API is not running (the server's `update` command does, from a timer). Add a host's own switch here instead of a new endpoint |
 
 ### The trusted stations — `WebChatApi.trustedSet()` / `syncSet()`
 

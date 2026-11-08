@@ -166,6 +166,13 @@ class WebChatApi {
   /// (they last until the host restarts).
   final KeyValueStore? store;
 
+  /// Switches the HOST defines and reads for itself, name -> default: the
+  /// server edition's `auto_update`. The administrator sets one like any
+  /// setting (true or false), the station stores it with the others and
+  /// reports it in `settings`; the host reads it back from [store] under
+  /// [settingsKey]. A station without the switch refuses the name.
+  final Map<String, bool> hostSwitches;
+
   /// Whether a visitor's address is on this station's own network. Default
   /// [isPrivateAddress]; a host that knows its own public prefixes (an IPv6
   /// LAN has no private addresses) widens it.
@@ -205,6 +212,7 @@ class WebChatApi {
     required this.appPath,
     DateTime Function()? now,
     this.store,
+    this.hostSwitches = const {},
     bool Function(String peer)? isLocalPeer,
     this.groups,
     this.signAsStation,
@@ -1574,7 +1582,11 @@ class WebChatApi {
   // ---- the administrator -------------------------------------------------
 
   static const _kAdmin = 'webchat.admin';
-  static const _kSettings = 'webchat.settings';
+
+  /// The store key holding the settings as one JSON object (a host reads its
+  /// own switches from it when the API is not running, e.g. from a timer).
+  static const settingsKey = 'webchat.settings';
+  static const _kSettings = settingsKey;
   final Map<String, String> _mem = {};
 
   String? _load(String k) => store != null ? store!.getString(k) : _mem[k];
@@ -1644,6 +1656,8 @@ class WebChatApi {
     return {
       for (final e in settingDefaults.entries)
         e.key: (s[e.key] ?? e.value) as Object,
+      for (final e in hostSwitches.entries)
+        e.key: (s[e.key] is bool ? s[e.key] : e.value) as Object,
       for (final e in s.entries)
         if (e.key.startsWith(pagePrefix) && e.value is String) e.key: e.value as Object,
     };
@@ -1769,6 +1783,11 @@ class WebChatApi {
         for (final e in want.entries) {
           final k = '${e.key}';
           final v = e.value;
+          if (hostSwitches.containsKey(k)) {
+            if (v is! bool) return no(400, '$k must be true or false');
+            next[k] = v;
+            continue;
+          }
           switch (k) {
             case 'local_private':
               if (v is! bool) return no(400, '$k must be true or false');

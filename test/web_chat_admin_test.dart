@@ -21,7 +21,7 @@ void main() {
   late List<String> received;
   const lan = '192.168.178.20', internet = '203.0.113.7';
 
-  WebChatApi make() => WebChatApi(
+  WebChatApi make({Map<String, bool> switches = const {}}) => WebChatApi(
         publicRows: ({sinceMs, untilMs, required types, from, visitor, room, required limit}) => [
           {'type': 'message', 'from': 'X1AAA', 'to': '', 'own': false,
            'wire': 't:message f:X1AAA ts:2026-10-15_12:00:00 scope:local m:near'},
@@ -34,6 +34,7 @@ void main() {
         selfCallsign: () => 'X3PTZM',
         keyOf: (c) => keys[c],
         appPath: () => null,
+        hostSwitches: switches,
       );
 
   setUp(() {
@@ -98,6 +99,26 @@ void main() {
     expect((await act(a, internet, {'action': 'claim', 'session': s})).status, 403);
     expect((await act(a, lan, {'action': 'claim', 'session': 'made-up'})).status, 403);
     expect(a.adminCall, isNull);
+  });
+
+  test('a host switch (auto_update) is reported with its default and set '
+      'like a setting; a station without it refuses the name', () async {
+    final a = make(switches: {'auto_update': true});
+    final s = await session(a, 'X1ALIC', _alice, lan);
+    final claimed = await act(a, lan, {'action': 'claim', 'session': s});
+    expect(claimed.json['settings']['auto_update'], isTrue);
+    expect((await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'auto_update': 'off'}})).status, 400);
+    final off = await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'auto_update': false}});
+    expect(off.json['settings']['auto_update'], isFalse);
+    expect(a.settings['auto_update'], isFalse);
+    final plain = make();
+    final s2 = await session(plain, 'X1ALIC', _alice, lan);
+    await act(plain, lan, {'action': 'claim', 'session': s2});
+    expect((await act(plain, lan, {'action': 'set', 'session': s2,
+        'settings': {'auto_update': false}})).status, 400);
+    expect(plain.settings.containsKey('auto_update'), isFalse);
   });
 
   test('settings: only the admin sets them, and only known values', () async {
