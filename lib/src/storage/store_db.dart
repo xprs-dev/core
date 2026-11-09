@@ -72,16 +72,27 @@ ZxSqlDb openStoreDb(String absPath,
       durable: durable, pageSize: pageSize);
 }
 
+/// True in the dart2js build of the web page (a browser without WebAssembly
+/// GC gets it as Flutter's fallback): numbers are JavaScript doubles there,
+/// and zxdb needs 64-bit integers. False natively and under dart2wasm.
+const bool storesUnavailable = identical(0, 0.0);
+
 /// Opens the store at [absPath] with a secret from [storeSecretFor] (null:
 /// plain), for isolates without the keyring.
 ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
-        {bool durable = false, int pageSize = 16384}) =>
-    ZxSqlDb.open(absPath,
+    {bool durable = false, int pageSize = 16384}) {
+  if (storesUnavailable) {
+    // Every store degrades to no persistence on an open failure.
+    throw UnsupportedError('stores need the WebAssembly build of the page '
+        '(a browser with WebAssembly GC: Chrome 119, Firefox 120, Safari 18.2)');
+  }
+  return ZxSqlDb.open(absPath,
         password: secret,
         scryptLog2N: 1,
         durable: durable,
-        lockWaitMs: storeLockWaitMs,
-        pageSize: pageSize);
+      lockWaitMs: storeLockWaitMs,
+      pageSize: pageSize);
+}
 
 /// A store in memory (tests; a store without a path).
 ZxSqlDb openMemoryStoreDb() => ZxSqlDb.memory();
