@@ -30,6 +30,7 @@ import '../platform/fs.dart';
 import 'package:xprs_core/src/platform/os.dart' as platform;
 import '../services/preferences_service.dart';
 import 'profile_db.dart' show initProfileDb;
+import '../storage/store_db_host.dart' show initStoreDb;
 import 'profile_service.dart';
 import 'profile_storage.dart';
 import 'profile_storage_factory.dart';
@@ -52,6 +53,9 @@ Future<void> initStorageRoot() async {
   // parents of its SQLite files); point it at the same tree.
   reticulum.fileSystem = fs;
   await initProfileDb();
+  // The stores' zx files: loaded from IndexedDB in a browser (natively a
+  // no-op), before any store opens.
+  await initStoreDb();
   final os = platform.platformName();
   if (os == 'web') {
     _resolvedBase = '/xprs';
