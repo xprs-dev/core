@@ -16,7 +16,6 @@
 import 'dart:async';
 
 
-import 'package:encrypted_archive/encrypted_archive.dart' show SQLiteLoader;
 import 'package:reticulum/reticulum.dart' as reticulum;
 
 import 'iwi_profile.dart';
@@ -24,14 +23,14 @@ import 'package:reticulum/reticulum.dart';
 import '../services/log_service.dart';
 import '../services/preferences_service.dart';
 import 'identity_backup.dart';
-import 'profile_db.dart';
+import '../storage/store_db.dart' show openStoreDb, openMemoryStoreDb;
+import 'profile_db_common.dart' show ProfileKeyring;
 import 'profile_encryption.dart';
 import 'profile_storage.dart';
 import 'profile_storage_encrypted.dart';
 import 'storage_paths.dart';
 import '../services/i18n/core_i18n.dart';
 import 'package:xprs_core/src/util/observable.dart';
-import 'package:xprs_core/src/util/compat.dart' show kIsWeb;
 
 class ProfileService {
   ProfileService._();
@@ -121,17 +120,13 @@ class ProfileService {
   Future<void> load() async {
     if (_loaded) return;
     // Route every reticulum-package database open (media archive, disk
-    // index, serve stats, relay events, coin wallet) through the profile
-    // opener so encrypted profiles get their SQLCipher keys applied. Must
-    // happen before any store is constructed; this boot task runs before
+    // index, serve stats, relay events, coin wallet) through the store
+    // opener so encrypted profiles get their zx store secrets. Must happen
+    // before any store is constructed; this boot task runs before
     // wapp/reticulum autostart on both UI and headless engines.
-    reticulum.dbOpener = openProfileDb;
-    reticulum.dbMemoryOpener = openMemoryDb;
-    // encrypted_archive cannot load sqlite3.wasm itself; on web it opens
-    // through the same engine. Natively it keeps its own default, because a
-    // profile.ear inside an encrypted profile must NOT get a SQLCipher key
-    // on top of its own encryption.
-    if (kIsWeb) SQLiteLoader.override = openPlainDb;
+    reticulum.dbOpener =
+        (p, {bool durable = false}) => openStoreDb(p, durable: durable);
+    reticulum.dbMemoryOpener = openMemoryStoreDb;
     final root = xprsRootStorage();
     await root.createDirectory('');
     final existing = await root.readJson(_profilesFile);

@@ -4,9 +4,6 @@
 /// out of the app keeps its relative imports.
 library;
 
-// ── db_bytes.dart ─────────────────────────────────────────────────────────
-export 'src/services/db_bytes.dart';
-
 // ── folders ───────────────────────────────────────────────────────────────
 export 'src/services/folders/folder_event.dart';
 export 'src/services/folders/folder_meta.dart';

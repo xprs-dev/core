@@ -71,7 +71,7 @@ import '../folders/ntorrent.dart';
 import '../folders/piece_hashes.dart';
 import '../mesh/mesh_store.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart' show storeSecretFor;
 import '../../profile/profile_service.dart';
 import '../../profile/secure_file.dart';
 import '../preferences_service.dart';
@@ -4214,7 +4214,10 @@ class RnsService {
 
         // Distributed relay/archiver: local event store + search + serve endpoint.
         try {
-          _relayStore = RelayEventStore.open(relayStorePath ?? ':memory:');
+          _relayStore = RelayEventStore.open(relayStorePath ?? ':memory:',
+              keyHex: relayStorePath == null
+                  ? null
+                  : storeSecretFor(relayStorePath!));
           _relay = RelayNode(
             identity: _id!,
             store: _relayStore!,
@@ -4360,21 +4363,16 @@ class RnsService {
             );
           }
           if (base != null && nostrOn) {
-            final feedPath = '${base}nostr_feed.sqlite3';
+            final feedPath = '${base}nostr_feed.zx';
             // ignore: discarded_futures
             NostrClient.spawn(
                   storePath: feedPath,
                   persistPath: '${base}nostr_relays.json',
                   selfPubHex: selfPubHex,
-                  // The sqlite3 loader override is PER-ISOLATE. XPRS bundles
-                  // SQLCipher (encrypted profiles), so without this the engine
-                  // isolate looked for a libsqlite3.so the app does not ship,
-                  // threw, and the entire NOSTR pipeline — internet relays
-                  // included — never started. Silently.
-                  sqliteLibrary: engineSqliteLibrary(),
-                  // …and inside an encrypted profile the feed is real user
-                  // content: key it like every other profile database.
-                  dbKeyHex: profileDbKeyHex(feedPath),
+                  // Inside an encrypted profile the feed is real user
+                  // content: the engine isolate has no keyring, so it gets
+                  // the store's secret.
+                  dbKeyHex: storeSecretFor(feedPath),
                 )
                 .then((c) {
                   LogService.instance.add('NOSTR: engine up (feed $feedPath)');

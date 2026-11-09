@@ -194,6 +194,8 @@ class EncryptedProfileStorage extends ProfileStorage {
     if (p.startsWith('$profileArchiveName-')) return true; // -wal / -shm
     if (p.startsWith('.seeded')) return true;
     if (p.contains('.sqlite3')) return true; // DBs + -wal/-shm/-journal
+    // zx stores encrypt themselves (store_db.dart); the lock file beside
+    if (RegExp(r'\.zx(-lock)?$').hasMatch(p)) return true;
     if (_passthroughFiles.contains(p)) return true;
     for (final prefix in _passthroughPrefixes) {
       if (p.startsWith(prefix) || p == prefix.substring(0, prefix.length - 1)) {
