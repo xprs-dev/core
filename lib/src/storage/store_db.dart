@@ -63,13 +63,19 @@ String? storeSecretFor(String absPath) {
 ///
 /// [pageSize] 4096 suits a store of many small commits (a commit rewrites
 /// the pages it touches); the default 16384 suits scans.
+///
+/// [autoCompact]: the store rewrites its file by itself once it has doubled
+/// (zx's ZxDb). Right for the small stores; a store that can grow large
+/// (the packet archive, the media archive) passes false and calls
+/// `maybeCompact` where a pause costs nothing.
 ZxSqlDb openStoreDb(String absPath,
     {StoreKind kind = StoreKind.profile,
     bool durable = false,
-    int pageSize = 16384}) {
+    int pageSize = 16384,
+    bool autoCompact = true}) {
   final secret = kind == StoreKind.plain ? null : storeSecretFor(absPath);
   return openStoreDbWithSecret(absPath, secret,
-      durable: durable, pageSize: pageSize);
+      durable: durable, pageSize: pageSize, autoCompact: autoCompact);
 }
 
 /// True in the dart2js build of the web page (a browser without WebAssembly
@@ -80,7 +86,7 @@ const bool storesUnavailable = identical(0, 0.0);
 /// Opens the store at [absPath] with a secret from [storeSecretFor] (null:
 /// plain), for isolates without the keyring.
 ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
-    {bool durable = false, int pageSize = 16384}) {
+    {bool durable = false, int pageSize = 16384, bool autoCompact = true}) {
   if (storesUnavailable) {
     // Every store degrades to no persistence on an open failure.
     throw UnsupportedError('stores need the WebAssembly build of the page '
@@ -91,7 +97,8 @@ ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
         scryptLog2N: 1,
         durable: durable,
       lockWaitMs: storeLockWaitMs,
-      pageSize: pageSize);
+      pageSize: pageSize,
+      autoCompact: autoCompact);
 }
 
 /// A store in memory (tests; a store without a path).

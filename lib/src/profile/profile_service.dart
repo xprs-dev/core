@@ -125,8 +125,8 @@ class ProfileService {
     // opener so encrypted profiles get their zx store secrets. Must happen
     // before any store is constructed; this boot task runs before
     // wapp/reticulum autostart on both UI and headless engines.
-    reticulum.dbOpener =
-        (p, {bool durable = false}) => openStoreDb(p, durable: durable);
+    reticulum.dbOpener = (p, {bool durable = false, bool autoCompact = true}) =>
+        openStoreDb(p, durable: durable, autoCompact: autoCompact);
     reticulum.dbMemoryOpener = openMemoryStoreDb;
     final root = xprsRootStorage();
     await root.createDirectory('');
