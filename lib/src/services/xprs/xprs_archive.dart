@@ -273,6 +273,7 @@ class XprsArchive {
       _counts[r['k'] as String] = [r['n'] as int, r['b'] as int];
     }
     if (_counts.isEmpty &&
+        // arch-ignore: no-page-fetch-to-count an existence probe (LIMIT 1), not a count
         db.select('SELECT 1 FROM packets LIMIT 1').isNotEmpty) {
       // A spool without counters: count it once.
       for (final r in db.select(

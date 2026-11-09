@@ -451,6 +451,7 @@ class XprsGossip {
           now - liveTtl.inMilliseconds,
         ]);
         final rows = (db
+                // arch-ignore: no-unbounded-select one row: two COUNT(*) aggregates
                 .select('SELECT (SELECT COUNT(*) FROM gossip_live) + '
                     '(SELECT COUNT(*) FROM gossip_visits) n')
                 .first['n'] as int);
