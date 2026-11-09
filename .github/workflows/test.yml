@@ -1,7 +1,8 @@
 name: test
 
 # core is plain Dart. It depends on reticulum-dart by path (../reticulum-dart),
-# so that repo is checked out next to it.
+# and both on zx, the stores' database (../../x1watt/zx), so those are cloned
+# next to it.
 on:
   push:
     branches: [main]
@@ -17,12 +18,13 @@ jobs:
         with:
           path: core
 
-      - name: Checkout reticulum-dart (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: xprs-dev/reticulum-dart
-          ref: pure-dart
-          path: reticulum-dart
+      - name: Fetch reticulum-dart and zx (path dependencies)
+        shell: bash
+        run: |
+          git clone -q --depth 1 https://github.com/xprs-dev/reticulum-dart.git reticulum-dart
+          # ../../x1watt/zx as seen from core/ and from reticulum-dart/
+          mkdir -p ../x1watt
+          git clone -q --depth 1 https://github.com/x1watt/zx.git ../x1watt/zx
 
       - uses: dart-lang/setup-dart@v1
 
