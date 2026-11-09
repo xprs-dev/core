@@ -292,7 +292,7 @@ class MeshService {
     _running = true;
 
     // The custody store lives beside the other cross-wapp state
-    // (…/data/mesh.sqlite3) and re-opens when the profile changes.
+    // (…/data/mesh.zx) and re-opens when the profile changes.
     final prefs = PreferencesService.instanceSync;
     // The owner's standing answer on carrying for other people (default yes).
     if (prefs != null) {

@@ -1,11 +1,11 @@
 // Persistence for the Activity feed (the unified stream of incoming group/DM
 // posts that the APRS wapp sends via ui.chat.append on the "activity" field).
-// Mirrors GeoChatArchive: one SQLite file per wapp data dir, shared by the
+// Mirrors GeoChatArchive: one zx store per wapp data dir, shared by the
 // foreground page AND the background engine, so a post received while the app is
 // closed (background service) still shows up when the user opens the Activity
 // tab. Time-ordered (no geo query). App-agnostic — just stores rows.
 //
-// Native only (SQLite via dart:ffi); every call is a no-op on web.
+// Works natively and in the dart2wasm web build (store_db).
 
 import 'dart:convert';
 
@@ -464,7 +464,7 @@ class ActivityArchive {
 
   /// Remove rows that do not belong to this archive's provenance. Used once
   /// while repairing builds that copied the complete legacy mixed feed into
-  /// `social_all.sqlite3`.
+  /// `social_all.zx`.
   void retainSources(Set<String> sources) {
     final db = _ensureDb();
     if (db == null || sources.isEmpty) return;

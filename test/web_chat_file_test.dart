@@ -2,13 +2,11 @@
 // /api/xprs/file/<ref>, XPRS.md 7.7): stored only when the bytes hash to the
 // reference, read back by anyone while public, refused when private.
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:reticulum/reticulum.dart';
-import 'package:sqlite3/open.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
 import 'package:xprs_core/src/services/xprs/xprs_files.dart';
@@ -17,12 +15,6 @@ String _ref(List<int> bytes, String ext) =>
     '${base64Url.encode(crypto.sha256.convert(bytes).bytes).replaceAll('=', '')}.$ext';
 
 void main() {
-  setUpAll(() {
-    if (Platform.isLinux) {
-      open.overrideFor(
-          OperatingSystem.linux, () => DynamicLibrary.open('libsqlite3.so.0'));
-    }
-  });
 
   late Directory dir;
   late MediaArchive store;

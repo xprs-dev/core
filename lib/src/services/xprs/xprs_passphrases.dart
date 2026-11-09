@@ -9,7 +9,7 @@
  * the same secret opens without a prompt. The reader still taps every time --
  * persistence only removes the prompt, never the tap.
  *
- * It lives in the profile database, which is SQLCipher-encrypted: a remembered
+ * It lives in a profile store, which is encrypted in an encrypted profile: a remembered
  * passphrase is a small secret and belongs with the profile's own, like a
  * password manager's store. Section 9.2.1 is plain that the default passphrase
  * buys obfuscation not secrecy, but a real one a reader typed is worth keeping

@@ -1,18 +1,12 @@
 // XPRS.md 10.9.3: a byte ceiling per X5 group, the oldest first, the group's
 // record (its acts and identity) never.
-import 'dart:ffi';
 import 'dart:io';
 
-import 'package:sqlite3/open.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_archive.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 
 void main() {
-  setUpAll(() {
-    open.overrideFor(
-        OperatingSystem.linux, () => DynamicLibrary.open('libsqlite3.so.0'));
-  });
 
   test('a loud group is cut to its ceiling, oldest first; its record stays', () {
     final dir = Directory.systemTemp.createTempSync('xprs-ceiling');

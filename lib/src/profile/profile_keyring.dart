@@ -1,9 +1,7 @@
 /*
- * The platform-free half of the profile database layer: the in-memory keyring
- * of unlocked profiles and the path -> (profile, relative path) mapping that
- * every per-database key derivation is built on. Shared verbatim by the native
- * opener (profile_db_io.dart, SQLCipher over FFI) and the web opener
- * (profile_db_web.dart, sqlite3.wasm over IndexedDB).
+ * The in-memory keyring of unlocked profiles and the path -> (profile,
+ * relative path) mapping that every per-store secret is built on
+ * (storage/store_db.dart: storeSecretFor).
  */
 
 import 'dart:async';
@@ -95,21 +93,11 @@ class ProfileKeyring {
       '${profileStorageRoot()}/devices/$profileId/$keyslotFileName';
 }
 
-/// SQLCipher key (raw hex) for the database at [absPath], or null when it is
-/// not inside an encrypted profile. For isolates that cannot reach the
-/// keyring; on the main isolate, `openProfileDb` does this itself.
-String? profileDbKeyHex(String absPath) {
-  final loc = locateProfileDb(absPath);
-  if (loc == null) return null;
-  if (!ProfileKeyring.instance.isEncryptedProfile(loc.profileId)) return null;
-  return ProfileKeyring.instance.keysFor(loc.profileId)?.dbKeyHex(loc.relPath);
-}
-
 /// Result of mapping an absolute path into the profile layout.
 class ProfileDbLocation {
   final String profileId;
 
-  /// Forward-slash path relative to `devices/<id>/`, e.g. `data/mesh.sqlite3`.
+  /// Forward-slash path relative to `devices/<id>/`, e.g. `data/mesh.zx`.
   /// This exact string feeds the per-DB key derivation — treat as stable API.
   final String relPath;
 

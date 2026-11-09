@@ -23,12 +23,12 @@
 
 import 'package:zx/zxdb.dart';
 
-import '../profile/profile_db_common.dart';
+import '../profile/profile_keyring.dart';
 
 export 'package:zx/zxdb.dart'
     show ZxSqlDb, ZxRow, ZxRows, ZxSqlDbStatement, ZxSqlDbStats, ZxKvStore,
         ZxKvEntry, ZxDbException, ZxDbError;
-export '../profile/profile_db_common.dart' show ProfileLockedException;
+export '../profile/profile_keyring.dart' show ProfileLockedException;
 export 'store_db_host.dart' show initStoreDb, flushStoreDb;
 
 /// Whether a store is encrypted with its profile.

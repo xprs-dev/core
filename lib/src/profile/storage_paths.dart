@@ -29,7 +29,6 @@ import '../platform/fs.dart';
 
 import 'package:xprs_core/src/platform/os.dart' as platform;
 import '../services/preferences_service.dart';
-import 'profile_db.dart' show initProfileDb;
 import '../storage/store_db_host.dart' show initStoreDb;
 import 'profile_service.dart';
 import 'profile_storage.dart';
@@ -45,14 +44,12 @@ String? _resolvedBase;
 /// boot before any storage access (migrate-storage-layout / profile-service
 /// both touch disk). Idempotent.
 Future<void> initStorageRoot() async {
-  // The filesystem and database engines first: natively both are no-ops,
-  // on web they hydrate IndexedDB and fetch sqlite3.wasm, and every store
-  // below assumes they are ready.
+  // The filesystem and the stores first: natively both are no-ops, on web
+  // they hydrate IndexedDB, and every store below assumes they are ready.
   await initFs();
   // reticulum-dart keeps its own files (follow sets, partial downloads, the
-  // parents of its SQLite files); point it at the same tree.
+  // parents of its stores); point it at the same tree.
   reticulum.fileSystem = fs;
-  await initProfileDb();
   // The stores' zx files: loaded from IndexedDB in a browser (natively a
   // no-op), before any store opens.
   await initStoreDb();

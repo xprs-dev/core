@@ -1,9 +1,7 @@
 // XPRS.md 7.6, 9.1.1: a part carries the signature of the whole; alone it
 // proves nothing, so the archive keeps it as unverified, never as forged.
-import 'dart:ffi';
 import 'dart:io';
 
-import 'package:sqlite3/open.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_archive.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
@@ -11,10 +9,6 @@ import 'package:reticulum/reticulum.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
 
 void main() {
-  setUpAll(() {
-    open.overrideFor(
-        OperatingSystem.linux, () => DynamicLibrary.open('libsqlite3.so.0'));
-  });
 
   test('the signed last part of a split post is kept, unverified', () {
     final dir = Directory.systemTemp.createTempSync('xprs-parts');

@@ -26,7 +26,7 @@ import 'package:file/file.dart';
 import 'device_key_store.dart';
 import 'iwi_profile.dart';
 import 'profile_crypto.dart';
-import 'profile_db.dart';
+import 'profile_keyring.dart';
 import 'profile_service.dart';
 import 'profile_storage_encrypted.dart';
 import '../services/log_service.dart';
@@ -85,7 +85,7 @@ class ProfileEncryption {
   /// (it deletes it, same as [enable] — but a fresh profile has none).
   static Future<void> enableWithDeviceKey(String id) async {
     if (isEncrypted(id)) return;
-    // No SQLCipher in sqlite3.wasm and no keychain in a browser: a web
+    // No keychain in a browser to keep the device key in: a web
     // profile stays plain, and says so once where /api/log would have shown
     // it (docs/web.md).
     if (platform.isWeb) {
@@ -104,7 +104,7 @@ class ProfileEncryption {
   }
 
   /// Enable encryption on a profile. DELETES its existing user data
-  /// (data/ tree, avatar, every SQLite DB under wapps/) — caller must have
+  /// (data/ tree, avatar, every store under wapps/) — caller must have
   /// confirmed this with the user — then writes the keyslot + nsec
   /// envelope and leaves the profile unlocked.
   static Future<void> enable(String id, String password,
@@ -348,22 +348,21 @@ class ProfileEncryption {
   }
 
   /// Delete a profile's user data, keeping wapp code, seed markers and the
-  /// keyslot: data/ tree, avatar, profile.zx (+ its lock), every *.sqlite3*
-  /// and *.zx store under wapps/.
+  /// keyslot: data/ tree, avatar, profile.zx (+ its lock), every *.zx store
+  /// under wapps/.
   static void _deleteProfileUserData(String id) {
     final base = _profileDir(id);
     _tryDeleteDir('$base/data');
     for (final name in ['avatar.png', 'avatar.jpg']) {
       _tryDelete('$base/$name');
     }
-    for (final suffix in ['', '-lock', '-wal', '-shm', '-journal']) {
+    for (final suffix in ['', '-lock']) {
       _tryDelete('$base/$profileArchiveName$suffix');
     }
     final wapps = fs.directory('$base/wapps');
     if (wapps.existsSync()) {
       for (final f in wapps.listSync(recursive: true).whereType<File>()) {
-        if (f.path.contains('.sqlite3') ||
-            RegExp(r'\.zx(-lock)?$').hasMatch(f.path)) {
+        if (RegExp(r'\.zx(-lock)?$').hasMatch(f.path)) {
           _tryDelete(f.path);
         }
       }

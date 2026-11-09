@@ -12,7 +12,7 @@
  * key signs XPRS", and it stays that -- for the STATION. A group signs as
  * itself, and [scalarFor] is that key.
  *
- * It lives in the profile database, which is SQLCipher-encrypted, because a
+ * It lives in a profile store, encrypted in an encrypted profile, because a
  * group's private key is exactly as sensitive as the profile's own: section
  * 26.6 says a leaked one is permanent, cannot be rotated (the callsign derives
  * from it), and its holder is indistinguishable from the admin.

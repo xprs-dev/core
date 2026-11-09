@@ -9159,10 +9159,10 @@ class RnsService {
   // Keep what the people we follow post, and SERVE it to other peers.
   //
   // The two stores are easy to confuse, and the difference is the whole reason
-  // this exists: the NOSTR hub isolate writes `nostr_feed.sqlite3` (its own
+  // this exists: the NOSTR hub isolate writes `nostr_feed.zx` (its own
   // scratch cache of the public firehose), while RelayNode — the thing that
   // answers other Reticulum peers' REQs — serves `_relayStore`
-  // (`social.sqlite3`). Nothing ever copied between them, so a followed
+  // (`social.zx`). Nothing ever copied between them, so a followed
   // author's posts lived only in a cache we never served and would happily
   // evict. This subscription is the copy.
   //
@@ -9258,7 +9258,7 @@ class RnsService {
       final stored = store.putAllVerified(batch, tier: Tier.followed.index);
       // The core keeps followed authors' posts in its own event store (above)
       // and nowhere else. It also used to write a copy into the Social wapp's
-      // private database (social_following.sqlite3), which nothing has read
+      // private database (social_following), which nothing has read
       // since the Following tab became a filter over the main archive: a core
       // service writing a wapp's files, for no reader (audit 2026-11-04).
       final ms = DateTime.now().difference(started).inMilliseconds;

@@ -23,8 +23,9 @@ import 'package:reticulum/reticulum.dart';
 import '../services/log_service.dart';
 import '../services/preferences_service.dart';
 import 'identity_backup.dart';
+import '../storage/pre_zx_cleanup.dart';
 import '../storage/store_db.dart' show openStoreDb, openMemoryStoreDb;
-import 'profile_db_common.dart' show ProfileKeyring;
+import 'profile_keyring.dart' show ProfileKeyring;
 import 'profile_encryption.dart';
 import 'profile_storage.dart';
 import 'profile_storage_encrypted.dart';
@@ -129,6 +130,11 @@ class ProfileService {
     reticulum.dbMemoryOpener = openMemoryStoreDb;
     final root = xprsRootStorage();
     await root.createDirectory('');
+    // The SQLite files and profile.ear of before the zx stores: removed
+    // once, in the background (nothing reads them).
+    unawaited(removePreZxFiles(root.basePath).then((n) {
+      if (n > 0) LogService.instance.add('storage: removed $n pre-zx file(s)');
+    }));
     final existing = await root.readJson(_profilesFile);
     if (existing != null) {
       final list = existing['profiles'];

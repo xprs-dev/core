@@ -108,10 +108,6 @@ class CoreHost {
   /// has none until the person opens the app. Default: no.
   static bool Function() hasView = () => false;
 
-  /// Load the SQLite build the program ships (SQLCipher on Android) before
-  /// the first database opens. Default: the system library, nothing to do.
-  static void Function() prepareSqlite = () {};
-
   /// May the program read and write anywhere on shared storage (Android's
   /// "all files access", needed to keep an identity backup outside the app's
   /// own folder)? Default: yes — a program with no such gate.

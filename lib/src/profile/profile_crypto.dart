@@ -15,9 +15,8 @@
  *   KEK       = HKDF-SHA256(KEK_pw || nsecBytes, salt, "aurora-profile-kek-v1")
  *   PMK       = random 32 B profile master key (generated once at enable)
  *   pmk_ct    = AES-256-GCM(KEK, PMK)              -> devices/<id>/keyslot.json
- *   earPass   = hex(HKDF(PMK, "aurora-ear-v1"))    -> password for profile.ear
- *   dbKey(p)  = HKDF(PMK, "aurora-db-v1:" + relPath) -> SQLCipher raw key
  *   store(p)  = hex(HKDF(PMK, "xprs-zx-v1:" + relPath)) -> a zx store's secret
+ *               (every store file, profile.zx with the loose files included)
  *
  * The password alone decrypts the nsec envelope (stage 1); the profile data
  * keys additionally mix in the nsec (stage 2), so a profile folder copied off
@@ -192,21 +191,6 @@ class UnlockedProfileKeys {
       throw StateError('UnlockedProfileKeys used after dispose');
     }
   }
-
-  /// Raw 32-byte SQLCipher key for the database at profile-relative [relPath]
-  /// (forward-slash separated, e.g. `data/mesh.sqlite3`).
-  Uint8List dbKey(String relPath) {
-    _ensureLive();
-    return KeyDerivation.hkdfSha256(
-      _pmk,
-      Uint8List(0),
-      Uint8List.fromList(utf8.encode('aurora-db-v1:$relPath')),
-      32,
-    );
-  }
-
-  /// SQLCipher `PRAGMA key = "x'<hex>'"` value for [relPath].
-  String dbKeyHex(String relPath) => HEX.encode(dbKey(relPath));
 
   /// The secret of the zx store (core/lib/src/storage/store_db.dart) at
   /// profile-relative [relPath]: 32 bytes from the master key, as hex. zx

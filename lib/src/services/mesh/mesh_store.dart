@@ -1,9 +1,9 @@
 /*
  * mesh_store — the street-mesh store-and-forward archive (docs/mesh.md §6).
  *
- * Every custody node archives the 1:1 messages it carries. SQLite (WAL) for
- * the same reason as media_archive.dart: atomic writes, a crash can't shred
- * the file, one corrupt row never costs the store.
+ * Every custody node archives the 1:1 messages it carries. A zx store for
+ * the same reason as media_archive.dart: atomic commits on an append-only
+ * file, so a crash can't shred it.
  *
  *   mesh_store    — parked/carried messages, keyed by their am: receipt id
  *                   (or a content-hash pseudo-key 'c:<fnv>' when a frame has

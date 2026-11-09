@@ -31,7 +31,7 @@ import 'package:xprs_core/src/platform/secure_store.dart';
 
 import 'package:xprs_core/src/platform/os.dart' as platform;
 import 'profile_crypto.dart';
-import 'profile_db.dart';
+import 'profile_keyring.dart';
 import '../platform/fs.dart';
 
 class DeviceKeyStore {

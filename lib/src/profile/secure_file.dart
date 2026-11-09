@@ -17,7 +17,7 @@ import 'dart:typed_data';
 import 'key_derivation.dart';
 
 import 'profile_crypto.dart';
-import 'profile_db.dart';
+import 'profile_keyring.dart';
 import '../platform/fs.dart';
 
 /// Reads/writes profile files with transparent at-rest encryption for

@@ -20,7 +20,6 @@ dependencies:
   cryptography: ^2.7.0      # X25519 / Ed25519 / ChaCha20-Poly1305 / HKDF (I2P)
   hex: ^0.2.0               # hex <-> bytes
   pointycastle: ^3.9.1      # secp256k1 / BIP-340 Schnorr
-  sqlite3: ^2.4.0           # stores (being replaced by zx)
   zx:                       # zxdb: every store's database (x1watt/zx beside xprs)
     path: ../../x1watt/zx
   meta: ^1.15.0             # @visibleForTesting / @immutable, without Flutter

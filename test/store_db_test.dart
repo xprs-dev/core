@@ -6,7 +6,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:xprs_core/src/profile/profile_crypto.dart';
-import 'package:xprs_core/src/profile/profile_db_common.dart';
+import 'package:xprs_core/src/profile/profile_keyring.dart';
 import 'package:xprs_core/src/storage/store_db.dart';
 
 void main() {
