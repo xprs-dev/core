@@ -17,6 +17,7 @@
  *   pmk_ct    = AES-256-GCM(KEK, PMK)              -> devices/<id>/keyslot.json
  *   earPass   = hex(HKDF(PMK, "aurora-ear-v1"))    -> password for profile.ear
  *   dbKey(p)  = HKDF(PMK, "aurora-db-v1:" + relPath) -> SQLCipher raw key
+ *   store(p)  = hex(HKDF(PMK, "xprs-zx-v1:" + relPath)) -> a zx store's secret
  *
  * The password alone decrypts the nsec envelope (stage 1); the profile data
  * keys additionally mix in the nsec (stage 2), so a profile folder copied off
@@ -217,6 +218,20 @@ class UnlockedProfileKeys {
 
   /// SQLCipher `PRAGMA key = "x'<hex>'"` value for [relPath].
   String dbKeyHex(String relPath) => HEX.encode(dbKey(relPath));
+
+  /// The secret of the zx store (core/lib/src/storage/store_db.dart) at
+  /// profile-relative [relPath]: 32 bytes from the master key, as hex. zx
+  /// encrypts the store with it (zx-format.md 7); it is random at full
+  /// strength, so the store needs no password stretching.
+  String storeSecret(String relPath) {
+    _ensureLive();
+    return HEX.encode(KeyDerivation.hkdfSha256(
+      _pmk,
+      Uint8List(0),
+      Uint8List.fromList(utf8.encode('xprs-zx-v1:$relPath')),
+      32,
+    ));
+  }
 
   /// Raw 32-byte AES-GCM key for an individually-encrypted loose file at
   /// profile-relative [relPath] (used for secrets like rns_identity.key
