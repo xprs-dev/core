@@ -15,21 +15,20 @@
  * buys obfuscation not secrecy, but a real one a reader typed is worth keeping
  * out of the clear. Mirrors [XprsGroupKeys]'s per-profile store.
  */
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 class XprsPassphrases {
   XprsPassphrases._();
   static final XprsPassphrases instance = XprsPassphrases._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
 
   bool get ready => _db != null;
 
   void init(String path) {
     close();
-    final db = openProfileDb(path);
+    final db = openStoreDb(path);
     db.execute('''
       CREATE TABLE IF NOT EXISTS xprs_passphrases(
         pass  TEXT PRIMARY KEY,
@@ -67,7 +66,7 @@ class XprsPassphrases {
     // free", not to charge the holder of the passphrase twice for one message.
     //
     // The plaintext is no more exposed than it already was: the passphrase
-    // that opens it is kept in THIS SAME SQLCipher database, so anyone who can
+    // that opens it is kept in THIS SAME encrypted store, so anyone who can
     // read this table could decrypt the message anyway, and content opened
     // with the default passphrase is public by construction. The tap is
     // untouched -- a reopened conversation still shows bars.
@@ -78,13 +77,6 @@ class XprsPassphrases {
         pass TEXT NOT NULL,
         ts   INTEGER NOT NULL
       )''');
-    // `count` (how many times this passphrase has opened a message) was added
-    // after the table; ALTER for older stores, ignoring the duplicate-column
-    // error on one that already has it.
-    try {
-      db.execute(
-          'ALTER TABLE xprs_passphrases ADD COLUMN count INTEGER NOT NULL DEFAULT 0');
-    } catch (_) {}
     _db = db;
   }
 

@@ -39,9 +39,8 @@ library;
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 import '../log_service.dart';
 
 /// One message waiting for its recipient's key.
@@ -94,7 +93,8 @@ class XprsKeyWait {
   int Function() nowMs = () => DateTime.now().millisecondsSinceEpoch;
 
   final Map<String, KeyWaitRow> _rows = {};
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
+  ZxKvStore? _kv;
   int _seq = 0;
 
   static int heldTotal = 0, released = 0, withdrawn = 0, expired = 0;
@@ -104,20 +104,18 @@ class XprsKeyWait {
   void init(String path) {
     close();
     try {
-      final db = openProfileDb(path);
-      db.execute('''
-        CREATE TABLE IF NOT EXISTS key_wait(
-          id   TEXT PRIMARY KEY,
-          dest TEXT NOT NULL,
-          text TEXT NOT NULL,
-          ts   INTEGER NOT NULL
-        )''');
+      // KV `wait`: the held id as key, {dest, text, ts} as JSON.
+      final db = openStoreDb(path);
       _db = db;
-      for (final r in db.select(
-          'SELECT id,dest,text,ts FROM key_wait ORDER BY ts ASC LIMIT ?',
-          [maxRows])) {
-        final row = KeyWaitRow(r['id'] as String, r['dest'] as String,
-            r['text'] as String, r['ts'] as int);
+      final kv = _kv = db.kv('wait');
+      final rows = <KeyWaitRow>[];
+      for (final e in kv.scan()) {
+        final m = jsonDecode(e.valueString) as Map;
+        rows.add(KeyWaitRow(e.keyString, m['dest'] as String,
+            m['text'] as String, m['ts'] as int));
+      }
+      rows.sort((a, b) => a.ms.compareTo(b.ms));
+      for (final row in rows.take(maxRows)) {
         _rows[row.id] = row;
       }
       if (_rows.isNotEmpty) {
@@ -126,6 +124,7 @@ class XprsKeyWait {
       }
     } catch (e) {
       _db = null;
+      _kv = null;
       LogService.instance.add('XPRS: key-wait store unavailable ($e)');
     }
   }
@@ -149,6 +148,7 @@ class XprsKeyWait {
       _db?.dispose();
     } catch (_) {}
     _db = null;
+    _kv = null;
   }
 
   /// Keep [text] for [dest] until its key arrives, and start looking for the
@@ -168,8 +168,7 @@ class XprsKeyWait {
     _rows[id] = row;
     heldTotal++;
     try {
-      _db?.execute('INSERT OR REPLACE INTO key_wait(id,dest,text,ts) '
-          'VALUES(?,?,?,?)', [id, d, text, now]);
+      _kv?.putString(id, jsonEncode({'dest': d, 'text': text, 'ts': now}));
     } catch (_) {}
     LogService.instance.add('XPRS: message to $d waits for its key');
     ask?.call(_base(d));
@@ -234,7 +233,7 @@ class XprsKeyWait {
   void _drop(String id) {
     _rows.remove(id);
     try {
-      _db?.execute('DELETE FROM key_wait WHERE id=?', [id]);
+      _kv?.deleteString(id);
     } catch (_) {}
   }
 

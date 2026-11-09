@@ -18,9 +18,8 @@
  * from it), and its holder is indistinguishable from the admin.
  */
 import 'package:hex/hex.dart';
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 import 'package:reticulum/reticulum.dart';
 
 /// A group this station holds the key for.
@@ -41,13 +40,13 @@ class XprsGroupKeys {
   XprsGroupKeys._();
   static final XprsGroupKeys instance = XprsGroupKeys._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
 
   bool get ready => _db != null;
 
   void init(String path) {
     close();
-    final db = openProfileDb(path);
+    final db = openStoreDb(path);
     db.execute('''
       CREATE TABLE IF NOT EXISTS xprs_groups(
         callsign TEXT PRIMARY KEY,
@@ -60,7 +59,7 @@ class XprsGroupKeys {
     // empty), and its signed acts are kept in their own table -- so the roster
     // (26.4) is rebuilt from THIS store on restart, not scavenged from the
     // general archive where a cellular member's key binding never lands. One
-    // durable home per X5 group, like a chat conversation's own sqlite.
+    // durable home per X5 group, like a chat conversation's own store.
     db.execute('''
       CREATE TABLE IF NOT EXISTS xprs_group_acts(
         callsign TEXT NOT NULL,

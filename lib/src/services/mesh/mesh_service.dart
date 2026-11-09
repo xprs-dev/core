@@ -347,28 +347,28 @@ class MeshService {
         // group key is permanent and cannot be rotated (the callsign derives
         // from it).
         XprsGroupKeys.instance.init(
-            wappsDataStorage(prefs).getAbsolutePath('xprs_groups.sqlite3'));
+            wappsDataStorage(prefs).getAbsolutePath('xprs_groups.zx'));
         stage('group store');
         // The passphrases a reader has used to open redacted text (9.2.1), so a
         // tap can try them before prompting. Same profile-encrypted store.
         XprsPassphrases.instance.init(
-            wappsDataStorage(prefs).getAbsolutePath('xprs_passphrases.sqlite3'));
+            wappsDataStorage(prefs).getAbsolutePath('xprs_passphrases.zx'));
         // Who may fetch the BYTES behind a shared file: the audience of the
         // message that carried it (§11.2). The hash is public; this gates the
         // bytes. Same profile-encrypted store.
         XprsFileAcl.instance.init(
-            wappsDataStorage(prefs).getAbsolutePath('xprs_file_acl.sqlite3'));
+            wappsDataStorage(prefs).getAbsolutePath('xprs_file_acl.zx'));
         // What the conversation said about each shared file (size, name,
         // which original a preview stands for), by hash. Same store.
         MediaRefIndex.instance.init(
-            wappsDataStorage(prefs).getAbsolutePath('media_refs.sqlite3'));
+            wappsDataStorage(prefs).getAbsolutePath('media_refs.zx'));
         // What we sent and what became of it (13.7). Persisted, because the
         // whole point of an archiver in the middle is that a receipt arrives
         // after the sender has been away — and a sender with no row for it
         // cannot tell a delivered message from an unanswered one, so it
         // deposits another copy and keeps its ladder running.
         XprsOutbox.instance.init(
-            wappsDataStorage(prefs).getAbsolutePath('xprs_outbox.sqlite3'));
+            wappsDataStorage(prefs).getAbsolutePath('xprs_outbox.zx'));
         stage('outbox restore');
         // Direct messages waiting for their recipient's key (6.2, 6.4: sealed
         // by default). Same profile-encrypted store: these are words. The
@@ -388,7 +388,7 @@ class MeshService {
               WappDelivery.instance.deliverStatus(
                   id: held, peer: peer, state: state, newId: newId))
           ..init(wappsDataStorage(prefs)
-              .getAbsolutePath('xprs_key_wait.sqlite3'));
+              .getAbsolutePath('xprs_key_wait.zx'));
         // A group act whose signer we hold no key for is parked, not lost; ask
         // that station for its binding now rather than at its next periodic
         // announcement (18.1). That is the invitee's acceptance (26.3.1)

@@ -3,6 +3,8 @@
  * outbox, the key is looked for, and the message leaves sealed when it
  * lands (XPRS.md 6.2, 6.4, 12.12.1). Every seam injected: no store, no radio.
  */
+import 'dart:io';
+
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_key_wait.dart';
 
@@ -112,5 +114,29 @@ void main() {
     w.hold('X1BOA3', 'one too many');
     expect(w.rows, hasLength(XprsKeyWait.maxRows));
     expect(reports.single, startsWith('$first|X1BOA3|expired'));
+  });
+
+  test('what waits survives a restart (the store file)', () {
+    final dir = Directory.systemTemp.createTempSync('keywait');
+    try {
+      final path = '${dir.path}/xprs_key_wait.zx';
+      w.init(path);
+      final a = w.hold('X1AAAA', 'first');
+      now += 1000;
+      w.hold('X1BBBB', 'second');
+      w.debugReset();
+      expect(w.rows, isEmpty);
+      w.init(path);
+      expect(w.rows.map((r) => r.text), ['first', 'second'],
+          reason: 'oldest first, as held');
+      expect(w.rows.first.id, a);
+      w.release(a);
+      w.debugReset();
+      w.init(path);
+      expect(w.rows.map((r) => r.text), ['second']);
+      w.debugReset();
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
   });
 }

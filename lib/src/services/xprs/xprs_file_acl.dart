@@ -17,14 +17,15 @@
  * hash with no binding is treated as public (a bare digest an operator pinned,
  * an update-mirror artifact): the default is open, private is a deliberate bind.
  *
- * It lives in the profile database (SQLCipher), like [XprsPassphrases] and
+ * It lives in the profile's encrypted storage (a zx store, KV `acl`: the hash
+ * as key, {scope, grp, members} as JSON), like [XprsPassphrases] and
  * [XprsGroupKeys]: the audience of a private picture is the profile's business.
- * Lookups are single-row primary-key reads, never a scan — safe on the caller's
- * isolate (docs/architecture.md §2).
+ * Lookups are single-key reads, never a scan — safe on the caller's isolate
+ * (docs/architecture.md §2).
  */
-import 'package:sqlite3/common.dart';
+import 'dart:convert';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 import 'package:reticulum/reticulum.dart';
 import 'xprs_groups.dart';
 import 'xprs_packet.dart';
@@ -36,20 +37,21 @@ class XprsFileAcl {
   XprsFileAcl._();
   static final XprsFileAcl instance = XprsFileAcl._();
 
-  CommonDatabase? _db;
-  bool get ready => _db != null;
+  ZxSqlDb? _db;
+  ZxKvStore? _kv;
+  bool get ready => _kv != null;
 
   void init(String path) {
     close();
-    final db = openProfileDb(path);
-    db.execute('''
-      CREATE TABLE IF NOT EXISTS xprs_file_acl(
-        sha     TEXT PRIMARY KEY,
-        scope   TEXT NOT NULL,
-        grp     TEXT,
-        members TEXT
-      )''');
+    final db = openStoreDb(path);
     _db = db;
+    _kv = db.kv('acl');
+  }
+
+  Map<String, Object?>? _get(String sha) {
+    final v = _kv?.getString(sha);
+    if (v == null) return null;
+    return (jsonDecode(v) as Map).cast<String, Object?>();
   }
 
   void close() {
@@ -57,6 +59,7 @@ class XprsFileAcl {
       _db?.dispose();
     } catch (_) {}
     _db = null;
+    _kv = null;
   }
 
   static String _base(String c) => c.trim().split('-').first.toUpperCase();
@@ -70,21 +73,17 @@ class XprsFileAcl {
     String? group,
     List<String> members = const [],
   }) {
-    final db = _db;
+    final kv = _kv;
     final sha = shaHex.trim().toLowerCase();
-    if (db == null || sha.isEmpty) return;
+    if (kv == null || sha.isEmpty) return;
     try {
-      db.execute(
-        'INSERT INTO xprs_file_acl(sha, scope, grp, members) VALUES(?,?,?,?) '
-        'ON CONFLICT(sha) DO UPDATE SET scope=excluded.scope, '
-        'grp=excluded.grp, members=excluded.members',
-        [
+      kv.putString(
           sha,
-          scope.name,
-          group == null ? null : _base(group),
-          members.map(_base).where((c) => c.isNotEmpty).join(','),
-        ],
-      );
+          jsonEncode({
+            'scope': scope.name,
+            'grp': group == null ? null : _base(group),
+            'members': members.map(_base).where((c) => c.isNotEmpty).join(','),
+          }));
     } catch (_) {}
   }
 
@@ -134,28 +133,25 @@ class XprsFileAcl {
   /// [XprsGroups.mayPost] the core uses to gate posting (fail-open when the
   /// roster cannot be verified, exactly as posting does).
   bool authorized(String shaHex, String requester) {
-    final db = _db;
     final sha = shaHex.trim().toLowerCase();
     final who = _base(requester);
-    if (db == null) return true; // no store yet: do not lock a bench out
+    if (_kv == null) return true; // no store yet: do not lock a bench out
     if (who.isEmpty) return false;
     try {
-      final rows = db.select(
-          'SELECT scope, grp, members FROM xprs_file_acl WHERE sha=? LIMIT 1',
-          [sha]);
-      if (rows.isEmpty) return true; // unbound hash is public
-      final scope = rows.first['scope'] as String? ?? 'public';
+      final row = _get(sha);
+      if (row == null) return true; // unbound hash is public
+      final scope = row['scope'] as String? ?? 'public';
       switch (scope) {
         case 'public':
           return true;
         case 'pair':
-          final members = (rows.first['members'] as String? ?? '')
+          final members = (row['members'] as String? ?? '')
               .split(',')
               .map(_base)
               .toSet();
           return members.contains(who);
         case 'group':
-          final grp = rows.first['grp'] as String? ?? '';
+          final grp = row['grp'] as String? ?? '';
           return grp.isNotEmpty && XprsGroups.instance.mayPost(grp, who);
         default:
           return false;
@@ -167,15 +163,11 @@ class XprsFileAcl {
 
   /// The recorded scope of a hash, for tests and status. Null when unbound.
   XprsFileScope? scopeOf(String shaHex) {
-    final db = _db;
-    if (db == null) return null;
+    if (_kv == null) return null;
     try {
-      final rows = db.select(
-          'SELECT scope FROM xprs_file_acl WHERE sha=? LIMIT 1',
-          [shaHex.trim().toLowerCase()]);
-      if (rows.isEmpty) return null;
-      return XprsFileScope.values
-          .firstWhere((s) => s.name == rows.first['scope']);
+      final row = _get(shaHex.trim().toLowerCase());
+      if (row == null) return null;
+      return XprsFileScope.values.firstWhere((s) => s.name == row['scope']);
     } catch (_) {
       return null;
     }

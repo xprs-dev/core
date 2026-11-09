@@ -21,9 +21,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 import '../log_service.dart';
 import '../../platform/fs.dart';
@@ -69,7 +68,7 @@ class WappMailbox {
   WappMailbox._();
   static final WappMailbox instance = WappMailbox._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
   String? _path;
   int _dropped = 0;
 
@@ -78,29 +77,23 @@ class WappMailbox {
 
   /// Open (or reopen) the store under [dir]. Safe to call repeatedly.
   void open(String dir) {
-    final path = '$dir/wapp_mailbox.sqlite3';
+    final path = '$dir/wapp_mailbox.zx';
     if (_db != null && _path == path) return;
     close();
     try {
       fs.directory(dir).createSync(recursive: true);
-      final db = openPlainDb(path);
+      final db = openStoreDb(path, kind: StoreKind.plain);
       db.execute('''
         CREATE TABLE IF NOT EXISTS mail (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           tag TEXT NOT NULL,
           src TEXT NOT NULL,
           payload BLOB NOT NULL,
-          ts INTEGER NOT NULL
+          ts INTEGER NOT NULL,
+          via TEXT NOT NULL DEFAULT 'rns'
         );
         CREATE INDEX IF NOT EXISTS mail_tag ON mail(tag, id);
       ''');
-      // Added after the first release: a store written by an older build has
-      // no `via` column, and every row in it predates the label anyway.
-      try {
-        db.execute("ALTER TABLE mail ADD COLUMN via TEXT NOT NULL DEFAULT 'rns'");
-      } catch (_) {
-        // Already there.
-      }
       _db = db;
       _path = path;
     } catch (e, st) {

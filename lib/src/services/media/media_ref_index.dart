@@ -13,9 +13,8 @@
  * profile is this profile's business. Every read is a primary-key lookup, so
  * it is safe on the caller's isolate (docs/architecture.md §2).
  */
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 import 'package:reticulum/reticulum.dart';
 import '../xprs/xprs_inline_file.dart';
 import '../xprs/xprs_packet.dart';
@@ -54,12 +53,12 @@ class MediaRefIndex {
   MediaRefIndex._();
   static final MediaRefIndex instance = MediaRefIndex._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
   bool get ready => _db != null;
 
   void init(String path) {
     close();
-    final db = openProfileDb(path);
+    final db = openStoreDb(path);
     db.execute('''
       CREATE TABLE IF NOT EXISTS media_refs(
         sha   TEXT PRIMARY KEY,
@@ -173,7 +172,7 @@ class MediaRefIndex {
     }
   }
 
-  static MediaRefInfo _row(Row r) => MediaRefInfo(
+  static MediaRefInfo _row(ZxRow r) => MediaRefInfo(
         sha: r['sha'] as String,
         size: r['size'] as int?,
         name: r['name'] as String?,

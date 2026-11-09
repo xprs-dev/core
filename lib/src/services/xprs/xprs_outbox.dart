@@ -20,9 +20,10 @@
  * Deliberately small: an id, who it was for, a state and a timestamp. It is
  * not a message store. The words are the wapp's; this is only their fate.
  */
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import 'dart:convert';
+
+import '../../storage/store_db.dart';
 import '../log_service.dart';
 import '../receive/wapp_delivery.dart';
 
@@ -80,7 +81,8 @@ class XprsOutbox {
   /// is this station's business. Every write is one primary-key upsert and
   /// every read a primary-key lookup, so it is safe on the caller's isolate
   /// (docs/architecture.md §2).
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
+  ZxKvStore? _kv; // KV `sent`: the message id as key, {peer, state, ts}
 
   /// Rows kept on disk. Larger than [maxRows] — memory holds the hot end, the
   /// file holds enough history that a receipt for yesterday's message still
@@ -90,19 +92,13 @@ class XprsOutbox {
   void init(String path) {
     close();
     try {
-      final db = openProfileDb(path);
-      db.execute('''
-        CREATE TABLE IF NOT EXISTS tx_outbox(
-          id    TEXT PRIMARY KEY,
-          peer  TEXT NOT NULL,
-          state TEXT NOT NULL,
-          ts    INTEGER NOT NULL
-        )''');
-      db.execute('CREATE INDEX IF NOT EXISTS tx_outbox_ts ON tx_outbox(ts)');
+      final db = openStoreDb(path);
       _db = db;
+      _kv = db.kv('sent');
       _restore();
     } catch (e) {
       _db = null;
+      _kv = null;
       LogService.instance.add('XPRS: outbox store unavailable ($e)');
     }
   }
@@ -112,19 +108,31 @@ class XprsOutbox {
       _db?.dispose();
     } catch (_) {}
     _db = null;
+    _kv = null;
+  }
+
+  TxRecord _decode(String id, String json) {
+    final m = jsonDecode(json) as Map;
+    return TxRecord(id, m['peer'] as String, m['state'] as String, m['ts'] as int);
+  }
+
+  /// Every row on disk, oldest first (at most [keepRows]: cheap to scan).
+  List<TxRecord> _all() {
+    final kv = _kv;
+    if (kv == null) return const [];
+    final out = [for (final e in kv.scan()) _decode(e.keyString, e.valueString)];
+    out.sort((a, b) => a.ms.compareTo(b.ms));
+    return out;
   }
 
   /// Load the newest rows back into the pocket, so the common lookups stay a
   /// map read and only a receipt for something older touches the file.
   void _restore() {
-    final db = _db;
-    if (db == null) return;
+    if (_kv == null) return;
     try {
-      for (final r in db.select(
-          'SELECT id,peer,state,ts FROM tx_outbox ORDER BY ts DESC LIMIT ?',
-          [maxRows]).toList().reversed) {
-        _rows[r['id'] as String] = TxRecord(r['id'] as String,
-            r['peer'] as String, r['state'] as String, r['ts'] as int);
+      final all = _all();
+      for (final r in all.skip(all.length > maxRows ? all.length - maxRows : 0)) {
+        _rows[r.id] = r;
       }
       restored = _rows.length;
       if (restored > 0) {
@@ -135,35 +143,31 @@ class XprsOutbox {
   }
 
   void _persist(TxRecord row) {
-    final db = _db;
-    if (db == null) return;
+    final kv = _kv;
+    if (kv == null) return;
     try {
-      db.execute(
-          'INSERT INTO tx_outbox(id,peer,state,ts) VALUES(?,?,?,?) '
-          'ON CONFLICT(id) DO UPDATE SET state=excluded.state, ts=excluded.ts',
-          [row.id, row.peer, row.state, row.ms]);
-      // Bound the file. Cheap because it only runs when the table could have
-      // grown past the ceiling, and it deletes by the indexed column.
+      kv.putString(row.id,
+          jsonEncode({'peer': row.peer, 'state': row.state, 'ts': row.ms}));
+      // Bound the file: every 200 records, the oldest beyond keepRows go.
       if (recorded % 200 == 0) {
-        db.execute(
-            'DELETE FROM tx_outbox WHERE id NOT IN '
-            '(SELECT id FROM tx_outbox ORDER BY ts DESC LIMIT ?)',
-            [keepRows]);
+        final all = _all();
+        if (all.length > keepRows) {
+          kv.batch((b) {
+            for (final r in all.take(all.length - keepRows)) {
+              b.deleteString(r.id);
+            }
+          });
+        }
       }
     } catch (_) {}
   }
 
   /// What the file says about [id] when the pocket has forgotten it.
   TxRecord? _load(String id) {
-    final db = _db;
-    if (db == null) return null;
+    final v = _kv?.getString(id);
+    if (v == null) return null;
     try {
-      final rows = db.select(
-          'SELECT id,peer,state,ts FROM tx_outbox WHERE id=? LIMIT 1', [id]);
-      if (rows.isEmpty) return null;
-      final r = rows.first;
-      return TxRecord(r['id'] as String, r['peer'] as String,
-          r['state'] as String, r['ts'] as int);
+      return _decode(id, v);
     } catch (_) {
       return null;
     }

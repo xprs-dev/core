@@ -10,9 +10,8 @@
  * per-profile data folder).
  */
 
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 import '../log_service.dart';
 import '../../platform/fs.dart';
@@ -20,7 +19,7 @@ import '../../platform/fs.dart';
 class ObservedStore {
   ObservedStore(this.path);
   final String path;
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
 
   bool get isOpen => _db != null;
 
@@ -28,12 +27,10 @@ class ObservedStore {
   bool open() {
     if (_db != null) return true;
     try {
-      // sqlite3.open creates the file but not parent dirs.
+      // The store opener creates the file but not parent dirs.
       final parent = fs.file(path).parent;
       if (!parent.existsSync()) parent.createSync(recursive: true);
-      final db = openProfileDb(path);
-      db.execute('PRAGMA journal_mode = WAL;');
-      db.execute('PRAGMA synchronous = NORMAL;');
+      final db = openStoreDb(path);
       db.execute('''
         CREATE TABLE IF NOT EXISTS nodes(
           id         TEXT PRIMARY KEY,
@@ -44,46 +41,17 @@ class ObservedStore {
           hops       INTEGER NOT NULL DEFAULT 0,
           via        TEXT,
           uptime     INTEGER NOT NULL DEFAULT 0,
+          svc_xprs   INTEGER NOT NULL DEFAULT 0,
           first_seen INTEGER NOT NULL,
           last_seen  INTEGER NOT NULL
         );
       ''');
-      // Migration: add the uptime column to a pre-existing DB (older schema).
-      final cols = {
-        for (final r in db.select('PRAGMA table_info(nodes)')) r['name'] as String
-      };
-      if (!cols.contains('uptime')) {
-        db.execute('ALTER TABLE nodes ADD COLUMN uptime INTEGER NOT NULL DEFAULT 0;');
-      }
-      // v1: the column was called `geogram` before the rename. CREATE TABLE
-      // no-ops on an existing database, so without this every query below
-      // would throw `no such column: xprs` into a catch that swallows it --
-      // the peer history would silently empty and the DHT would lose its
-      // warm start, with nothing in the log to say why.
-      if (cols.contains('geogram') && !cols.contains('xprs')) {
-        db.execute('ALTER TABLE nodes RENAME COLUMN geogram TO xprs;');
-      }
-      // `svc_xprs` keeps the OLD question — "does this node announce one of our
-      // service aspects" — because the DHT warm start (topXprsPeers) wants
-      // every node running our software, named or not. `xprs` now answers the
-      // person-facing question: is this a device we can NAME. One column was
-      // being asked both, and the count a person saw was the warm start's
-      // answer: 715 on a network of six.
-      if (!cols.contains('svc_xprs')) {
-        db.execute(
-            'ALTER TABLE nodes ADD COLUMN svc_xprs INTEGER NOT NULL DEFAULT 0;');
-        db.execute('UPDATE nodes SET svc_xprs = xprs;');
-      }
-      final ver = db.select('PRAGMA user_version').first.columnAt(0) as int;
-      if (ver < 1) db.execute('PRAGMA user_version = 1');
-      // v2: a node with no callsign was never a device we could name, and the
-      // rows saying otherwise are what the Settings screen counted. Recomputed
-      // once here rather than waiting for 6000 nodes to re-announce.
-      if (ver < 2) {
-        db.execute(
-            "UPDATE nodes SET xprs = 0 WHERE callsign IS NULL OR callsign = '';");
-        db.execute('PRAGMA user_version = 2');
-      }
+      // `svc_xprs` keeps the OLD question, "does this node announce one of
+      // our service aspects", because the DHT warm start (topXprsPeers)
+      // wants every node running our software, named or not. `xprs` answers
+      // the person-facing question: is this a device we can NAME (it has a
+      // callsign). One column asked both once, and the count a person saw
+      // was the warm start's answer: 715 on a network of six.
       db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_geo ON nodes(xprs);');
       db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_last ON nodes(last_seen);');
       _db = db;
@@ -116,7 +84,7 @@ class ObservedStore {
   void upsertMany(Iterable<Map<String, Object?>> rows) {
     final db = _db;
     if (db == null) return;
-    CommonPreparedStatement? stmt;
+    ZxSqlDbStatement? stmt;
     try {
       db.execute('BEGIN');
       stmt = db.prepare('''
@@ -201,7 +169,7 @@ class ObservedStore {
   /// The most recently-heard nodes (last_seen ≥ [sinceMs]), newest first, capped
   /// at [limit]. Used on boot to hydrate RnsService's live registry so the wapp's
   /// graph shows the last-known network immediately instead of starting blank;
-  /// live announces then refresh it in the background. Row shape mirrors
+  /// live announces then refresh it in the background. ZxRow shape mirrors
   /// [upsertMany]'s input so the caller can rebuild nodes without remapping.
   List<Map<String, Object?>> loadRecent(int sinceMs, {int limit = 4096}) {
     final db = _db;
