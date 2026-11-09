@@ -25,11 +25,9 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 import 'package:reticulum/reticulum.dart';
-import '../db_bytes.dart';
 import '../log_service.dart';
 import '../receive/core_state.dart';
 import 'xprs_id.dart';
@@ -70,7 +68,7 @@ class XprsArchive {
   XprsArchive._();
   static final XprsArchive instance = XprsArchive._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
   bool get ready => _db != null;
 
   /// The stored packet whose §5 identifier is [id], or null when the spool
@@ -153,15 +151,9 @@ class XprsArchive {
   /// Open (and migrate) the spool. Safe to call again on profile switch.
   void init(String path) {
     close();
-    _path = path;
     try {
       fs.directory(fs.file(path).parent.path).createSync(recursive: true);
-      final db = openProfileDb(path);
-      // INCREMENTAL auto-vacuum must precede table creation, or deletes never
-      // shrink the file and the byte cap caps nothing.
-      db.execute('PRAGMA auto_vacuum = INCREMENTAL;');
-      db.execute('PRAGMA journal_mode = WAL;');
-      db.execute('PRAGMA synchronous = NORMAL;');
+      final db = openStoreDb(path);
       db.execute('''
         CREATE TABLE IF NOT EXISTS packets(
           id     TEXT PRIMARY KEY,
@@ -181,20 +173,7 @@ class XprsArchive {
           tier   INTEGER NOT NULL DEFAULT 2,
           wire   TEXT NOT NULL
         )''');
-      // v1: the shelf a row sits on — 0 mine, 1 followed, 2 stranger. Older
-      // databases predate the three tiers and have everything on one shelf, so
-      // the column is added and backfilled once: our own traffic and our mail
-      // are ours; the followed pass runs at the first flush after the follow
-      // list is known (see _retierFollowed).
-      final cols = {
-        for (final r in db.select('PRAGMA table_info(packets)'))
-          r['name'] as String
-      };
-      if (!cols.contains('tier')) {
-        db.execute(
-            'ALTER TABLE packets ADD COLUMN tier INTEGER NOT NULL DEFAULT 2');
-        db.execute('UPDATE packets SET tier = 0 WHERE own = 1 OR mine = 1');
-      }
+      // tier: the shelf a row sits on — 0 mine, 1 followed, 2 stranger.
       db.execute('CREATE INDEX IF NOT EXISTS idx_pk_tier ON packets(tier, pts)');
       db.execute('CREATE INDEX IF NOT EXISTS idx_pk_pts ON packets(pts)');
       db.execute(
@@ -232,6 +211,24 @@ class XprsArchive {
       // XPRS.md 7.8.2: what a verified withdrawal destroyed. Identifiers only,
       // no text, so a replayed original or edit is refused instead of bringing
       // the words back.
+      // Counters kept with the rows (performance.md: no scan to count): per
+      // (type, undirected, tier), how many rows and how many wire bytes.
+      // Every insert and delete of `packets` moves them in the same
+      // transaction, through RETURNING. countOf, countsByTier and the byte
+      // cap read them.
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS counts(
+          k TEXT PRIMARY KEY,
+          n INTEGER NOT NULL,
+          b INTEGER NOT NULL
+        )''');
+      // The newest packet time per author, for the directory (12.9): kept at
+      // flush, read in callsign order (a GROUP BY over the spool was a scan).
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS newest(
+          fromc TEXT PRIMARY KEY,
+          pts   INTEGER NOT NULL
+        )''');
       db.execute('''
         CREATE TABLE IF NOT EXISTS withdrawn(
           id    TEXT NOT NULL,
@@ -240,6 +237,7 @@ class XprsArchive {
           PRIMARY KEY(id, fromc)
         )''');
       _db = db;
+      _loadCounts(db);
       _prunedThisSession = false;
       _flushTimer?.cancel();
       _flushTimer =
@@ -250,6 +248,73 @@ class XprsArchive {
       LogService.instance.add('XPRS archive: open failed: $e');
     }
   }
+
+  // ── counters ─────────────────────────────────────────────────────────────
+
+  /// key "type|u|tier" (u 1: undirected) -> [rows, wire bytes].
+  final Map<String, List<int>> _counts = {};
+  final Set<String> _countsDirty = {};
+
+  static String _ck(String type, String toc, int tier) =>
+      '$type|${toc.isEmpty ? 1 : 0}|$tier';
+
+  void _bump(String type, String toc, int tier, int rows, int bytes) {
+    final k = _ck(type, toc, tier);
+    final c = _counts.putIfAbsent(k, () => [0, 0]);
+    c[0] += rows;
+    c[1] += bytes;
+    _countsDirty.add(k);
+  }
+
+  void _loadCounts(ZxSqlDb db) {
+    _counts.clear();
+    _countsDirty.clear();
+    for (final r in db.select('SELECT k, n, b FROM counts')) {
+      _counts[r['k'] as String] = [r['n'] as int, r['b'] as int];
+    }
+    if (_counts.isEmpty &&
+        db.select('SELECT 1 FROM packets LIMIT 1').isNotEmpty) {
+      // A spool without counters: count it once.
+      for (final r in db.select(
+          "SELECT type, toc = '' u, tier, COUNT(*) n, SUM(length(wire)) b "
+          'FROM packets GROUP BY type, toc = \'\', tier')) {
+        final k = '${r['type']}|${r['u']}|${r['tier']}';
+        _counts[k] = [r['n'] as int, (r['b'] as num?)?.toInt() ?? 0];
+        _countsDirty.add(k);
+      }
+      db.transaction(() => _saveCounts(db));
+    }
+  }
+
+  void _saveCounts(ZxSqlDb db) {
+    for (final k in _countsDirty) {
+      final c = _counts[k];
+      if (c == null || c[0] <= 0) {
+        _counts.remove(k);
+        db.execute('DELETE FROM counts WHERE k = ?', [k]);
+      } else {
+        db.execute(
+            'INSERT INTO counts(k, n, b) VALUES(?, ?, ?) '
+            'ON CONFLICT(k) DO UPDATE SET n = excluded.n, b = excluded.b',
+            [k, c[0], c[1]]);
+      }
+    }
+    _countsDirty.clear();
+  }
+
+  /// Deletes `packets` rows ([sql] is a DELETE without RETURNING), moving
+  /// the counters by what went. Returns the rows deleted.
+  int _delete(ZxSqlDb db, String sql, [List<Object?> params = const []]) {
+    final gone = db.select('$sql RETURNING type, toc, tier, length(wire) b', params);
+    for (final r in gone) {
+      _bump(r['type'] as String, r['toc'] as String, r['tier'] as int, -1,
+          -((r['b'] as num?)?.toInt() ?? 0));
+    }
+    return gone.length;
+  }
+
+  /// The wire bytes the spool holds (what the byte cap measures).
+  int get dataBytes => _counts.values.fold(0, (a, c) => a + c[1]);
 
   void close() {
     flush();
@@ -325,8 +390,10 @@ class XprsArchive {
     final capped = <String>{};
     _pending.clear();
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final newest = <String, int>{};
     try {
       db.execute('BEGIN');
+      final oldTier = db.prepare('SELECT tier FROM packets WHERE id = ?');
       final ins = db.prepare('''
         INSERT INTO packets(id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,
                             sig,viac,heard,last,tier,wire)
@@ -342,7 +409,8 @@ class XprsArchive {
           -- The best shelf wins: hearing a stranger's copy of a followed
           -- station's packet must never demote the row we already keep.
           tier  = MIN(tier, excluded.tier),
-          viac  = MIN(viac, excluded.viac)''');
+          viac  = MIN(viac, excluded.viac)
+        RETURNING heard, tier, length(wire) b''');
       final tomb = db.prepare(
           'INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)');
       try {
@@ -385,13 +453,20 @@ class XprsArchive {
           // The words of something already withdrawn do not come back.
           if (_isWithdrawn(db, p, fromc)) continue;
           stored.add(MapEntry(fromc, xprsParseTs(p['ts'])));
-          ins.execute([
-            xprsIdentifier(p),
+          final id = xprsIdentifier(p);
+          final toWire = (p['d'] ?? '').trim().isEmpty ? '' : toc;
+          // A higher shelf may lift an existing row (tier = MIN): know where
+          // it stood, so its count moves. Only a mine or followed copy can.
+          final before = e.tier.index < 2
+              ? (oldTier.select([id]).firstOrNull?['tier'] as int?)
+              : null;
+          final res = ins.select([
+            id,
             e.nowMs,
             xprsParseTs(p['ts']) ?? e.nowMs,
             p.type,
             fromc,
-            (p['d'] ?? '').trim().isEmpty ? '' : toc,
+            toWire,
             e.bearer,
             e.rssi,
             (!e.own && toc.isNotEmpty && toc == _selfBase) ? 1 : 0,
@@ -401,7 +476,19 @@ class XprsArchive {
             e.nowMs,
             e.tier.index,
             p.encode(),
-          ]);
+          ]).first;
+          final tierNow = res['tier'] as int;
+          final bytes = (res['b'] as num).toInt();
+          if (res['heard'] == 1) {
+            _bump(p.type, toWire, tierNow, 1, bytes);
+          } else if (before != null && before != tierNow) {
+            _bump(p.type, toWire, before, -1, -bytes);
+            _bump(p.type, toWire, tierNow, 1, bytes);
+          }
+          if (fromc.isNotEmpty) {
+            final t = xprsParseTs(p['ts']) ?? e.nowMs;
+            if ((newest[fromc] ?? -1) < t) newest[fromc] = t;
+          }
           admitted++;
           if (p.type == 'identity') identities.add(fromc);
           if (e.tier == Tier.followed &&
@@ -413,6 +500,7 @@ class XprsArchive {
       } finally {
         ins.dispose();
         tomb.dispose();
+        oldTier.dispose();
       }
       for (final c in identities) {
         _collapseIdentities(db, c);
@@ -420,11 +508,18 @@ class XprsArchive {
       for (final c in capped) {
         _capFollowedPresence(db, c);
       }
+      newest.forEach((c, t) => db.execute(
+          'INSERT INTO newest(fromc, pts) VALUES(?, ?) '
+          'ON CONFLICT(fromc) DO UPDATE SET pts = MAX(pts, excluded.pts)',
+          [c, t]));
+      _saveCounts(db);
       db.execute('COMMIT');
     } catch (e) {
       try {
         db.execute('ROLLBACK');
       } catch (_) {}
+      // The rolled-back rows moved the counters in memory: read them back.
+      _loadCounts(db);
       LogService.instance.add('XPRS archive: flush failed: $e');
     }
     _prune(db, nowMs: now);
@@ -458,7 +553,7 @@ class XprsArchive {
   /// names, and remember the identifiers. Only the author's own rows: the
   /// delete is keyed on the signer's `fromc`, so a withdrawal can never reach
   /// somebody else's packet.
-  void _purgeWithdrawn(CommonDatabase db, CommonPreparedStatement tomb, XprsPacket p,
+  void _purgeWithdrawn(ZxSqlDb db, ZxSqlDbStatement tomb, XprsPacket p,
       String fromc, int nowMs) {
     final kind = (p['remove'] ?? '').trim().toLowerCase();
     if (kind.isEmpty || !_withdrawable.contains(kind)) return;
@@ -472,10 +567,10 @@ class XprsArchive {
     for (final r in edits) {
       tomb.execute([r['id'] as String, fromc, nowMs]);
     }
-    db.execute('DELETE FROM packets WHERE fromc = ? AND id = ?',
+    _delete(db, 'DELETE FROM packets WHERE fromc = ? AND id = ?',
         [fromc, target]);
     for (final r in edits) {
-      db.execute('DELETE FROM packets WHERE fromc = ? AND id = ?',
+      _delete(db, 'DELETE FROM packets WHERE fromc = ? AND id = ?',
           [fromc, r['id']]);
     }
   }
@@ -507,14 +602,18 @@ class XprsArchive {
       // 10.10: a station's own rooms are undirected, so a removal in them
       // (the station is the group) deletes the undirected row too.
       final own = g == _selfBase.toUpperCase();
-      for (final id in ids) {
-        db.execute('DELETE FROM packets WHERE toc = ? AND id = ?', [g, id]);
-        if (own) {
-          db.execute("DELETE FROM packets WHERE toc = '' AND id = ?", [id]);
+      db.transaction(() {
+        for (final id in ids) {
+          _delete(db, 'DELETE FROM packets WHERE toc = ? AND id = ?', [g, id]);
+          if (own) {
+            _delete(db, "DELETE FROM packets WHERE toc = '' AND id = ?", [id]);
+          }
+          db.execute(
+              'INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)',
+              [id, '*$g', now]);
         }
-        db.execute('INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)',
-            [id, '*$g', now]);
-      }
+        _saveCounts(db);
+      });
     } catch (e) {
       LogService.instance.add('XPRS archive: moderated purge failed: $e');
     }
@@ -522,7 +621,7 @@ class XprsArchive {
 
   /// True when [p] is an original or an edit that a verified withdrawal of
   /// the same author already destroyed. A withdrawal itself is never refused.
-  bool _isWithdrawn(CommonDatabase db, XprsPacket p, String fromc) {
+  bool _isWithdrawn(ZxSqlDb db, XprsPacket p, String fromc) {
     if (p.has('remove') || !_withdrawable.contains(p.type)) return false;
     final root = (p['edit'] ?? '').trim().toLowerCase();
     final ids = [xprsIdentifier(p), if (_idRe.hasMatch(root)) root];
@@ -550,9 +649,9 @@ class XprsArchive {
   /// replayed old page never displaces a newer reading; served by
   /// idx_pk_from(fromc, pts). A row a public archiver keeps for strangers is
   /// on another shelf and not touched.
-  static void _capFollowedPresence(CommonDatabase db, String fromc) {
+  void _capFollowedPresence(ZxSqlDb db, String fromc) {
     if (fromc.isEmpty) return;
-    db.execute(
+    _delete(db,
         'DELETE FROM packets WHERE fromc = ? AND tier = ? '
         "AND type IN ('observation','service') AND id NOT IN ("
         'SELECT id FROM packets WHERE fromc = ? AND tier = ? '
@@ -585,7 +684,7 @@ class XprsArchive {
   /// rows of each kind per station, for ever.
   static const _identityFields = ['k', 'nick', 'file', 'm', 'url'];
 
-  static void _collapseIdentities(CommonDatabase db, String fromc) {
+  void _collapseIdentities(ZxSqlDb db, String fromc) {
     if (fromc.isEmpty) return;
     final rows = db.select(
         "SELECT id, wire, sig FROM packets WHERE type = 'identity' AND fromc = ? "
@@ -602,7 +701,7 @@ class XprsArchive {
       final verified = (r['sig'] as int? ?? 0) == XprsSigState.verified.index;
       final covered = verified ? coveredVerified : coveredAny;
       if (fields.every(covered.contains)) {
-        db.execute('DELETE FROM packets WHERE id = ?', [r['id']]);
+        _delete(db, 'DELETE FROM packets WHERE id = ?', [r['id']]);
         continue;
       }
       coveredAny.addAll(fields);
@@ -626,14 +725,17 @@ class XprsArchive {
     if (db == null) return false;
     final x = _base(a), y = _base(b);
     if (x.isEmpty || y.isEmpty) return false;
-    return db.select(
-        "SELECT 1 FROM packets WHERE type = 'message' AND "
-        '((fromc = ? AND toc = ?) OR (fromc = ? AND toc = ?)) LIMIT 1',
-        [x, y, y, x]).isNotEmpty;
+    // Two lookups on idx_pk_from (fromc, ...): an OR of the two pairs made
+    // the planner scan the spool.
+    bool sent(String f, String t) => db.select(
+        "SELECT 1 FROM packets WHERE fromc = ? AND toc = ? AND type = 'message' "
+        'LIMIT 1',
+        [f, t]).isNotEmpty;
+    return sent(x, y) || sent(y, x);
   }
 
   /// Our base callsign, set by the owner at init/profile switch so `mine` can
-  /// be computed at flush time without asking a service from inside sqlite.
+  /// be computed at flush time without asking a service from inside the store.
   ///
   /// This is the name this station AIRS: an operator's licensed callsign when
   /// they have one, else the one their key derives (XPRS.md 6.4.1). We wear
@@ -668,7 +770,7 @@ class XprsArchive {
     return to == _selfBase.toUpperCase() || selfAlsoKnownAs.contains(to);
   }
 
-  void _prune(CommonDatabase db, {int? nowMs}) {
+  void _prune(ZxSqlDb db, {int? nowMs}) {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     // Age, once per session. Our own side of the conversation is exempt, the
     // same way the byte cap below already exempts it: this station IS its own
@@ -684,6 +786,7 @@ class XprsArchive {
     if (!_prunedThisSession) {
       _prunedThisSession = true;
       try {
+        db.transaction(() {
         // `identity` never ages out. It is the key binding, and a station
         // heard once a year ago is exactly the one whose signature this
         // station cannot check without it (§18.1). Bounded by construction —
@@ -692,7 +795,7 @@ class XprsArchive {
         // A followed station's traffic does not age out either (30.3), so the
         // age pass is a strangers' pass: `tier = 2`, with our own beacons the
         // one thing of ours that still expires.
-        db.execute(
+        _delete(db,
             'DELETE FROM packets WHERE pts < ? '
             "AND (tier = 2 OR (own = 1 AND type = 'observation')) "
             "AND mine = 0 AND type != 'identity'",
@@ -703,6 +806,8 @@ class XprsArchive {
         // A year is far longer than any copy is held or replayed.
         db.execute('DELETE FROM withdrawn WHERE ts < ?',
             [now - 365 * 86400000]);
+        _saveCounts(db);
+        });
       } catch (e) {
         LogService.instance.add('XPRS archive: age prune failed: $e');
       }
@@ -712,59 +817,98 @@ class XprsArchive {
     if (++_flushesSinceCap < 20) return;
     _flushesSinceCap = 0;
     try {
-      _pruneGroups(db);
+      db.transaction(() {
+        _pruneGroups(db);
+        _saveCounts(db);
+      });
     } catch (e) {
       LogService.instance.add('XPRS archive: group prune failed: $e');
     }
     try {
-      final bytes = _dataBytes(db);
-      if (bytes <= maxBytes) return;
-      // The cap is the STRANGERS' quota. Mine and the people I follow are
-      // exempt by tier (XPRS.md 30.3: "a station holds the notes of the people
-      // its operator follows and never drops them… and it discards a
-      // stranger's chatter within hours"), so the number the operator sets is
-      // honestly a bound on other people's traffic rather than on everything.
-      //
-      // This replaces a `fromc NOT IN (?,?,…)` list built from a hook nobody
-      // ever wrote to — one bound parameter per followed callsign, per prune.
-      const tierSql = ' AND tier = 2';
-      // Identity is exempt here too, and for a sharper reason than age: the
-      // cap evicts OLDEST FIRST, and a key binding heard long ago is precisely
-      // the row most likely to be oldest and least likely to be re-heard soon.
-      // Under storage pressure this would have thrown away exactly the keys
-      // that cannot be re-derived from anything else on disk.
-      final rows = db
-          .select('SELECT COUNT(*) c FROM packets WHERE own=0 AND mine=0'
-              " AND type != 'identity'$tierSql")
-          .first['c'] as int;
-      if (rows == 0) return;
-      final avg = (bytes / rows).clamp(64, 1 << 20);
-      var drop = ((bytes - maxBytes) / avg).ceil() + 500;
-      if (drop > 20000) drop = 20000;
-      // §12.11: class first, age second. The spool (ordinary heard traffic,
-      // no `d:`) goes before custody mail (`d:` for a station that did NOT
-      // name us), which goes before declared mail (`d:` for a callsign whose
-      // `t:mailbox hold:` names us) — the last thing an archiver may drop. So
-      // the eviction order is (class asc, pts asc), not pts alone: a declared
-      // recipient's message outlives a stranger's chatter even when it is
-      // older. own, mine, identity and every non-stranger tier stay exempt.
-      db.execute(
-          'DELETE FROM packets WHERE id IN '
-          "(SELECT id FROM packets WHERE own=0 AND mine=0 AND type != 'identity'"
-          '$tierSql ORDER BY (CASE '
-          "WHEN toc = '' THEN 1 "
-          'WHEN EXISTS(SELECT 1 FROM mailbox_decl md WHERE md.fromc = packets.toc '
-          'AND md.pos >= 0 AND (md.until IS NULL OR md.until >= ?)) THEN 3 '
-          'ELSE 2 END) ASC, pts ASC LIMIT ?)',
-          [now, drop]);
-      db.execute('PRAGMA incremental_vacuum;');
+      _capBytes(db, now);
     } catch (e) {
+      _loadCounts(db);
       LogService.instance.add('XPRS archive: cap prune failed: $e');
+    }
+    // The file appends; superseded pages stay until a compaction. Rewrite it
+    // once it has doubled since the last one (ZxSqlDb.maybeCompact).
+    try {
+      if (db.maybeCompact()) {
+        LogService.instance
+            .add('XPRS archive: compacted to ${db.stats().fileBytes} bytes');
+      }
+    } catch (e) {
+      LogService.instance.add('XPRS archive: compaction failed: $e');
     }
   }
 
+  /// The byte cap: the wire bytes held (the counters) against [maxBytes].
+  ///
+  /// The cap is the STRANGERS' quota. Mine and the people I follow are
+  /// exempt by tier (XPRS.md 30.3: "a station holds the notes of the people
+  /// its operator follows and never drops them… and it discards a stranger's
+  /// chatter within hours"), so the number the operator sets is honestly a
+  /// bound on other people's traffic rather than on everything. Identity is
+  /// exempt too: the cap evicts OLDEST FIRST, and a key binding heard long
+  /// ago is the row most likely to be oldest and least likely to be heard
+  /// again. One bounded batch per call, converging over successive flushes.
+  ///
+  /// §12.11: class first, age second. The spool (ordinary heard traffic, no
+  /// `d:`) goes before custody mail (`d:` for a station that did NOT name
+  /// us), which goes before declared mail (`d:` for a callsign whose
+  /// `t:mailbox hold:` names us) — the last thing an archiver may drop.
+  void _capBytes(ZxSqlDb db, int now) {
+    final bytes = dataBytes;
+    if (bytes <= maxBytes) return;
+    var rows = 0, strangerBytes = 0;
+    _counts.forEach((k, c) {
+      if (k.endsWith('|2') && !k.startsWith('identity|')) {
+        rows += c[0];
+        strangerBytes += c[1];
+      }
+    });
+    if (rows == 0) return;
+    final avg = (strangerBytes / rows).clamp(64, 1 << 20);
+    var drop = ((bytes - maxBytes) / avg).ceil() + 500;
+    if (drop > 20000) drop = 20000;
+    const strangers = "own = 0 AND mine = 0 AND type != 'identity' AND tier = 2";
+    final ids = <String>[
+      // class 1: the spool, oldest first (idx_pk_to: toc = '', by pts)
+      for (final r in db.select(
+          "SELECT id FROM packets WHERE toc = '' AND $strangers "
+          'ORDER BY pts ASC LIMIT ?',
+          [drop]))
+        r['id'] as String,
+    ];
+    if (ids.length < drop) {
+      final declared = <String>{
+        for (final r in db.select(
+            'SELECT DISTINCT fromc FROM mailbox_decl WHERE pos >= 0 '
+            'AND (until IS NULL OR until >= ?)',
+            [now]))
+          r['fromc'] as String,
+      };
+      final custody = <String>[], held = <String>[];
+      for (final r in db.select(
+          "SELECT id, toc FROM packets WHERE tier = 2 AND toc <> '' "
+          "AND own = 0 AND mine = 0 AND type != 'identity' "
+          'ORDER BY pts ASC LIMIT ?',
+          [drop - ids.length])) {
+        (declared.contains(r['toc']) ? held : custody).add(r['id'] as String);
+      }
+      ids.addAll(custody);
+      ids.addAll(held);
+    }
+    db.transaction(() {
+      for (final id in ids.take(drop)) {
+        _delete(db, 'DELETE FROM packets WHERE id = ?', [id]);
+      }
+      _saveCounts(db);
+    });
+  }
+
   /// The per-group ceiling (10.9.3), one bounded batch per group over it.
-  void _pruneGroups(CommonDatabase db) {
+  void _pruneGroups(ZxSqlDb db) {
     final over = db.select(
         'SELECT toc, SUM(length(wire)) b, COUNT(*) n FROM packets '
         "WHERE toc >= 'X5' AND toc < 'X6' AND own = 0 "
@@ -779,7 +923,7 @@ class XprsArchive {
       final avg = (b / n).clamp(64, 1 << 20);
       var drop = ((b - maxGroupBytes) / avg).ceil() + 50;
       if (drop > 5000) drop = 5000;
-      db.execute(
+      _delete(db,
           'DELETE FROM packets WHERE id IN '
           '(SELECT id FROM packets WHERE toc = ? AND own = 0 '
           "AND type NOT IN ('identity', 'moderate') ORDER BY pts ASC LIMIT ?)",
@@ -798,15 +942,26 @@ class XprsArchive {
     final db = _db;
     if (db == null) return;
     try {
-      for (final c in promoted) {
-        db.execute('UPDATE packets SET tier = 1 WHERE fromc = ? AND tier = 2',
-            [_base(c)]);
+      void move(String sql, String c, int from, int to) {
+        for (final r in db.select(
+            '$sql RETURNING type, toc, length(wire) b', [_base(c)])) {
+          final b = (r['b'] as num).toInt();
+          _bump(r['type'] as String, r['toc'] as String, from, -1, -b);
+          _bump(r['type'] as String, r['toc'] as String, to, 1, b);
+        }
       }
-      for (final c in demoted) {
-        db.execute('UPDATE packets SET tier = 2 WHERE fromc = ? AND tier = 1',
-            [_base(c)]);
-      }
+
+      db.transaction(() {
+        for (final c in promoted) {
+          move('UPDATE packets SET tier = 1 WHERE fromc = ? AND tier = 2', c, 2, 1);
+        }
+        for (final c in demoted) {
+          move('UPDATE packets SET tier = 2 WHERE fromc = ? AND tier = 1', c, 1, 2);
+        }
+        _saveCounts(db);
+      });
     } catch (e) {
+      _loadCounts(db);
       LogService.instance.add('XPRS archive: retier failed: $e');
     }
   }
@@ -814,29 +969,23 @@ class XprsArchive {
   /// How many rows sit on each shelf — what the Archiver screen shows, and the
   /// only honest answer to "what is this device keeping, and for whom".
   ///
-  /// One indexed GROUP BY, read when the screen refreshes (the archive fires
+  /// From the counters kept with the rows; read when the screen refreshes (the archive fires
   /// `core.archive` at most every 20 s), never per packet.
   ({int own, int followed, int stranger, int total}) countsByTier() {
     final db = _db;
     if (db == null) return (own: 0, followed: 0, stranger: 0, total: 0);
-    try {
-      var mine = 0, fol = 0, str = 0;
-      for (final r in db.select('SELECT tier, COUNT(*) c FROM packets '
-          'GROUP BY tier')) {
-        final n = (r['c'] as int?) ?? 0;
-        switch ((r['tier'] as int?) ?? 2) {
-          case 0:
-            mine = n;
-          case 1:
-            fol = n;
-          default:
-            str = n;
-        }
+    var mine = 0, fol = 0, str = 0;
+    _counts.forEach((k, c) {
+      switch (k.substring(k.lastIndexOf('|') + 1)) {
+        case '0':
+          mine += c[0];
+        case '1':
+          fol += c[0];
+        default:
+          str += c[0];
       }
-      return (own: mine, followed: fol, stranger: str, total: mine + fol + str);
-    } catch (_) {
-      return (own: 0, followed: 0, stranger: 0, total: 0);
-    }
+    });
+    return (own: mine, followed: fol, stranger: str, total: mine + fol + str);
   }
 
   /// Drop everything this station holds about one closed group.
@@ -854,36 +1003,20 @@ class XprsArchive {
     final g = _base(group.trim().toUpperCase());
     if (g.isEmpty) return 0;
     flush(); // anything still queued would be written back after the delete
-    db.execute('DELETE FROM packets WHERE toc = ? OR fromc = ?', [g, g]);
-    return db.updatedRows;
+    return db.transaction(() {
+      final n = _delete(db, 'DELETE FROM packets WHERE toc = ?', [g]) +
+          _delete(db, 'DELETE FROM packets WHERE fromc = ?', [g]);
+      db.execute('DELETE FROM newest WHERE fromc = ?', [g]);
+      _saveCounts(db);
+      return n;
+    });
   }
 
-  /// What the spool occupies on disk, for the Archiver screen. Two PRAGMAs.
+  /// What the spool occupies on disk, for the Archiver screen: the file,
+  /// compressed by zx, with any superseded pages not yet compacted away.
   int get spoolBytes {
     final db = _db;
-    return db == null ? 0 : _dataBytes(db);
-  }
-
-  /// Where the spool lives, for [_dataBytes]'s fallback.
-  String? _path;
-
-  int _dataBytes(CommonDatabase db) {
-    final pages = sqliteDbBytes(db);
-    if (pages != null) return pages;
-    // The pragma answered nothing usable (it returns a STRING on Android,
-    // which is how this reported "0 B" over 156,000 rows). Stat the file
-    // instead -- the same number by another route, WAL included, since pages
-    // waiting in the log are on the disk too.
-    final path = _path;
-    if (path == null || path == ':memory:') return 0;
-    var total = 0;
-    for (final suffix in const ['', '-wal']) {
-      try {
-        final f = fs.file('$path$suffix');
-        if (f.existsSync()) total += f.statSync().size;
-      } catch (_) {}
-    }
-    return total;
+    return db == null ? 0 : db.stats().fileBytes;
   }
 
   // ── mailbox declarations (section 13.12) ─────────────────────────────────
@@ -1078,9 +1211,7 @@ class XprsArchive {
     if (db == null) return const [];
     final out = <String, int>{};
     for (final r in db.select(
-        "SELECT fromc, MAX(pts) m FROM packets WHERE fromc <> '' "
-        'GROUP BY fromc ORDER BY fromc LIMIT ?',
-        [limit])) {
+        'SELECT fromc, pts m FROM newest ORDER BY fromc LIMIT ?', [limit])) {
       out[r['fromc'] as String] = (r['m'] as num).toInt();
     }
     for (final v in servedVisitors(max: limit)) {
@@ -1120,18 +1251,16 @@ class XprsArchive {
   /// [undirected] counts only what carries no `d:` (publications), which is
   /// all a stranger on a hotspot may be told the size of.
   int countOf({List<String>? types, bool undirected = false}) {
-    final db = _db;
-    if (db == null) return 0;
-    final open = undirected ? " AND toc = ''" : '';
-    if (types == null || types.isEmpty) {
-      return db
-          .select('SELECT COUNT(*) c FROM packets WHERE 1=1$open')
-          .first['c'] as int;
-    }
-    final marks = List.filled(types.length, '?').join(',');
-    return db.select(
-        'SELECT COUNT(*) c FROM packets WHERE type IN ($marks)$open',
-        types).first['c'] as int;
+    if (_db == null) return 0;
+    final want = types == null || types.isEmpty ? null : types.toSet();
+    var n = 0;
+    _counts.forEach((k, c) {
+      final parts = k.split('|');
+      if (want != null && !want.contains(parts[0])) return;
+      if (undirected && parts[1] != '1') return;
+      n += c[0];
+    });
+    return n;
   }
 
     List<Map<String, dynamic>> query({
@@ -1355,14 +1484,11 @@ class XprsArchive {
 
   /// Counters for /api/status-style checks.
   Map<String, dynamic> statusJson() {
-    final db = _db;
-    final rows = db == null
-        ? 0
-        : db.select('SELECT COUNT(*) c FROM packets').first['c'] as int;
     return {
       'ready': ready,
-      'rows': rows,
-      'bytes': db == null ? 0 : _dataBytes(db),
+      'rows': countOf(),
+      'bytes': spoolBytes,
+      'data': dataBytes,
       'declarations': declCount,
       'pending': _pending.length,
       'admitted': admitted,

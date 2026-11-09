@@ -8,13 +8,10 @@
 // Native only (SQLite via dart:ffi); every call is a no-op on web.
 
 import 'dart:convert';
-import '../db_bytes.dart';
 
-import 'package:xprs_core/src/util/compat.dart' show kIsWeb;
-import 'package:sqlite3/common.dart';
 
 import '../log_service.dart';
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 import '../../profile/profile_storage.dart';
 import '../../platform/fs.dart';
@@ -31,10 +28,10 @@ class ActivityArchive {
     () => ActivityArchive._(dataDir.getAbsolutePath(fileName)),
   );
 
-  static const String _fileName = 'activity.sqlite3';
+  static const String _fileName = 'activity.zx';
 
   final String _dbPath;
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
   bool _failed = false;
 
   static const int _maxAgeMs = 183 * 24 * 60 * 60 * 1000; // 6 months
@@ -58,19 +55,14 @@ class ActivityArchive {
   // event from several relays is byte-identical, so we keep exactly one copy.
   final Set<String> _seenMids = {};
 
-  CommonDatabase? _ensureDb() {
-    if (kIsWeb || _failed) return null;
+  ZxSqlDb? _ensureDb() {
+    if (_failed) return null;
     final existing = _db;
     if (existing != null) return existing;
     try {
       final parent = fs.file(_dbPath).parent;
       if (!parent.existsSync()) parent.createSync(recursive: true);
-      final db = openProfileDb(_dbPath);
-      // INCREMENTAL auto-vacuum (must precede table creation) so firehose
-      // deletes actually shrink the file, keeping it under the byte ceiling.
-      db.execute('PRAGMA auto_vacuum = INCREMENTAL;');
-      db.execute('PRAGMA journal_mode = WAL;');
-      db.execute('PRAGMA synchronous = NORMAL;');
+      final db = openStoreDb(_dbPath);
       db.execute('''
         CREATE TABLE IF NOT EXISTS activity(
           id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,38 +76,20 @@ class ActivityArchive {
           meta      TEXT,
           lat       REAL,
           lon       REAL,
-          time      TEXT
+          time      TEXT,
+          mid       TEXT,
+          parent    TEXT,
+          pop       INTEGER DEFAULT 0,
+          source    TEXT DEFAULT '',
+          batch     INTEGER DEFAULT 0,
+          author_pubkey TEXT DEFAULT ''
         );
       ''');
+      // mid: the post id (group-threading scheme) Like/Reply attach to.
+      // parent: the post this one replies to ("" = a root). pop: 1 for a
+      // "popular" post surfaced by the discovery feed (>= 2 likes), shown in
+      // the All tab after the transient like count is lost on restart.
       db.execute('CREATE INDEX IF NOT EXISTS idx_activity_t ON activity(t);');
-      // Per-post id (group-threading scheme) so Like/Reply attach to a post.
-      final cols = {
-        for (final r in db.select('PRAGMA table_info(activity)'))
-          r['name'] as String,
-      };
-      if (!cols.contains('mid')) {
-        db.execute('ALTER TABLE activity ADD COLUMN mid TEXT;');
-      }
-      // Threaded replies: the post id (mid) this one replies to ("" = a root).
-      if (!cols.contains('parent')) {
-        db.execute('ALTER TABLE activity ADD COLUMN parent TEXT;');
-      }
-      // 1 = a "popular" post surfaced by the discovery feed (>=2 likes) — shown
-      // in the All tab even after the transient like count is lost on restart.
-      if (!cols.contains('pop')) {
-        db.execute('ALTER TABLE activity ADD COLUMN pop INTEGER DEFAULT 0;');
-      }
-      if (!cols.contains('source')) {
-        db.execute("ALTER TABLE activity ADD COLUMN source TEXT DEFAULT '';");
-      }
-      if (!cols.contains('batch')) {
-        db.execute('ALTER TABLE activity ADD COLUMN batch INTEGER DEFAULT 0;');
-      }
-      if (!cols.contains('author_pubkey')) {
-        db.execute(
-          "ALTER TABLE activity ADD COLUMN author_pubkey TEXT DEFAULT '';",
-        );
-      }
       db.execute(
         'CREATE INDEX IF NOT EXISTS idx_activity_source ON activity(source);',
       );
@@ -129,17 +103,14 @@ class ActivityArchive {
         'CREATE INDEX IF NOT EXISTS idx_activity_author_pubkey '
         'ON activity(author_pubkey);',
       );
+      // By author: the twin check in add(), byAuthor, counts per author.
+      db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_activity_from ON activity(from_call, t);',
+      );
       // A NOSTR event id (mid) is globally unique and byte-identical no matter
-      // which relay served it, so a post must never be stored twice. Purge any
-      // existing duplicate copies (keep the earliest row per mid), then enforce
-      // it with a partial UNIQUE index — mid-less APRS rows are unaffected.
-      try {
-        db.execute(
-          "DELETE FROM activity WHERE mid IS NOT NULL AND mid != '' "
-          "AND id NOT IN (SELECT MIN(id) FROM activity "
-          "WHERE mid IS NOT NULL AND mid != '' GROUP BY mid);",
-        );
-      } catch (_) {}
+      // which relay served it, so a post must never be stored twice: a
+      // partial UNIQUE index enforces it (INSERT OR IGNORE), and mid-less
+      // APRS rows are unaffected. idx_activity_mid answers the lookups.
       db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_mid_uniq "
         "ON activity(mid) WHERE mid IS NOT NULL AND mid != '';",
@@ -281,7 +252,7 @@ class ActivityArchive {
     _pruneOnce(db);
   }
 
-  /// Persist a bounded delivery as one SQLite transaction. Relay decoding and
+  /// Persist a bounded delivery as one transaction (one commit). Relay decoding and
   /// signature verification happen in the NOSTR isolate; this keeps the small
   /// main-isolate handoff to one fsync instead of one fsync per publication.
   void addAll(Iterable<Map<String, dynamic>> posts) {
@@ -292,34 +263,26 @@ class ActivityArchive {
     });
   }
 
-  /// Run [body] inside ONE SQLite transaction. Hundreds of individual
-  /// `add`/`setReaction` writes are cheap batched but brutal one-by-one —
-  /// SQLCipher fsyncs each, which blocked the UI thread for seconds (ANR) when
-  /// the curated poll persisted its posts + per-liker reactions + replies. Wrap
-  /// the whole persist in this.
+  /// Run [body] inside ONE transaction. Hundreds of individual
+  /// `add`/`setReaction` writes are cheap batched but brutal one-by-one: each
+  /// is a commit of its own (milliseconds and several KB of file), which
+  /// blocked the UI thread for seconds when the curated poll persisted its
+  /// posts + per-liker reactions + replies. Wrap the whole persist in this.
+  /// Nested calls join the outer transaction.
   void transact(void Function() body) {
     final db = _ensureDb();
     if (db == null) {
       body();
       return;
     }
-    db.execute('BEGIN IMMEDIATE;');
-    try {
-      body();
-      db.execute('COMMIT;');
-    } catch (_) {
-      try {
-        db.execute('ROLLBACK;');
-      } catch (_) {}
-      rethrow;
-    }
+    db.transaction(body);
   }
 
   /// The most recent [limit] posts, oldest→newest (ready to render top→bottom).
   List<Map<String, dynamic>> recent({int limit = 300}) {
     final db = _ensureDb();
     if (db == null) return const [];
-    ResultSet rows;
+    ZxRows rows;
     try {
       rows = db.select(
         'SELECT t,dir,from_call,author_pubkey,text,convo,kind,via,meta,lat,lon,time,mid,parent,pop,source,batch '
@@ -376,7 +339,7 @@ class ActivityArchive {
     }
   }
 
-  List<Map<String, dynamic>> _rowsToPosts(ResultSet rows) {
+  List<Map<String, dynamic>> _rowsToPosts(ZxRows rows) {
     final out = <Map<String, dynamic>>[];
     for (final r in rows) {
       final m = <String, dynamic>{
@@ -534,7 +497,7 @@ class ActivityArchive {
   List<Map<String, dynamic>> repliesFor(String mid, {int limit = 300}) {
     final db = _ensureDb();
     if (db == null || mid.isEmpty) return const [];
-    ResultSet rows;
+    ZxRows rows;
     try {
       rows = db.select(
         'SELECT t,dir,from_call,author_pubkey,text,convo,kind,via,meta,lat,lon,time,mid,parent,pop '
@@ -609,7 +572,7 @@ class ActivityArchive {
   Map<String, dynamic>? byMid(String mid) {
     final db = _ensureDb();
     if (db == null || mid.isEmpty) return null;
-    ResultSet rows;
+    ZxRows rows;
     try {
       rows = db.select(
         'SELECT t,dir,from_call,author_pubkey,text,convo,kind,via,meta,lat,lon,time,mid,parent,pop '
@@ -732,7 +695,7 @@ class ActivityArchive {
   List<Map<String, dynamic>> byAuthor(String callsign, {int limit = 200}) {
     final db = _ensureDb();
     if (db == null || callsign.isEmpty) return const [];
-    ResultSet rows;
+    ZxRows rows;
     try {
       rows = db.select(
         'SELECT t,dir,from_call,author_pubkey,text,convo,kind,via,meta,lat,lon,time,mid,parent,pop '
@@ -883,7 +846,7 @@ class ActivityArchive {
     }
   }
 
-  void _pruneOnce(CommonDatabase db) {
+  void _pruneOnce(ZxSqlDb db) {
     // Protected (followed / follower) authors are never firehose-evicted.
     final prot = protectedAuthors?.call() ?? const <String>{};
     final protList = prot.toList();
@@ -905,22 +868,25 @@ class ActivityArchive {
       }
     }
 
-    // Row + byte caps run periodically — a firehose floods within one session,
+    // ZxRow + byte caps run periodically — a firehose floods within one session,
     // so a once-per-session prune is not enough. This MUST stay cheap: it runs
     // on the add() hot path (the engine thread), so it does O(1) DELETEs and
     // converges over successive calls rather than looping-until-under.
     if (++_addsSincePrune < 400) return;
     _addsSincePrune = 0;
     try {
-      // Row cap: keep the newest _maxRows unprotected rows.
+      // ZxRow cap: keep the newest _maxRows unprotected rows.
       db.execute(
         'DELETE FROM activity WHERE id NOT IN '
         '(SELECT id FROM activity ORDER BY t DESC LIMIT ?)$notProt',
         [_maxRows, ...protList],
       );
-      // Byte cap: one bounded batch. Estimate how many oldest unprotected rows
-      // to drop from the average row size, capped at 20k so this stays cheap;
-      // if we are still over next time, the next prune trims more.
+      // Byte cap: one bounded batch. The file holds superseded pages until a
+      // compaction, so compact first (it only rewrites once the file has
+      // doubled) and measure what is left. Estimate how many oldest
+      // unprotected rows to drop from the average row size, capped at 20k so
+      // this stays cheap; if still over next time, the next prune trims more.
+      db.maybeCompact();
       final bytes = _dataBytes(db);
       if (bytes > _maxBytes) {
         final rows =
@@ -940,7 +906,6 @@ class ActivityArchive {
             '(SELECT id FROM activity WHERE 1=1$notProt ORDER BY t ASC LIMIT ?)',
             [...protList, drop],
           );
-          db.execute('PRAGMA incremental_vacuum;');
         }
       }
     } catch (e) {
@@ -948,10 +913,8 @@ class ActivityArchive {
     }
   }
 
-  /// On-disk database size (page_count × page_size) — O(1), so it is safe to
-  /// call on the add() hot path. With INCREMENTAL auto-vacuum the freed pages
-  /// return after a delete, so this tracks the real file the user cares about.
-  int _dataBytes(CommonDatabase db) => sqliteDbBytes(db) ?? 0;
+  /// On-disk size of the store, a file stat: safe on the add() hot path.
+  int _dataBytes(ZxSqlDb db) => db.stats().fileBytes;
 
   /// Wipe every archived post (the "Clear feed" action). Likes/saved rows are
   /// kept — a user's bookmarks shouldn't vanish with a feed clear.
@@ -962,10 +925,13 @@ class ActivityArchive {
     final db = _ensureDb();
     if (db == null) return null;
     try {
+      // A prefix as a range on idx_activity_author_pubkey (keys are lower
+      // case hex, so 'g' sorts after every key starting with the prefix).
+      final lo = short12.toLowerCase();
       final r = db.select(
-        "SELECT author_pubkey FROM activity WHERE author_pubkey LIKE ? "
-        "AND length(author_pubkey) = 64 LIMIT 1",
-        ['$short12%'],
+        'SELECT author_pubkey FROM activity WHERE author_pubkey >= ? '
+        'AND author_pubkey < ? AND length(author_pubkey) = 64 LIMIT 1',
+        [lo, '${lo}g'],
       );
       if (r.isNotEmpty) {
         return (r.first['author_pubkey'] as String?)?.toLowerCase();
@@ -994,8 +960,7 @@ class ActivityArchive {
     if (db == null) return;
     try {
       db.execute('DELETE FROM activity;');
-      db.execute('PRAGMA wal_checkpoint(TRUNCATE);');
-      db.execute('PRAGMA incremental_vacuum;');
+      db.maybeCompact(force: true);
       _recent.clear();
     } catch (e) {
       LogService.instance.add('ActivityArchive: clear failed: $e');

@@ -25,11 +25,9 @@
  * piggybacks on inserts, at most once a minute.
  */
 import 'dart:async';
-import '../db_bytes.dart';
 
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 import '../log_service.dart';
 
@@ -111,8 +109,24 @@ class XprsGossip {
     'hf',
   };
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
+
+  /// The budget, counted as rows times [rowBytes] (what the rows hold, not
+  /// what the file takes: zx compresses, and the file carries superseded
+  /// pages until its next compaction).
   int maxBytes = defaultMaxBytes;
+  static const int rowBytes = 96;
+
+  /// Writes waiting for the next commit: the funnel notes several sightings
+  /// a second, and one commit per write would cost a commit's bytes each.
+  /// Committed when [flushRows] are waiting or [flushEvery] has passed (on
+  /// the insert path), before every read, and at close. A crash loses at
+  /// most those seconds of sightings.
+  final List<(String, List<Object?>)> _pending = [];
+  final Set<String> _pendingLive = {};
+  int _lastFlushMs = 0;
+  static const int flushRows = 50;
+  static const int flushEvery = 10000;
   int accepted = 0, refusedUnsigned = 0, refusedQuota = 0;
 
   /// Per-signer ingestion meter (36.9.4: one observer's gossip at the rate
@@ -126,8 +140,9 @@ class XprsGossip {
 
   void init(String path) {
     try {
-      final db = openPlainDb(path);
-      db.execute('PRAGMA journal_mode=WAL');
+      // Plain: written by the headless engine, which may run before the
+      // profile is unlocked. Small pages: it commits small batches often.
+      final db = openStoreDb(path, kind: StoreKind.plain, pageSize: 4096);
       db.execute(
         'CREATE TABLE IF NOT EXISTS gossip_visits('
         'callsign TEXT NOT NULL, gateway TEXT NOT NULL,'
@@ -167,7 +182,35 @@ class XprsGossip {
     }
   }
 
+  void _write(String sql, List<Object?> params) => _pending.add((sql, params));
+
+  /// Commits the waiting writes in one transaction.
+  void flush() {
+    final db = _db;
+    if (db == null || _pending.isEmpty) return;
+    final work = List.of(_pending);
+    _pending.clear();
+    _pendingLive.clear();
+    _lastFlushMs = DateTime.now().millisecondsSinceEpoch;
+    try {
+      db.transaction(() {
+        for (final (sql, params) in work) {
+          db.execute(sql, params);
+        }
+      });
+    } catch (e) {
+      LogService.instance.add('Gossip: commit of ${work.length} writes failed: $e');
+    }
+  }
+
+  void _maybeFlush(int now) {
+    if (_pending.length >= flushRows || now - _lastFlushMs >= flushEvery) {
+      flush();
+    }
+  }
+
   void close() {
+    flush();
     _db?.dispose();
     _db = null;
     // The meters belong to the table: a closed one forgets them, so a table
@@ -215,6 +258,7 @@ class XprsGossip {
       _noteVisit(db, callsign, selfCallsign, bearer, now);
     }
     accepted++;
+    _maybeFlush(now);
     _maybeSweep(db, now);
   }
 
@@ -239,26 +283,27 @@ class XprsGossip {
     final keep = rows.length > directoryMaxRows
         ? rows.sublist(0, directoryMaxRows)
         : rows;
-    db.execute('BEGIN');
+    flush();
     try {
-      for (final (call, ts) in keep) {
+      db.transaction(() {
+        for (final (call, ts) in keep) {
+          db.execute(
+            'INSERT INTO directory_ptr(callsign,archiver,last_ts) VALUES(?,?,?) '
+            'ON CONFLICT(callsign,archiver) DO UPDATE SET '
+            'last_ts=MAX(last_ts, excluded.last_ts)',
+            [call, a, ts],
+          );
+        }
+        // The cap: stalest pointers leave, whoever wrote them (every row
+        // past the cap-th freshest; an explicit big LIMIT, not SQLite's -1).
         db.execute(
-          'INSERT INTO directory_ptr(callsign,archiver,last_ts) VALUES(?,?,?) '
-          'ON CONFLICT(callsign,archiver) DO UPDATE SET '
-          'last_ts=MAX(last_ts, excluded.last_ts)',
-          [call, a, ts],
+          'DELETE FROM directory_ptr WHERE rowid IN '
+          '(SELECT rowid FROM directory_ptr ORDER BY last_ts DESC '
+          'LIMIT 9223372036854775807 OFFSET ?)',
+          [directoryMaxRows],
         );
-      }
-      // The cap: stalest pointers leave, whoever wrote them.
-      db.execute(
-        'DELETE FROM directory_ptr WHERE rowid IN '
-        '(SELECT rowid FROM directory_ptr ORDER BY last_ts DESC '
-        'LIMIT -1 OFFSET ?)',
-        [directoryMaxRows],
-      );
-      db.execute('COMMIT');
+      });
     } catch (e) {
-      db.execute('ROLLBACK');
       LogService.instance.add('Gossip: directory pointers failed: $e');
     }
   }
@@ -327,6 +372,7 @@ class XprsGossip {
       if (radio) _noteVisit(db, call, observer, link, now);
     }
     accepted++;
+    _maybeFlush(now);
     _maybeSweep(db, now);
   }
 
@@ -339,7 +385,7 @@ class XprsGossip {
   void Function(String callsign, String gateway)? onSighting;
 
   void _noteLive(
-    CommonDatabase db,
+    ZxSqlDb db,
     String call,
     String gw,
     String bearer,
@@ -348,18 +394,21 @@ class XprsGossip {
   ) {
     // One indexed point lookup on the primary key, before the upsert makes
     // the question unanswerable.
-    final fresh = db.select(
-      'SELECT 1 FROM gossip_live WHERE callsign=? AND gateway=? LIMIT 1',
-      [call, gw],
-    ).isEmpty;
-    db.execute(
+    final key = '$call|$gw';
+    final fresh = !_pendingLive.contains(key) &&
+        db.select(
+          'SELECT 1 FROM gossip_live WHERE callsign=? AND gateway=? LIMIT 1',
+          [call, gw],
+        ).isEmpty;
+    _pendingLive.add(key);
+    _write(
       'INSERT INTO gossip_live(callsign,gateway,bearer,ts,signer) '
       'VALUES(?,?,?,?,?) ON CONFLICT(callsign,gateway) DO UPDATE SET '
       'bearer=excluded.bearer, ts=MAX(ts, excluded.ts), signer=excluded.signer',
       [call, gw, bearer, now, by],
     );
     // The per-callsign G cap: stalest beyond G go.
-    db.execute(
+    _write(
       'DELETE FROM gossip_live WHERE callsign=? AND gateway NOT IN '
       '(SELECT gateway FROM gossip_live WHERE callsign=? '
       'ORDER BY ts DESC LIMIT ?)',
@@ -374,15 +423,15 @@ class XprsGossip {
     }
   }
 
-  void _noteVisit(CommonDatabase db, String call, String gw, String bearer, int now) {
-    db.execute(
+  void _noteVisit(ZxSqlDb db, String call, String gw, String bearer, int now) {
+    _write(
       'INSERT INTO gossip_visits(callsign,gateway,bearer,first_ts,last_ts) '
       'VALUES(?,?,?,?,?) ON CONFLICT(callsign,gateway) DO UPDATE SET '
       'bearer=excluded.bearer, last_ts=MAX(last_ts, excluded.last_ts)',
       [call, gw, bearer, now, now],
     );
     // The K ring: oldest DISTINCT archiver leaves when a new one arrives.
-    db.execute(
+    _write(
       'DELETE FROM gossip_visits WHERE callsign=? AND gateway NOT IN '
       '(SELECT gateway FROM gossip_visits WHERE callsign=? '
       'ORDER BY last_ts DESC LIMIT ?)',
@@ -392,25 +441,28 @@ class XprsGossip {
 
   /// TTL for L3 and the byte budget, at most once a minute, on the insert
   /// path (no timers — performance.md 8.2).
-  void _maybeSweep(CommonDatabase db, int now) {
+  void _maybeSweep(ZxSqlDb db, int now) {
     if (now - _lastSweepMs < 60000) return;
     _lastSweepMs = now;
-    db.execute('DELETE FROM gossip_live WHERE ts < ?', [
-      now - liveTtl.inMilliseconds,
-    ]);
+    flush();
     try {
-      // Null means the database would not say (Android answers the pragma with
-      // a STRING, which this used to cast and drop): skip the sweep rather
-      // than compare a made-up zero against the cap and evict nothing forever.
-      final bytes = sqliteDbBytes(db);
-      if (bytes != null && bytes > maxBytes) {
-        // Over budget: L3 stalest-first goes before L2 loses anything
-        // (36.9.4 — the visit history is the layer allowed to live forever).
-        db.execute(
-          'DELETE FROM gossip_live WHERE rowid IN '
-          '(SELECT rowid FROM gossip_live ORDER BY ts ASC LIMIT 512)',
-        );
-      }
+      db.transaction(() {
+        db.execute('DELETE FROM gossip_live WHERE ts < ?', [
+          now - liveTtl.inMilliseconds,
+        ]);
+        final rows = (db
+                .select('SELECT (SELECT COUNT(*) FROM gossip_live) + '
+                    '(SELECT COUNT(*) FROM gossip_visits) n')
+                .first['n'] as int);
+        if (rows * rowBytes > maxBytes) {
+          // Over budget: L3 stalest-first goes before L2 loses anything
+          // (36.9.4 — the visit history is the layer allowed to live forever).
+          db.execute(
+            'DELETE FROM gossip_live WHERE rowid IN '
+            '(SELECT rowid FROM gossip_live ORDER BY ts ASC LIMIT 512)',
+          );
+        }
+      });
     } catch (_) {}
   }
 
@@ -418,6 +470,7 @@ class XprsGossip {
   /// (L1 — the recipient's own declaration — outranks both and is read from
   /// XprsArchive.holdersFor, by the callers that route.)
   List<GossipSighting> whereIs(String callsign, {int max = 8, int? nowMs}) {
+    flush();
     final db = _db;
     if (db == null) return const [];
     final call = callsign.trim().toUpperCase();
@@ -473,6 +526,7 @@ class XprsGossip {
   /// an unbounded SELECT over a 5 MB table is exactly the kind of thing
   /// docs/performance.md exists to prevent.
   List<GossipEdge> edges({int max = 512, String? selfCallsign, int? nowMs}) {
+    flush();
     final db = _db;
     if (db == null) return const [];
     final self = (selfCallsign ?? '').trim().toUpperCase();
@@ -576,6 +630,7 @@ class XprsGossip {
   }
 
   Map<String, dynamic> statusJson() {
+    flush();
     final db = _db;
     return {
       'ready': ready,
@@ -597,6 +652,8 @@ class XprsGossip {
 
   /// Tests: a clean slate.
   void debugReset() {
+    _pending.clear();
+    _pendingLive.clear();
     _db?.execute('DELETE FROM gossip_visits');
     _db?.execute('DELETE FROM gossip_live');
     _db?.execute('DELETE FROM directory_ptr');

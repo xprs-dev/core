@@ -13,8 +13,11 @@
  * - Several isolates may open one file (the app's UI engine and its
  *   headless twin; a worker): writes wait up to four seconds for each
  *   other, reads see the other side's commits at once.
- * - Writes outside a transaction are a commit each (a millisecond and some
- *   file): stores batch them in [ZxSqlDb.transaction].
+ * - Writes outside a transaction are a commit each: about 6 to 12 KB of
+ *   file and several milliseconds, whatever the row (measured on the Pi;
+ *   50 rows in one transaction cost about 1 KB each). A store that writes
+ *   per event queues its writes and commits them in batches; a store of
+ *   rare writes may commit each.
  * - Tables are created `WITH (compression = 'fast')` by default.
  */
 
@@ -57,21 +60,28 @@ String? storeSecretFor(String absPath) {
 }
 
 /// Opens (creating it when missing) the store at [absPath].
+///
+/// [pageSize] 4096 suits a store of many small commits (a commit rewrites
+/// the pages it touches); the default 16384 suits scans.
 ZxSqlDb openStoreDb(String absPath,
-    {StoreKind kind = StoreKind.profile, bool durable = false}) {
+    {StoreKind kind = StoreKind.profile,
+    bool durable = false,
+    int pageSize = 16384}) {
   final secret = kind == StoreKind.plain ? null : storeSecretFor(absPath);
-  return openStoreDbWithSecret(absPath, secret, durable: durable);
+  return openStoreDbWithSecret(absPath, secret,
+      durable: durable, pageSize: pageSize);
 }
 
 /// Opens the store at [absPath] with a secret from [storeSecretFor] (null:
 /// plain), for isolates without the keyring.
 ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
-        {bool durable = false}) =>
+        {bool durable = false, int pageSize = 16384}) =>
     ZxSqlDb.open(absPath,
         password: secret,
         scryptLog2N: 1,
         durable: durable,
-        lockWaitMs: storeLockWaitMs);
+        lockWaitMs: storeLockWaitMs,
+        pageSize: pageSize);
 
 /// A store in memory (tests; a store without a path).
 ZxSqlDb openMemoryStoreDb() => ZxSqlDb.memory();

@@ -21,9 +21,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:sqlite3/common.dart';
 
-import '../../profile/profile_db.dart';
+import '../../storage/store_db.dart';
 
 import '../xprs/xprs_vocab.dart';
 import 'mesh_beacon.dart';
@@ -76,7 +75,7 @@ class MeshStore {
   MeshStore._();
   static final MeshStore instance = MeshStore._();
 
-  CommonDatabase? _db;
+  ZxSqlDb? _db;
   int quotaBytes = 100 * 1024 * 1024;
 
   /// Whether this device carries other people's mail at all.
@@ -100,8 +99,14 @@ class MeshStore {
     close();
     try {
       fs.directory(fs.file(path).parent.path).createSync(recursive: true);
-      final db = openProfileDb(path);
-      db.execute('PRAGMA journal_mode=WAL');
+      final db = openStoreDb(path);
+      // relts/reln: when a release was last tried and how often (a release
+      // is an ATTEMPT, 36.8.1: only a verified receipt ends custody, so the
+      // row stays state 0 and these stop it re-airing at every beacon).
+      // setk: the set a parked row belongs to (7.6 keys reassembly on
+      // (f, ts), kept clear on sealed packets, so sealed parts of one
+      // message release together). `target` is stored upper case: lookups
+      // compare it directly, through the index.
       db.execute('''
         CREATE TABLE IF NOT EXISTS mesh_store(
           am TEXT PRIMARY KEY,
@@ -111,11 +116,11 @@ class MeshStore {
           ts INTEGER NOT NULL,
           size INTEGER NOT NULL,
           urg INTEGER NOT NULL DEFAULT 1,
-          state INTEGER NOT NULL DEFAULT 0
+          state INTEGER NOT NULL DEFAULT 0,
+          relts INTEGER NOT NULL DEFAULT 0,
+          reln INTEGER NOT NULL DEFAULT 0,
+          setk TEXT NOT NULL DEFAULT ''
         )''');
-      _migratePrioToUrg(db);
-      _migrateReleaseCols(db);
-      _migrateSetKey(db);
       db.execute(
           'CREATE INDEX IF NOT EXISTS idx_store_target ON mesh_store(target, state)');
       db.execute(
@@ -125,7 +130,6 @@ class MeshStore {
           am TEXT PRIMARY KEY,
           ts INTEGER NOT NULL
         )''');
-      _migrateDeliveredKeys(db);
       db.execute('''
         CREATE TABLE IF NOT EXISTS bulk_handover(
           sha TEXT NOT NULL,
@@ -151,13 +155,6 @@ class MeshStore {
           tries INTEGER NOT NULL DEFAULT 0,
           at INTEGER NOT NULL
         )''');
-      // v2: drop the pre-park-gate backlog of undeliverable street mail
-      // (it drove nonstop phone-to-phone dial loops).
-      final v = db.select('PRAGMA user_version').first.columnAt(0) as int;
-      if (v < 2) {
-        db.execute('DELETE FROM mesh_store');
-        db.execute('PRAGMA user_version = 2');
-      }
       _db = db;
     } catch (e) {
       _db = null;
@@ -301,76 +298,6 @@ class MeshStore {
     return db.select('SELECT 1 FROM mesh_store WHERE am = ?', [key]).isNotEmpty;
   }
 
-  /// Carry forward a store written before urgency replaced `prio 0/1`.
-  ///
-  /// The old column only ever held 0 (a stranger's mail) or 1 (ours, or a
-  /// target inside the mesh horizon), so it maps onto the bottom two levels
-  /// exactly and the eviction order across the upgrade does not change.
-  /// v3 columns: when we last tried to release a row, and how many times.
-  ///
-  /// A release is an ATTEMPT, not a delivery (§36.8.1) — only a verified
-  /// receipt ends custody — so the row stays `state = 0` and these two columns
-  /// are what stop it being re-aired every time the recipient's beacon lands,
-  /// which on a live bearer is every thirty seconds.
-  static void _migrateReleaseCols(CommonDatabase db) {
-    final cols = db
-        .select('PRAGMA table_info(mesh_store)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!cols.contains('relts')) {
-      db.execute('ALTER TABLE mesh_store ADD COLUMN relts INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!cols.contains('reln')) {
-      db.execute('ALTER TABLE mesh_store ADD COLUMN reln INTEGER NOT NULL DEFAULT 0');
-    }
-  }
-
-  /// v4: the set a parked row belongs to.
-  ///
-  /// Section 7.6 keys reassembly on `(f, ts)`, and 12.7 keeps both in clear on
-  /// a sealed packet, so a custodian that cannot read a word of the body can
-  /// still tell which parts are one message. It has to: a receipt names the
-  /// REASSEMBLED message (7.6), whose identifier hashes plaintext a holder of
-  /// sealed parts does not have, so before this a sealed split message could
-  /// never be released and was re-aired until the seven-day sweep.
-  static void _migrateSetKey(CommonDatabase db) {
-    final cols = db
-        .select('PRAGMA table_info(mesh_store)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!cols.contains('setk')) {
-      db.execute("ALTER TABLE mesh_store ADD COLUMN setk TEXT NOT NULL DEFAULT ''");
-    }
-  }
-
-  /// One key shape for "we have this one".
-  ///
-  /// The courier wrote `id:<hex>` and custody and the receipts wrote the bare
-  /// identifier, into the same column. So the have-bloom this station airs
-  /// never matched a custodian's parked rows (whose `am` IS the bare id) and
-  /// custodians re-aired the same messages for ever, while a message handed
-  /// over in a session was delivered again off the air. Bare is the shape that
-  /// matches a parked row; the compact lane keeps its own `am:`/`c:` names.
-  static void _migrateDeliveredKeys(CommonDatabase db) {
-    db.execute(
-        "UPDATE OR REPLACE received_ams SET am = substr(am, 4) "
-        "WHERE am LIKE 'id:%'");
-  }
-
-  static void _migratePrioToUrg(CommonDatabase db) {
-    final cols = db
-        .select('PRAGMA table_info(mesh_store)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!cols.contains('prio')) return;
-    if (!cols.contains('urg')) {
-      db.execute(
-          'ALTER TABLE mesh_store ADD COLUMN urg INTEGER NOT NULL DEFAULT 1');
-    }
-    db.execute('UPDATE mesh_store SET urg = CASE WHEN prio > 0 THEN ? ELSE ? END',
-        [MeshUrgency.normal.index, MeshUrgency.low.index]);
-  }
-
   /// End-to-end receipt / peer have-bloom hit: the target has [am] — drop
   /// every copy. Returns rows purged.
   int purgeAm(String am) {
@@ -381,16 +308,18 @@ class MeshStore {
     // member of a set says the reader has the message and every part of it can
     // go. Without this a sealed set was never released by anything, because
     // the receipt names an identifier no holder of sealed parts can compute.
-    final setk = db.select(
-        "SELECT setk FROM mesh_store WHERE am = ? AND setk <> ''", [am]);
-    db.execute('DELETE FROM mesh_store WHERE am = ?', [am]);
-    var gone = db.updatedRows;
-    if (setk.isNotEmpty) {
-      db.execute('DELETE FROM mesh_store WHERE setk = ?',
-          [setk.first['setk'] as String]);
-      gone += db.updatedRows;
-    }
-    return gone;
+    return db.transaction(() {
+      final setk = db.select(
+          "SELECT setk FROM mesh_store WHERE am = ? AND setk <> ''", [am]);
+      db.execute('DELETE FROM mesh_store WHERE am = ?', [am]);
+      var gone = db.updatedRows;
+      if (setk.isNotEmpty) {
+        db.execute('DELETE FROM mesh_store WHERE setk = ?',
+            [setk.first['setk'] as String]);
+        gone += db.updatedRows;
+      }
+      return gone;
+    });
   }
 
   /// Custody handed to a peer (MSG_ACK / duplicate) — archive our copy.
@@ -467,7 +396,7 @@ class MeshStore {
     return out.toList();
   }
 
-  /// `UPPER(sender) IN (?,?)`, or a constant false when we have no name yet.
+  /// `sender IN (?,?)`, or a constant false when we have no name yet.
   ///
   /// `IN ()` is not valid SQL, and an empty name list used to be an `= ''`
   /// that matched nothing, so the false branch has to keep that meaning.
@@ -477,7 +406,7 @@ class MeshStore {
   /// not even prepare.
   static String _mineSql(List<String> names) => names.isEmpty
       ? '0 = 1'
-      : 'UPPER(sender) IN (${List.filled(names.length, '?').join(',')})';
+      : 'sender IN (${List.filled(names.length, '?').join(',')})';
 
   /// [budget] bounds the batch in BYTES rather than rows, because that is what
   /// the bearer actually spends (§31.1).
@@ -494,7 +423,7 @@ class MeshStore {
     final now = nowMs ?? _now();
     final rows = db.select(
         'SELECT am,target,sender,wire,ts,size,relts,reln FROM mesh_store '
-        'WHERE state = 0 AND UPPER(target) = ? '
+        'WHERE state = 0 AND target = ? '
         'ORDER BY (${_mineSql(names)}) ASC, ts DESC LIMIT 64',
         [t, ...names]);
     final out = <MeshPendingMsg>[];
@@ -529,7 +458,7 @@ class MeshStore {
     if (t.isEmpty) return const [];
     return [
       for (final r in db.select(
-          'SELECT wire FROM mesh_store WHERE state = 0 AND UPPER(target) = ? '
+          'SELECT wire FROM mesh_store WHERE state = 0 AND target = ? '
           'ORDER BY ts DESC LIMIT ?',
           [t, max]))
         utf8.decode(r['wire'] as List<int>, allowMalformed: true),
@@ -552,7 +481,7 @@ class MeshStore {
     return [
       for (final r in db.select(
           'SELECT target, MIN(ts) t FROM mesh_store WHERE state = 0 '
-          'GROUP BY UPPER(target) ORDER BY t ASC LIMIT ?',
+          'GROUP BY target ORDER BY t ASC LIMIT ?',
           [max]))
         (r['target'] as String).toUpperCase(),
     ];
@@ -592,7 +521,7 @@ class MeshStore {
     final out = <MeshPendingMsg>[];
     final seen = <String>{};
 
-    void take(Row r) {
+    void take(ZxRow r) {
       final key = r['am'] as String;
       if (!seen.add(key)) return;
       out.add(MeshPendingMsg(
@@ -636,8 +565,8 @@ class MeshStore {
     // tiebreak and the table has a rowid.
     for (final r in db.select(
         'SELECT am,target,sender,wire,ts FROM mesh_store '
-        'WHERE state = 0 AND UPPER(target) = ? '
-        'ORDER BY (UPPER(sender) = ?) ASC, ts DESC, rowid DESC LIMIT ?',
+        'WHERE state = 0 AND target = ? '
+        'ORDER BY (sender = ?) ASC, ts DESC, rowid DESC LIMIT ?',
         [p, self, max])) {
       take(r);
     }
@@ -650,7 +579,7 @@ class MeshStore {
     // relaying opportunity, never a direct delivery.
     final rows = db.select(
         'SELECT am,target,sender,wire,ts FROM mesh_store '
-        'WHERE state = 0 AND UPPER(target) <> ? ORDER BY ts LIMIT 256',
+        'WHERE state = 0 AND target <> ? ORDER BY ts LIMIT 256',
         [p]);
     for (final r in rows) {
       final target = r['target'] as String;
@@ -688,7 +617,7 @@ class MeshStore {
     final names = _selfNames(selfCallsign, alsoSelf);
     if (db == null || t.isEmpty || names.isEmpty) return false;
     return db.select(
-        'SELECT 1 FROM mesh_store WHERE state = 0 AND UPPER(target) = ? '
+        'SELECT 1 FROM mesh_store WHERE state = 0 AND target = ? '
         'AND ${_mineSql(names)} LIMIT 1',
         [t, ...names]).isNotEmpty;
   }
@@ -810,6 +739,11 @@ class MeshStore {
   void sweep() {
     final db = _db;
     if (db == null) return;
+    // One commit for the whole sweep (each statement alone would be one).
+    db.transaction(() => _sweep(db));
+  }
+
+  void _sweep(ZxSqlDb db) {
     final now = _now();
     db.execute('DELETE FROM mesh_store WHERE ts < ?', [now - retentionS]);
     db.execute(

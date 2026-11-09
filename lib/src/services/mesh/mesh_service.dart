@@ -312,7 +312,7 @@ class MeshService {
       }
       try {
         MeshStore.instance
-            .init(wappsDataStorage(prefs).getAbsolutePath('mesh.sqlite3'));
+            .init(wappsDataStorage(prefs).getAbsolutePath('mesh.zx'));
         MeshStore.instance.sweep();
         stage('custody store');
         // The heard-traffic spool (docs/XPRS.md sections 24 and 31.3) lives
@@ -329,7 +329,7 @@ class MeshService {
           // the isolate that draws.
           ..onVerdict = XprsMonitor.instance.recordVerdict
           ..init(wappsDataStorage(prefs)
-              .getAbsolutePath('xprs_archive.sqlite3'));
+              .getAbsolutePath('xprs_archive.zx'));
         stage('archive open');
         // A key binding lives in memory and a `t:identity` is re-announced only
         // every thirty minutes (18.1), so a restart used to leave this station
@@ -404,7 +404,7 @@ class MeshService {
         XprsIngest.reloadPolicy();
         XprsHistoryServer.instance.install();
         XprsGossip.instance
-            .init(wappsDataStorage(prefs).getAbsolutePath('xprs_gossip.sqlite3'));
+            .init(wappsDataStorage(prefs).getAbsolutePath('xprs_gossip.zx'));
         if (prefs.xprsAlwaysOn) {
           // 12.9.4: the table stops being pocket-sized.
           XprsGossip.instance.maxBytes = 256 * 1024 * 1024;
