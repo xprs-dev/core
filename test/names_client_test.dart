@@ -100,6 +100,40 @@ void main() {
     expect(claims, isEmpty);
   });
 
+  test('an IPv6 claim leaves from the address it names', () async {
+    final v6 = await HttpServer.bind(InternetAddress.loopbackIPv6, 0);
+    String? seenFrom;
+    v6.listen((req) async {
+      seenFrom = req.connectionInfo?.remoteAddress.address;
+      if (req.method == 'GET') {
+        req.response.write(jsonEncode({
+          'ok': true, 'zone': 'xprs.dev', 'station': 'X3KEEP', 'nonce': nonce, 'you': '::1',
+        }));
+      } else {
+        final p = XprsPacket.parse((await utf8.decodeStream(req)).trim());
+        if (p != null) claims.add(p);
+        req.response.write(jsonEncode({'ok': true, 'name': 'x.xprs.dev'}));
+      }
+      await req.response.close();
+    });
+    try {
+      final c = NamesClient(
+        NamesClientOptions(
+          keeper: 'http://[::1]:${v6.port}',
+          callsign: () => call,
+          npub: () => npub,
+          sign: (p) => xprsSign(p, d),
+        ),
+        log: (_) {},
+      );
+      expect(await c.claim(v6: '::1'), ['x.xprs.dev']);
+      expect(seenFrom, '::1');
+      expect(claims.single['dial'], '::1');
+    } finally {
+      await v6.close(force: true);
+    }
+  });
+
   test('an address of a family the keeper has no record for is skipped, not fatal',
       () async {
     // 127.0.0.1 has no AAAA, so the IPv6 claim finds no target; the IPv4

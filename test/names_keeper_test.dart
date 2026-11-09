@@ -221,7 +221,10 @@ void main() {
   });
 
   test('the keeper\'s own address is only the keeper\'s', () async {
-    await k.keepOwn(v4: '93.184.216.1', v6: '2a02:908:1::1');
+    final own = await k.keepOwn(v4: '93.184.216.1', v6: '2a02:908:1::1');
+    // Both are certified: the station's name is its link, names.<zone> is
+    // where every other station claims over HTTPS.
+    expect(own, ['${keeperKey.call.toLowerCase()}.xprs.dev', 'names.xprs.dev']);
     expect(dns.zone['names'], ('93.184.216.1', '2a02:908:1::1'));
     expect(dns.zone[keeperKey.call.toLowerCase()], ('93.184.216.1', '2a02:908:1::1'));
     expect(dns.caa, isTrue);

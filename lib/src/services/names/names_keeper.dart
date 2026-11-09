@@ -358,7 +358,9 @@ class NamesKeeper {
 
   /// The keeper's own addresses: `names` and its own callsign point here.
   /// Called by the host whenever it learns its public addresses; writes
-  /// only when something changed. Returns the keeper's own station name.
+  /// only when something changed. Returns the names to certify and serve:
+  /// the station's own first (its published link), then `names.<zone>`,
+  /// which every station dials over HTTPS to claim.
   Future<List<String>> keepOwn({String? v4, String? v6}) async {
     _ownV4 = v4;
     _ownV6 = v6;
@@ -391,7 +393,7 @@ class NamesKeeper {
         store.put(r);
       }
     }
-    return ['${ownCallsign.toLowerCase()}.$zone'];
+    return ['${ownCallsign.toLowerCase()}.$zone', '$ownLabel.$zone'];
   }
 
   /// Housekeeping, once a minute or so: pending DNS writes, labels silent

@@ -67,14 +67,22 @@ class NamesClient {
       log('names: $host has no ${type == InternetAddressType.IPv6 ? 'AAAA' : 'A'} record');
       return null;
     }
+    // IPv6 has no NAT: the claim must leave FROM the address it names, not
+    // from a temporary privacy address the system would pick by default.
+    // IPv4 goes out through the router's NAT, which shows the keeper the
+    // public address; there the local source is left to the system.
+    final source = type == InternetAddressType.IPv6 ? InternetAddress(addr) : null;
     final client = HttpClient()
       ..connectionFactory = (uri, proxyHost, proxyPort) {
         final port = uri.port == 0 ? (uri.scheme == 'https' ? 443 : 80) : uri.port;
+        final plain = Socket.connect(targets.first, port,
+            sourceAddress: source, timeout: const Duration(seconds: 30));
         // An address from lookup() carries the host name, which the TLS
         // handshake uses for SNI and the certificate check.
-        return uri.scheme == 'https'
-            ? SecureSocket.startConnect(targets.first, port)
-            : Socket.startConnect(targets.first, port);
+        final Future<Socket> s = uri.scheme == 'https'
+            ? plain.then((raw) => SecureSocket.secure(raw, host: host))
+            : plain;
+        return Future.value(ConnectionTask.fromSocket(s, () {}));
       };
     try {
       final api = base.replace(path: '/api/names');
