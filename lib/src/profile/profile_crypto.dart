@@ -27,7 +27,7 @@
  * constant-time, no oracle. Password change re-wraps PMK + nsec only.
  *
  * Argon2id runs only at unlock/enable time (async); everything derived from
- * PMK uses the sync HKDF from encrypted_archive so it can serve sync callers.
+ * PMK uses the sync HKDF of key_derivation.dart so it can serve sync callers.
  */
 
 import 'dart:convert';
@@ -35,7 +35,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:encrypted_archive/encrypted_archive.dart' show KeyDerivation;
+import 'key_derivation.dart' show KeyDerivation;
 import 'package:hex/hex.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
@@ -193,17 +193,6 @@ class UnlockedProfileKeys {
     }
   }
 
-  /// Password for the profile's `.ear` archive.
-  String get earPassword {
-    _ensureLive();
-    return HEX.encode(KeyDerivation.hkdfSha256(
-      _pmk,
-      Uint8List(0),
-      Uint8List.fromList(utf8.encode('aurora-ear-v1')),
-      32,
-    ));
-  }
-
   /// Raw 32-byte SQLCipher key for the database at profile-relative [relPath]
   /// (forward-slash separated, e.g. `data/mesh.sqlite3`).
   Uint8List dbKey(String relPath) {
@@ -270,7 +259,7 @@ class UnlockedProfileKeys {
 class ProfileCrypto {
   ProfileCrypto._();
 
-  // Argon2id parameters (mirrors encrypted_archive defaults).
+  // Argon2id parameters.
   static const int argon2TimeCost = 3;
   static const int argon2MemoryKib = 65536; // 64 MiB
   static const int argon2Parallelism = 1;

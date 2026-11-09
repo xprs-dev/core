@@ -30,7 +30,7 @@ Everything `docs/architecture.md` (in the app repo) calls the core:
 | **The receive door** | `services/receive/` (PacketGateway, CoreState, WappDelivery) |
 | **Transports** | `services/reticulum/rns_service.dart` (the Reticulum node, LXMF, NOSTR, folders, hub role, station lane), `services/mesh/` (BLE street mesh), `services/xprs/xprs_lan.dart`, `xprs_tcp.dart`, `services/i2p/`, `services/flash/` (the USB cable) |
 | **Delivery** | MeshCourier and custody, XprsPublisher, XprsSend, XprsMailbox, XprsForwarder, XprsCommandCourier, XprsCatchup, XprsFetch, the inline file lane |
-| **Storage** | XprsArchive (the packet spool), XprsGossip, the mesh store and bulk spool, ObservedStore, WappMailbox, `services/storage/activity_archive.dart`, folders, `packages/encrypted_archive` |
+| **Storage** | XprsArchive (the packet spool), XprsGossip, the mesh store and bulk spool, ObservedStore, WappMailbox, `services/storage/activity_archive.dart`, folders, the profile store (`profile.zx`, `profile/profile_storage_encrypted.dart`) |
 | **Policy** | station and archive policy, digipeat, gateway dedup, airtime, presence, PowerState and the power tier, the capacity governor |
 | **Plumbing** | BackgroundService, TaskMonitorService, the event bus and topic broker, LogService |
 

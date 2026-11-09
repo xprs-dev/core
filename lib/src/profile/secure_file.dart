@@ -14,8 +14,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:encrypted_archive/encrypted_archive.dart'
-    show ArchiveCryptoException, KeyDerivation;
+import 'key_derivation.dart';
 
 import 'profile_crypto.dart';
 import 'profile_db.dart';
@@ -50,7 +49,7 @@ class SecureProfileFile {
 
   /// Read [absPath], decrypting when it belongs to an unlocked encrypted
   /// profile. Returns null when the file does not exist. Throws
-  /// [ProfileLockedException] / [ArchiveCryptoException] on locked profile
+  /// [ProfileLockedException] / [ProfileCryptoException] on locked profile
   /// or tampered content.
   static Uint8List? readBytes(String absPath) {
     final f = fs.file(absPath);
@@ -63,7 +62,7 @@ class SecureProfileFile {
     final keys = _keysFor(absPath);
     if (keys == null) {
       // Wrapped file but no encryption context — cannot decrypt.
-      throw const ArchiveCryptoException(
+      throw const ProfileCryptoException(
           'Encrypted file found outside an unlocked encrypted profile');
     }
     final loc = locateProfileDb(absPath)!;

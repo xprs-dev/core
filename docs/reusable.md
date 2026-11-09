@@ -190,6 +190,32 @@ owns).
 
 All are codecs and state machines with no radio: test them on the host.
 
+## Storage (zx stores)
+
+### `openStoreDb` / `openStoreDbWithSecret` / `openMemoryStoreDb` — `storage/store_db.dart`
+Every store file is a zx store opened here: inside an encrypted profile it
+gets its secret (`storeSecretFor(path)`: HKDF of the profile master key and
+the store's relative path), a plain profile opens it unencrypted, a locked
+one throws `ProfileLockedException`. An isolate without the keyring gets the
+secret looked up beforehand and opens with `openStoreDbWithSecret` (the
+Nostr engine, the file export worker). No store imports zx directly.
+
+### Batching writes
+Each autocommit is a generation (KBs of file, ms of time): a store written
+often wraps bursts in `db.transaction` (SQL) or `kv.batch` (KV; KV writes do
+not join an SQL transaction). `XprsGossip`'s write buffer and reticulum's
+`ServeStats` are the buffered pattern.
+
+### The profile store — `EncryptedProfileStorage` (`profile.zx`)
+Loose files of an encrypted profile: KV `files` (path → mtime, kind,
+content), `dirs`, and `parts` for files copied in from outside, which stream
+in and out in 256 KiB pieces. The same pieces pattern serves any large value
+a KV store must hold without putting it whole on the heap.
+
+### `KeyDerivation` — `profile/key_derivation.dart`
+Sync HKDF-SHA256 and AES-256-GCM for code that cannot await (the WASM HAL):
+the profile key hierarchy and `SecureProfileFile`.
+
 ## Folders
 
 `FolderEvent` / `FolderState` (mutable folders as signed NOSTR events, and the

@@ -348,7 +348,7 @@ class ProfileEncryption {
   }
 
   /// Delete a profile's user data, keeping wapp code, seed markers and the
-  /// keyslot: data/ tree, avatar, profile.ear(+wal/shm), every *.sqlite3*
+  /// keyslot: data/ tree, avatar, profile.zx (+ its lock), every *.sqlite3*
   /// and *.zx store under wapps/.
   static void _deleteProfileUserData(String id) {
     final base = _profileDir(id);
@@ -356,7 +356,7 @@ class ProfileEncryption {
     for (final name in ['avatar.png', 'avatar.jpg']) {
       _tryDelete('$base/$name');
     }
-    for (final suffix in ['', '-wal', '-shm', '-journal']) {
+    for (final suffix in ['', '-lock', '-wal', '-shm', '-journal']) {
       _tryDelete('$base/$profileArchiveName$suffix');
     }
     final wapps = fs.directory('$base/wapps');

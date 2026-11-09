@@ -14,8 +14,6 @@ environment:
 dependencies:
   reticulum:                # Reticulum, LXMF, NOSTR, DHT, files, XprsCrypto
     path: ../reticulum-dart
-  encrypted_archive:        # per-profile encrypted .ear archive (packages/)
-    path: packages/encrypted_archive
   archive: ^3.6.1           # parcel / blob (de)compression
   bech32: ^0.2.2            # npub / nsec encoding
   crypto: ^3.0.3            # SHA-256
