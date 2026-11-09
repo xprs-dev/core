@@ -83,9 +83,22 @@ class WebChatRoomKeys {
 /// Where the internet reaches a station's web chat (WebChatApi.addresses):
 /// the addresses that work now and the names not yet shown reachable.
 class WebAddresses {
-  const WebAddresses({this.urls = const [], this.pending = const []});
+  const WebAddresses({
+    this.urls = const [],
+    this.pending = const [],
+    this.rnsPort,
+    this.rnsOpen,
+    this.dial,
+  });
   final List<String> urls;
   final List<String> pending;
+
+  /// The XPRS/Reticulum TCP port this station listens on (13.4), whether it
+  /// was reached there from outside (null: not tested yet), and the `dial:`
+  /// it announces because of it (null: none).
+  final int? rnsPort;
+  final bool? rnsOpen;
+  final String? dial;
 }
 
 class WebChatReply {
@@ -389,6 +402,14 @@ class WebChatApi {
       // now, and the names whose ports the router has not let in yet.
       if (where != null) 'urls': where.urls,
       if (where != null) 'urls_pending': where.pending,
+      // The Reticulum node on 13.4's port: a stock Reticulum client and an
+      // XPRS client both connect there.
+      if (where != null && where.rnsPort != null)
+        'rns': {
+          'port': where.rnsPort,
+          'reachable': where.rnsOpen,
+          if (where.dial != null) 'dial': where.dial,
+        },
       'features': <String, bool>{},
       // Files by reference (GET/POST /api/xprs/file/<ref>).
       if (fileStore != null)

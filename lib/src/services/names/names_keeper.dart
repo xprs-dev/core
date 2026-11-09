@@ -154,6 +154,19 @@ class NamesKeeper {
   final void Function(String) log;
   final Random _rng;
 
+  /// Tests from outside whether a claimant answers on its XPRS/Reticulum
+  /// port (13.4): address, callsign, key hex. The host's (a socket ping,
+  /// xprs_port_probe_io.dart); null: no test, and replies carry no `rns`.
+  Future<bool> Function(String address, String call, String keyHex)? probePort;
+
+  /// The port tested, the one 13.4 names.
+  static const int rnsPort = 4242;
+
+  /// Whether the keeper's own station answers on [rnsPort] at its public
+  /// address, as last tested by [keepOwn] (through the router's hairpin:
+  /// a keeper cannot leave its own network to test itself). Null: untested.
+  bool? ownPortOpen;
+
   /// The keeper's own name in the zone, the one stations dial for claims.
   static const ownLabel = 'names';
   static const alwaysReserved = {'', 'www', ownLabel};
@@ -300,7 +313,15 @@ class NamesKeeper {
         (isV6 ? existing.v6 : existing.v4) == addr;
     if (same && nowMs - existing.last < perKeyWrite.inMilliseconds) {
       _nonces.remove(nonce);
-      return (200, {'ok': true, 'name': '$label.$zone', 'next': _nextSecs()});
+      return (
+        200,
+        {
+          'ok': true,
+          'name': '$label.$zone',
+          'next': _nextSecs(),
+          ...await _port(addr, call, keyHex),
+        }
+      );
     }
     final fresh = existing == null || existing.key != keyHex;
     if (fresh) {
@@ -335,8 +356,21 @@ class NamesKeeper {
         'name': '$label.$zone',
         'next': _nextSecs(),
         if (!written) 'dns': 'pending',
+        ...await _port(addr, call, keyHex),
       }
     );
+  }
+
+  /// `rns: open|closed`: whether the claimant answered on [rnsPort] from
+  /// outside, so it knows whether to announce itself as dialable.
+  Future<Map<String, Object?>> _port(String addr, String call, String keyHex) async {
+    final p = probePort;
+    if (p == null) return const {};
+    var open = false;
+    try {
+      open = await p(addr, call, keyHex);
+    } catch (_) {}
+    return {'rns': open ? 'open' : 'closed', 'rns_port': rnsPort};
   }
 
   int _nextSecs() => const Duration(days: 7).inSeconds;
@@ -391,6 +425,15 @@ class NamesKeeper {
         await _write(r);
       } else {
         store.put(r);
+      }
+    }
+    final p = probePort;
+    final a = v4 ?? v6;
+    if (p != null && a != null) {
+      try {
+        ownPortOpen = await p(a, ownCallsign, ownKeyHex);
+      } catch (_) {
+        ownPortOpen = false;
       }
     }
     return ['${ownCallsign.toLowerCase()}.$zone', '$ownLabel.$zone'];

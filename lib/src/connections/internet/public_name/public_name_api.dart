@@ -40,7 +40,12 @@ class PublicNameOptions {
     this.staging = false,
     this.email,
     this.checkEvery = const Duration(minutes: 15),
+    this.extraPorts = const [],
   });
+
+  /// More TCP ports to ask the router for (UPnP), the same number outside
+  /// and in: the server's XPRS/Reticulum port, 4242 (XPRS.md 13.4).
+  final List<int> extraPorts;
 
   /// Where keys, certificate and state are kept (created 0700).
   final String dir;

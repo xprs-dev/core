@@ -79,8 +79,10 @@ void main() {
     expect(r.json.containsKey('urls'), isFalse);
     expect((r.json['page'] as Map)['tabs'], isNot(contains('station')));
     a.addresses = () => const WebAddresses(
-        urls: ['https://1-2-3-4.nip.io/'], pending: ['2a02-1--5.nip.io']);
+        urls: ['https://1-2-3-4.nip.io/'], pending: ['2a02-1--5.nip.io'],
+        rnsPort: 4242, rnsOpen: true, dial: 'x3ptzm.xprs.dev');
     r = await a.handle('GET', '/api/services', {}, '');
+    expect(r.json['rns'], {'port': 4242, 'reachable': true, 'dial': 'x3ptzm.xprs.dev'});
     expect(r.json['urls'], ['https://1-2-3-4.nip.io/']);
     expect(r.json['urls_pending'], ['2a02-1--5.nip.io']);
     expect((r.json['page'] as Map)['tabs'], contains('station'));

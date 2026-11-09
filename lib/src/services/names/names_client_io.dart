@@ -41,31 +41,41 @@ class NamesClient {
   final void Function(String) log;
   final DateTime Function() now;
 
+  /// Whether the keeper reached this station on its XPRS/Reticulum port
+  /// (13.4) from outside at the last [claim]: true when any address family
+  /// answered, false when the keeper tested and none did, null when no
+  /// keeper reply said.
+  bool? portOpen;
+
   /// Claims the name for each of [v4] and [v6] that is given; returns the
   /// names the keeper confirmed (one, or none).
   Future<List<String>> claim({String? v4, String? v6}) async {
     final out = <String>{};
+    bool? open;
     for (final (addr, type) in [
       if (v4 != null) (v4, InternetAddressType.IPv4),
       if (v6 != null) (v6, InternetAddressType.IPv6),
     ]) {
       try {
-        final name = await _claimOne(addr, type);
+        final (name, port) = await _claimOne(addr, type);
         if (name != null) out.add(name);
+        if (port != null) open = (open ?? false) || port;
       } catch (e) {
         log('names: claim for $addr failed: $e');
       }
     }
+    portOpen = open;
     return out.toList();
   }
 
-  Future<String?> _claimOne(String addr, InternetAddressType type) async {
+  /// The name the keeper confirmed and whether it reached the port.
+  Future<(String?, bool?)> _claimOne(String addr, InternetAddressType type) async {
     final base = Uri.parse(options.keeper);
     final host = base.host;
     final targets = await InternetAddress.lookup(host, type: type);
     if (targets.isEmpty) {
       log('names: $host has no ${type == InternetAddressType.IPv6 ? 'AAAA' : 'A'} record');
-      return null;
+      return (null, null);
     }
     // IPv6 has no NAT: the claim must leave FROM the address it names, not
     // from a temporary privacy address the system would pick by default.
@@ -89,7 +99,7 @@ class NamesClient {
       final ch = await _json(client, await client.getUrl(api));
       if (ch == null || ch['ok'] != true) {
         log('names: $host gave no challenge');
-        return null;
+        return (null, null);
       }
       final nonce = '${ch['nonce']}', station = '${ch['station']}';
       final seen = '${ch['you']}';
@@ -97,7 +107,7 @@ class NamesClient {
         // The keeper sees another address (a NAT, a proxy): a claim for
         // this one would be refused, so it is not made.
         log('names: the keeper sees $seen, not $addr; no claim');
-        return null;
+        return (null, null);
       }
       final p = options.sign(XprsPacket([
         const MapEntry('t', 'service'),
@@ -111,16 +121,24 @@ class NamesClient {
       ]));
       if (p == null) {
         log('names: no key to sign the claim with');
-        return null;
+        return (null, null);
       }
       final req = await client.postUrl(api);
       req.headers.contentType = ContentType.text;
       req.write(p.encode());
       final r = await _json(client, req);
-      if (r == null) return null;
-      if (r['ok'] == true) return '${r['name']}';
+      if (r == null) return (null, null);
+      if (r['ok'] == true) {
+        final rns = r['rns'];
+        final port = rns == 'open' ? true : (rns == 'closed' ? false : null);
+        if (port != null) {
+          log('names: the keeper ${port ? 'reached' : 'could not reach'} '
+              'this station on port ${r['rns_port'] ?? 4242} at $addr');
+        }
+        return ('${r['name']}', port);
+      }
       log('names: ${r['error']}${r['until'] != null ? ' until ${r['until']}' : ''}');
-      return null;
+      return (null, null);
     } finally {
       client.close(force: true);
     }

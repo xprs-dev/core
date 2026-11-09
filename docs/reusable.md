@@ -340,6 +340,12 @@ topic to the wapp that shows it (`routeCoreNotification`,
   address family over a connection of that family (`HttpClient.connectionFactory`
   pinned to a looked-up address), which is how any client proves it can
   send from the address it names.
+- `xprsPortAnswers` (`xprs_port_probe_io.dart`) — "does that station really
+  answer on its port": a `t:ping` that must come back as a `t:pong` signed by
+  the expected key. Use it wherever "the port is open" is not enough.
+- `unmappedAddress` (reticulum-dart, `rns_tcp_server_interface.dart`) — an
+  IPv4 peer on a dual-stack socket as the IPv4 address it is; every private
+  range or label check on such a socket goes through it.
 - `PublicName.extraNames` — the hook by which a host adds names it got
   elsewhere to the ones tested and certified; they go first, so the first
   reachable becomes the station's URL.

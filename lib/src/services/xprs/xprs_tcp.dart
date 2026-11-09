@@ -267,7 +267,9 @@ class XprsTcp {
     };
   }
 
-  static bool _isLocal(InternetAddress a) {
+  static bool _isLocal(InternetAddress raw) {
+    // A dual-stack listener shows an IPv4 neighbour as ::ffff:a.b.c.d.
+    final a = unmappedAddress(raw);
     if (a.isLoopback || a.isLinkLocal) return true;
     final b = a.rawAddress;
     if (a.type == InternetAddressType.IPv4 && b.length == 4) {

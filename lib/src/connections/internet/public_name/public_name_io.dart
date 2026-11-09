@@ -73,6 +73,11 @@ class PublicName {
   /// reachable name is the one published as the station's URL.
   Future<List<String>> Function({String? v4, String? v6})? extraNames;
   static const Duration extraNamesEvery = Duration(days: 7);
+
+  /// The host wants [extraNames] asked again sooner than [extraNamesEvery]
+  /// (the server: its Reticulum port was not reachable yet, so the next
+  /// claim tests it again). Asked at most once a round.
+  bool Function()? askNamesAgain;
   List<String> _extra = const [];
   DateTime? _extraAt;
 
@@ -165,7 +170,8 @@ class PublicName {
         (changed ||
             _extra.isEmpty ||
             _extraAt == null ||
-            DateTime.now().difference(_extraAt!) > extraNamesEvery)) {
+            DateTime.now().difference(_extraAt!) > extraNamesEvery ||
+            (askNamesAgain?.call() ?? false))) {
       try {
         final got = await extraNames!(v4: addrs.v4?.address, v6: addrs.v6?.address);
         _extraAt = DateTime.now();
@@ -275,6 +281,7 @@ class PublicName {
     for (final (ext, internal) in [
       (80, options.httpPort),
       (443, options.httpsPort),
+      for (final p in options.extraPorts) (p, p),
     ]) {
       if (a.v4 != null && gw.canMapV4) {
         try {

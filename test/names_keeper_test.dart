@@ -297,6 +297,35 @@ void main() {
     expect(store.get(label), isNull);
   });
 
+  test('the keeper tests the claimant\'s port 4242 from outside and says so',
+      () async {
+    final asked = <String>[];
+    var answer = true;
+    k.probePort = (addr, call, keyHex) async {
+      asked.add('$addr $call ${keyHex == alice.hex}');
+      return answer;
+    };
+    final (st, j) = await claim(alice, '93.184.216.9');
+    expect(st, 200);
+    expect(j['rns'], 'open');
+    expect(j['rns_port'], 4242);
+    expect(asked, ['93.184.216.9 ${alice.call} true']);
+    // The same address within ten minutes: no DNS write, but the test runs.
+    answer = false;
+    clock = clock.add(const Duration(minutes: 1));
+    final (st2, j2) = await claim(alice, '93.184.216.9');
+    expect(st2, 200);
+    expect(j2['rns'], 'closed');
+    // Refused claims are never tested.
+    final (st3, _) = await claim(bob, '93.184.216.20', call: alice.call);
+    expect(st3, 403);
+    expect(asked, hasLength(2));
+    // The keeper tests itself through its own public address.
+    await k.keepOwn(v4: '93.184.216.1');
+    expect(k.ownPortOpen, isFalse);
+    expect(asked.last, '93.184.216.1 ${keeperKey.call} false');
+  });
+
   test('the operator releases a lost key\'s label', () async {
     expect((await claim(alice, '93.184.216.9')).$1, 200);
     expect(await k.release('nothing'), isFalse);
