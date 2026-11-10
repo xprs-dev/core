@@ -316,6 +316,11 @@ class WebChatApi {
   /// What a visitor may read: conversation, not machinery. An identity is a
   /// public broadcast and is how a browser finds the key a callsign is bound
   /// to, to seal to it or to open what it sealed.
+  /// Rooms that are collections (API-HTTP.md): folders of items, added by
+  /// the room's staff, liked by its readers. Pictures and films, music, and
+  /// any file.
+  static const Set<String> collectionKinds = {'gallery', 'music', 'library'};
+
   static const Set<String> readable = {
     'message', 'reaction', 'status', 'info', 'warning', 'event', 'blog', 'sos',
     'identity', 'file',
@@ -492,7 +497,9 @@ class WebChatApi {
           if (e.key.startsWith(pagePrefix)) e.key.substring(pagePrefix.length): e.value,
         // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
         if (_hostsRooms) 'rooms': true,
-        // And keeps photographs: gallery rooms (API-HTTP.md).
+        // And has the storage for collections: gallery, music and library
+        // rooms (API-HTTP.md). `gallery` is the first name it had.
+        if (_hostsRooms && fileStore != null) 'storage': true,
         if (_hostsRooms && fileStore != null) 'gallery': true,
         'config': false,
         // This host gives a visitor who proves their key their own mail.
@@ -966,6 +973,7 @@ class WebChatApi {
   /// The station's administrator (by key) or one of its moderators.
   bool _isStaff(String call) {
     final c = _base(call);
+    if (c == _base(selfCallsign())) return true;
     final a = _json(_kAdmin);
     final key = keyOf(c);
     if (a['call'] == c && key != null && HEX.encode(key) == a['key']) {
@@ -1119,7 +1127,7 @@ class WebChatApi {
     final meta = _rooms[room]!;
     if (meta['kind'] == 'mesh') return no(403, 'a mesh holds its roster, not posts');
     final forum = meta['kind'] == 'forum';
-    final gallery = meta['kind'] == 'gallery';
+    final gallery = collectionKinds.contains(meta['kind']);
     if (gallery) {
       // A category of photographs (API-HTTP.md): events are titled posts,
       // pictures are messages with a preview and their t:file companions,
@@ -1131,7 +1139,7 @@ class WebChatApi {
           return no(400, 'an event is a post with a title');
         }
       } else if (p.type != 'message' && p.type != 'file' && p.type != 'reaction') {
-        return no(403, 'a gallery takes events, pictures and likes');
+        return no(403, 'a collection takes folders, items and likes');
       }
     } else if (p.type == 'blog') {
       if (!forum) return no(403, 'posts go in a forum room');
@@ -1209,8 +1217,8 @@ class WebChatApi {
       return const WebChatReply(404, {'ok': false, 'error': 'no such room'});
     }
     final k = _rooms[room]!['kind'];
-    if (k != 'forum' && k != 'gallery') {
-      return const WebChatReply(400, {'ok': false, 'error': 'not a forum or gallery room'});
+    if (k != 'forum' && !collectionKinds.contains(k)) {
+      return const WebChatReply(400, {'ok': false, 'error': 'not a forum or collection room'});
     }
     final mod = _roomModeration(room);
     final rows = roomRows!(room: room, types: const ['blog'], limit: forumWindow);
@@ -1343,9 +1351,9 @@ class WebChatApi {
 
     final visibility = opt('visibility', const {'public', 'private'});
     final posting = opt('posting', const {'members', 'anyone'});
-    final kind = opt('kind', const {'chat', 'forum', 'gallery', 'mesh'});
+    final kind = opt('kind', const {'chat', 'forum', 'gallery', 'music', 'library', 'mesh'});
     if (visibility == '' || posting == '' || kind == '') {
-      return no(400, 'visibility is public or private; posting members or anyone; kind chat, forum or gallery');
+      return no(400, 'visibility is public or private; posting members or anyone; kind chat, forum, gallery, music or library');
     }
     String clean(Object? v, int max) {
       final s = '${v ?? ''}'.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -1881,6 +1889,8 @@ class WebChatApi {
   /// same key it was claimed with.
   String? _adminOf(String? session) {
     final call = sessionCall(session);
+    // Whoever holds the station's own key is its operator.
+    if (call != null && _base(call) == _base(selfCallsign())) return call;
     final a = _json(_kAdmin);
     if (call == null || a['call'] != call) return null;
     final key = keyOf(call);

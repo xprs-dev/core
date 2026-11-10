@@ -357,6 +357,29 @@ void main() {
     });
   });
 
+  group('music and library rooms: collections like the gallery', () {
+    test('the station\'s own key is its operator: it makes a music room and adds a track', () async {
+      final a = make();
+      await claim(a);
+      final st = await session(a, 'X3STAT', _station);
+      for (final kind in ['music', 'library']) {
+        final r = await post(a, '/api/rooms', {'action': 'create', 'session': st, 'name': kind, 'kind': kind});
+        expect(r.status, 200, reason: '${r.json}');
+        final call = r.json['room'] as String;
+        final album = _signed('t:blog f:X3STAT d:$call ts:${ts()} title:first-album m:demo', _station);
+        expect((await send(a, album)).status, 200);
+        final aid = xprsIdentifier(XprsPacket.parse(album)!);
+        // An item with no preview: the message names it, the t:file is the file.
+        final track = _signed('t:message f:X3STAT d:$call ts:${ts(1)} r:$aid m:opening-song', _station);
+        expect((await send(a, track)).status, 200);
+        final tid = xprsIdentifier(XprsPacket.parse(track)!);
+        expect((await send(a, _signed('t:file f:X3STAT d:$call ts:${ts(1)} r:$tid file:Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.mp3 size:4.2MB name:opening-song.mp3', _station))).status, 200);
+        expect((await send(a, _signed('t:message f:X1BOBB d:$call ts:${ts(2)} r:$aid m:mine', _bob))).status, 403);
+        expect((await send(a, _signed('t:reaction f:X1BOBB d:$call ts:${ts(2)} r:$tid add:like', _bob))).status, 200);
+      }
+    });
+  });
+
   group('a post to everybody (XPRS.md 18), from the page', () {
     test('a post is the visitor\'s to send; its parts go out as given (7.6)', () async {
       final a = make();
