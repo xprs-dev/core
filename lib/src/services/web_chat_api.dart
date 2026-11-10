@@ -51,7 +51,7 @@ import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:reticulum/reticulum.dart' show MediaArchive, NostrCrypto;
+import 'package:reticulum/reticulum.dart' show HostedWriter, MediaArchive, NostrCrypto;
 
 import '../platform/key_value_store.dart';
 
@@ -99,6 +99,62 @@ class WebAddresses {
   final int? rnsPort;
   final bool? rnsOpen;
   final String? dial;
+}
+
+/// An upload under way ([WebChatApi.beginFilePut]): [reply] set means it was
+/// refused before a byte was read.
+class WebChatUpload {
+  WebChatUpload._(this.reply, this._w, this._cap, this._ref);
+  final WebChatReply? reply;
+  final HostedWriter? _w;
+  final int _cap;
+  final String _ref;
+  bool _over = false;
+
+  /// One piece of the body, in order.
+  void add(List<int> chunk) {
+    final w = _w;
+    if (w == null || _over) return;
+    if (w.size + chunk.length > _cap) {
+      _over = true;
+      w.abort();
+      return;
+    }
+    w.add(chunk);
+  }
+
+  /// Files it when its bytes hash to the reference.
+  WebChatReply finish() {
+    final w = _w;
+    if (reply != null) return reply!;
+    if (_over) return const WebChatReply(413, {'ok': false, 'error': 'larger than this station keeps'});
+    if (w == null || w.size == 0) {
+      w?.abort();
+      return const WebChatReply(400, {'ok': false, 'error': 'no bytes'});
+    }
+    final size = w.size;
+    final sha = xprsFileSha(_ref);
+    final want = sha == null ? null : base64Url.encode(HEX.decode(sha)).replaceAll('=', '');
+    final key = w.finish(expectKey: want);
+    if (key == null) {
+      return const WebChatReply(400, {'ok': false, 'error': 'the bytes do not match the reference'});
+    }
+    return WebChatReply(200, {'ok': true, 'ref': _ref, 'size': size});
+  }
+
+  /// The client went away.
+  void abort() => _w?.abort();
+}
+
+/// A held file to stream ([WebChatApi.openFile]).
+class WebChatFile {
+  WebChatFile._(this.reply, this.size, this.contentType, this.headers, this._read);
+  final WebChatReply? reply;
+  final int size;
+  final String contentType;
+  final Map<String, String> headers;
+  final Uint8List? Function(int offset, int length)? _read;
+  Uint8List? read(int offset, int length) => _read?.call(offset, length);
 }
 
 class WebChatReply {
@@ -244,6 +300,7 @@ class WebChatApi {
     this.roomRows,
     this.fileStore,
     this.fileMax = defaultFileMax,
+    this.staffFileMax = defaultStaffFileMax,
     this.receiveFrom,
     this.onVisitor,
     this.holdersOf,
@@ -291,12 +348,22 @@ class WebChatApi {
   /// A walk-up page is not a bulk lane: larger files travel by `cmd:file`.
   final int fileMax;
   static const int defaultFileMax = 2 * 1024 * 1024;
+
+  /// What the station's administrator and moderators may store: their files
+  /// are the station's own (a gallery's photographs and films), kept and
+  /// never evicted, as large as the storage takes. [fileMax] stays the
+  /// stranger's limit.
+  final int staffFileMax;
+  static const int defaultStaffFileMax = 64 * 1024 * 1024 * 1024;
   static const Map<String, String> fileTypes = {
     'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
     'gif': 'image/gif', 'webp': 'image/webp', 'avif': 'image/avif',
     'bmp': 'image/bmp', 'txt': 'text/plain; charset=utf-8',
     'md': 'text/markdown; charset=utf-8', 'pdf': 'application/pdf',
     'mp3': 'audio/mpeg', 'ogg': 'audio/ogg', 'mp4': 'video/mp4',
+    'm4v': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm',
+    'mkv': 'video/x-matroska', 'ogv': 'video/ogg', 'm4a': 'audio/mp4',
+    'wav': 'audio/wav', 'heic': 'image/heic',
   };
   static const String filePath = '/api/xprs/file/';
 
@@ -689,6 +756,65 @@ class WebChatApi {
     store.putHosted(raw, xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref),
         originPubHex: '', tier: 2);
     return WebChatReply(200, {'ok': true, 'ref': ref, 'size': raw.length});
+  }
+
+  /// Whether [session] proves the station's administrator, one of its
+  /// moderators, or a moderator of one of the rooms it hosts.
+  bool _isUploader(String? session) {
+    if (_adminOf(session) != null) return true;
+    final c = sessionCall(session);
+    if (c == null) return false;
+    if (_isStaff(c)) return true;
+    for (final room in _rooms.keys) {
+      final r = roleOf(_base(c), group: room);
+      if (r == 'mod' || r == 'admin') return true;
+    }
+    return false;
+  }
+
+  /// An upload too large to hold (API-HTTP.md `POST /api/xprs/file/<ref>`):
+  /// the host feeds the body to the answer's writer as it arrives and then
+  /// calls [WebChatUpload.finish]. A refusal comes back as [WebChatUpload.reply]
+  /// before any byte is read. [length] is the request's Content-Length.
+  WebChatUpload beginFilePut(String ref, Map<String, String> q, String peer, int length) {
+    WebChatUpload no(int status, String why) =>
+        WebChatUpload._(WebChatReply(status, {'ok': false, 'error': why}), null, 0, '');
+    if (fileStore == null) return no(404, 'not here');
+    final sha = _refSha(ref);
+    if (sha == null) return no(400, 'not a file reference');
+    final staff = _isUploader(q['session']);
+    final cap = staff ? staffFileMax : fileMax;
+    if (length > cap) return no(413, 'larger than this station keeps');
+    if (!staff && !_allowed(peer)) return no(429, 'slow down');
+    final store = fileStore!();
+    if (store == null) return no(503, 'no file store yet');
+    final ext = xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref);
+    final w = store.beginHosted(ext, originPubHex: '', tier: staff ? 0 : 2, pin: staff);
+    if (w == null) return no(503, 'no file store yet');
+    return WebChatUpload._(null, w, cap, ref);
+  }
+
+  /// A held file for a host that streams it (and answers ranges): its size,
+  /// type and headers, and a reader of any part. The same audience rule as
+  /// GET. A refusal comes back in [WebChatFile.reply].
+  WebChatFile openFile(String ref) {
+    WebChatFile no(int status, String why) =>
+        WebChatFile._(WebChatReply(status, {'ok': false, 'error': why}), 0, '', const {}, null);
+    final sha = _refSha(ref);
+    if (sha == null || fileStore == null) return no(400, 'not a file reference');
+    final store = fileStore!();
+    final meta = store?.getMeta(sha);
+    final size = store?.sizeOf(sha);
+    if (store == null || meta == null || size == null) return no(404, 'not held');
+    final gate = XprsFileServer.instance.authorize;
+    if (gate != null && !gate(sha, '', sigVerified: false)) {
+      return no(403, 'not a public file');
+    }
+    return WebChatFile._(null, size, fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream', {
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'ETag': '"$sha"',
+      'X-Content-Type-Options': 'nosniff',
+    }, (o, n) => store.readRange(sha, o, n));
   }
 
   /// The SHA-256 hex a reference names, when it has the 7.7 shape.

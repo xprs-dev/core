@@ -84,4 +84,32 @@ void main() {
     XprsFileServer.instance.authorize = (sha, who, {required bool sigVerified}) => sigVerified;
     expect((await api.handle('GET', '/api/xprs/file/$ref', {}, '')).status, 403);
   });
+
+  test('streamed: an upload a piece at a time, a file read by range', () {
+    final a = make(max: 5000);
+    final data = List<int>.generate(4000, (i) => i * 7 & 0xff);
+    final ref = _ref(data, 'mp4');
+    final up = a.beginFilePut(ref, const {}, '192.168.1.9', data.length);
+    expect(up.reply, isNull);
+    for (var at = 0; at < data.length; at += 700) {
+      up.add(data.sublist(at, (at + 700).clamp(0, data.length)));
+    }
+    expect(up.finish().status, 200);
+    final f = a.openFile(ref);
+    expect(f.reply, isNull);
+    expect(f.size, data.length);
+    expect(f.contentType, 'video/mp4');
+    expect(f.read(1000, 10), data.sublist(1000, 1010));
+    // A stranger keeps the visitor's limit, said before a byte is read and
+    // again if the body runs past it.
+    final big = List<int>.filled(6000, 3);
+    expect(a.beginFilePut(_ref(big, 'mp4'), const {}, '192.168.1.9', big.length).reply!.status, 413);
+    final sneaky = a.beginFilePut(_ref(big, 'mp4'), const {}, '192.168.1.9', 10);
+    sneaky.add(big);
+    expect(sneaky.finish().status, 413);
+    final wrong = a.beginFilePut(_ref([1, 2], 'jpg'), const {}, '192.168.1.9', 2);
+    wrong.add([2, 1]);
+    expect(wrong.finish().status, 400);
+    expect(a.openFile(_ref([1, 2], 'jpg')).reply!.status, 404);
+  });
 }
