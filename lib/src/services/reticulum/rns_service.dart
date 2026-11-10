@@ -5536,6 +5536,7 @@ class RnsService {
 
   RnsRequestServer? _requests;
   final Map<String, RnsRequestHandler> _requestHandlers = {};
+  bool _gatewayHeld = false;
 
   /// Answer link requests for [path] on our own xprs/wapp destination.
   void serveRequests(String path, RnsRequestHandler handler) {
@@ -5580,6 +5581,13 @@ class RnsService {
     if (t == null) return null;
     final iface = RnsFrameInterface(label, send, quiet: true, speedRank: 2);
     t.addInterface(iface);
+    // A gateway forwards its clients' links and answers their path requests:
+    // it must never shed to a leaf under the hubs' announce flood.
+    if (!_gatewayHeld) {
+      _gatewayHeld = true;
+      t.setPassive(false, auto: false);
+      LogService.instance.add('RNS: a gateway client: this node stays a full transport node');
+    }
     return RnsFrameClient._(iface, (raw) => _onInbound(raw, label), () => t.removeInterface(iface));
   }
 
@@ -5687,18 +5695,40 @@ class RnsService {
       // Pass the arrival interface's HW MTU so the responder caps the link MTU
       // it confirms to what this return path can actually carry (MTU discovery).
       final arrivalMtu = _transport?.hwMtuForVia(via) ?? kRnsMtu;
+      final traced = p.packetType == RnsPacketType.linkRequest &&
+          p.headerType == RnsHeaderType.header2;
+      void took(String who) {
+        // A link request addressed through us that a local handler kept: worth
+        // a line, because it is then never forwarded to its destination.
+        if (traced && who != 'the transport') {
+          LogService.instance.add('RNS: link request to ${_hex(p.destHash).substring(0, 8)} via $via taken by $who');
+        }
+      }
       if (await _files?.handlePacket(p, arrivalHwMtu: arrivalMtu) ?? false) {
+        took('files');
         return;
       }
-      if (await _lxmf?.handlePacket(p) ?? false) return;
+      if (await _lxmf?.handlePacket(p) ?? false) {
+        took('lxmf');
+        return;
+      }
       if (await _nomad?.handlePacket(p, arrivalHwMtu: arrivalMtu) ?? false) {
+        took('nomad');
         return;
       }
-      if (await _relay?.handlePacket(p) ?? false) return;
+      if (await _relay?.handlePacket(p) ?? false) {
+        took('relay');
+        return;
+      }
       if (await _ensureRequests()?.handlePacket(p, arrivalHwMtu: arrivalMtu) ?? false) {
+        took('requests');
         return;
       }
-      if (_rvInboundDests.isNotEmpty && await _handleRvInbound(p)) return;
+      if (_rvInboundDests.isNotEmpty && await _handleRvInbound(p)) {
+        took('rv');
+        return;
+      }
+      took('the transport');
     }
     // Announce path: validation, dedup, path learning, transit + rebroadcast
     // all happen in the transport engine ISOLATE — the hub flood never costs
