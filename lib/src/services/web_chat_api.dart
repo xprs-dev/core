@@ -1,6 +1,6 @@
 /*
  * The station API a visitor's browser gets from this phone: just enough of
- * spec/API-HTTP.md for the web chat page (the sibling repo `webchat`), and
+ * spec/API-HTTP.md for the web chat page (the sibling repo `portal`), and
  * nothing else.
  *
  * It is NOT the remote API. That one is loopback-only, off by default, and
@@ -261,7 +261,7 @@ class WebChatApi {
   /// to, to seal to it or to open what it sealed.
   static const Set<String> readable = {
     'message', 'reaction', 'status', 'info', 'warning', 'event', 'blog', 'sos',
-    'identity',
+    'identity', 'file',
   };
 
   /// What a visitor may post. An identity so others can verify their
@@ -425,6 +425,8 @@ class WebChatApi {
           if (e.key.startsWith(pagePrefix)) e.key.substring(pagePrefix.length): e.value,
         // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
         if (_hostsRooms) 'rooms': true,
+        // And keeps photographs: gallery rooms (API-HTTP.md).
+        if (_hostsRooms && fileStore != null) 'gallery': true,
         'config': false,
         // This host gives a visitor who proves their key their own mail.
         'session': true,
@@ -991,7 +993,21 @@ class WebChatApi {
     final meta = _rooms[room]!;
     if (meta['kind'] == 'mesh') return no(403, 'a mesh holds its roster, not posts');
     final forum = meta['kind'] == 'forum';
-    if (p.type == 'blog') {
+    final gallery = meta['kind'] == 'gallery';
+    if (gallery) {
+      // A category of photographs (API-HTTP.md): events are titled posts,
+      // pictures are messages with a preview and their t:file companions,
+      // likes are reactions. Only the room's staff posts; readers like.
+      if (p.type == 'blog') {
+        final why = forumShape(p);
+        if (why != null) return no(400, why);
+        if ((p['title'] ?? '').isEmpty && !p.has('n')) {
+          return no(400, 'an event is a post with a title');
+        }
+      } else if (p.type != 'message' && p.type != 'file' && p.type != 'reaction') {
+        return no(403, 'a gallery takes events, pictures and likes');
+      }
+    } else if (p.type == 'blog') {
       if (!forum) return no(403, 'posts go in a forum room');
       final why = forumShape(p);
       if (why != null) return no(400, why);
@@ -1011,10 +1027,23 @@ class WebChatApi {
     if (_roomModeration(room).away.contains(_base(from))) {
       return no(403, 'you were sent away from this room');
     }
-    final membersOnly =
-        meta['visibility'] == 'private' || meta['posting'] != 'anyone';
-    if (membersOnly && !_isMember(room, from)) {
-      return no(403, 'only members post in this room');
+    if (gallery) {
+      final role = roleOf(_base(from), group: room);
+      final staff = role == 'mod' || role == 'admin' || _isStaff(from);
+      if (p.type != 'reaction' && !staff) {
+        return no(403, 'only the moderators add events and pictures here');
+      }
+      // A like from anyone who may read the room.
+      if (p.type == 'reaction' && meta['visibility'] == 'private' &&
+          !_isMember(room, from) && !staff) {
+        return no(403, 'only members like in this room');
+      }
+    } else {
+      final membersOnly =
+          meta['visibility'] == 'private' || meta['posting'] != 'anyone';
+      if (membersOnly && !_isMember(room, from)) {
+        return no(403, 'only members post in this room');
+      }
     }
     if (split) return _postPart(p, from);
     final w = p.encode();
@@ -1053,8 +1082,9 @@ class WebChatApi {
     if (room == null || !_mayRead(room, session)) {
       return const WebChatReply(404, {'ok': false, 'error': 'no such room'});
     }
-    if (_rooms[room]!['kind'] != 'forum') {
-      return const WebChatReply(400, {'ok': false, 'error': 'not a forum room'});
+    final k = _rooms[room]!['kind'];
+    if (k != 'forum' && k != 'gallery') {
+      return const WebChatReply(400, {'ok': false, 'error': 'not a forum or gallery room'});
     }
     final mod = _roomModeration(room);
     final rows = roomRows!(room: room, types: const ['blog'], limit: forumWindow);
@@ -1187,9 +1217,9 @@ class WebChatApi {
 
     final visibility = opt('visibility', const {'public', 'private'});
     final posting = opt('posting', const {'members', 'anyone'});
-    final kind = opt('kind', const {'chat', 'forum', 'mesh'});
+    final kind = opt('kind', const {'chat', 'forum', 'gallery', 'mesh'});
     if (visibility == '' || posting == '' || kind == '') {
-      return no(400, 'visibility is public or private; posting members or anyone; kind chat or forum');
+      return no(400, 'visibility is public or private; posting members or anyone; kind chat, forum or gallery');
     }
     String clean(Object? v, int max) {
       final s = '${v ?? ''}'.replaceAll(RegExp(r'\s+'), ' ').trim();

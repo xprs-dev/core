@@ -317,6 +317,46 @@ void main() {
     });
   });
 
+  group('gallery rooms (API-HTTP.md): events, pictures, likes', () {
+    test('the staff adds events and pictures; a visitor likes and adds nothing', () async {
+      final a = make();
+      final s = await claim(a);
+      final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s,
+          'name': 'Photos', 'kind': 'gallery'})).json['room'] as String;
+      expect((await rooms(a, s)).single['kind'], 'gallery');
+      final b = await session(a, 'X1BOBB', _bob);
+      // The administrator (X1ALIC claimed it) opens an event.
+      final event = _signed('t:blog f:X1ALIC d:$call ts:${ts()} title:field-day-2026 m:On the hill', _alice);
+      expect((await send(a, event)).status, 200);
+      final eid = xprsIdentifier(XprsPacket.parse(event)!);
+      expect((await send(a, _signed('t:blog f:X1ALIC d:$call ts:${ts(1)} r:$eid m:no title', _alice))).status, 400,
+          reason: 'an event has a title; a gallery takes no comment');
+      // A picture: the preview on a message, the original on its companion.
+      const prev = 'nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg';
+      const orig = 'Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.jpg';
+      final pic = _signed('t:message f:X1ALIC d:$call ts:${ts(2)} r:$eid file:$prev m:the mast', _alice);
+      expect((await send(a, pic)).status, 200);
+      final pid = xprsIdentifier(XprsPacket.parse(pic)!);
+      expect((await send(a, _signed('t:file f:X1ALIC d:$call ts:${ts(2)} r:$pid file:$orig size:2.1MB name:mast.jpg', _alice))).status, 200);
+      // A visitor adds nothing, and likes.
+      expect((await send(a, _signed('t:message f:X1BOBB d:$call ts:${ts(3)} r:$eid file:$prev', _bob))).status, 403);
+      expect((await send(a, _signed('t:blog f:X1BOBB d:$call ts:${ts(3)} title:mine m:x', _bob))).status, 403);
+      expect((await send(a, _signed('t:reaction f:X1BOBB d:$call ts:${ts(3)} r:$pid add:like', _bob))).status, 200);
+      expect((await send(a, _signed('t:reaction f:X1BOBB d:$call ts:${ts(3)} r:$eid add:like', _bob))).status, 200);
+      expect((await send(a, _signed('t:status f:X1ALIC d:$call ts:${ts(4)} m:x', _alice))).status, 403);
+      // The events are the room's index.
+      final t = (await a.handle('GET', '/api/rooms', {'topics': call, 'session': b}, '', peer: lan))
+          .json['topics'] as List;
+      expect(t.single['title'], 'field-day-2026');
+      // The event's pictures, their originals and the likes, for the page.
+      final rows = (await a.handle('GET', '/api/xprs/history',
+              {'room': call, 'kind': 'message,file,reaction', 'session': b}, '', peer: lan))
+          .json['rows'] as List;
+      expect(rows.map((r) => r['type']).toSet(), {'message', 'file', 'reaction'});
+      expect(received.where((w) => w.contains(call)), isEmpty, reason: 'filed, never aired');
+    });
+  });
+
   group('a post to everybody (XPRS.md 18), from the page', () {
     test('a post is the visitor\'s to send; its parts go out as given (7.6)', () async {
       final a = make();
