@@ -439,3 +439,14 @@ settings directly.
   halves): one idle socket from a phone to its archiver (XPRS.md 13.0.2), the
   conditional export keeping `dart:io` off the web build. Moved here from the
   app with the battery work.
+
+
+## The visitor API over Reticulum (`services/web_chat_rns.dart`)
+
+`serveWebChatOverRns(api)` serves `WebChatApi.handle` over Reticulum links to
+the station's xprs/wapp destination (`/xprs/api`) and lets a client check the
+station (`/xprs/prove`): spec/API-HTTP.md, "The same API over a Reticulum
+link". `RnsService.serveRequests(path, handler)` is the general hook for any
+request handler on that destination; `attachFrameClient` attaches a gateway
+client; `stationIdentity(call)` and `ownWappAnnounce()` serve resolution.
+The app can call `serveWebChatOverRns` for its share server the same way.

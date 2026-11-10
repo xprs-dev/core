@@ -5527,6 +5527,71 @@ class RnsService {
     return true;
   }
 
+  // ---- the station's API over a Reticulum link, and gateway clients -------
+  //
+  // spec/API-HTTP.md, "The same API over a Reticulum link": a browser (or any
+  // client) opens a link to our xprs/wapp destination and sends requests; the
+  // host registers what answers them ([serveRequests]). A gateway's browsers
+  // attach as quiet frame interfaces ([attachFrameClient]).
+
+  RnsRequestServer? _requests;
+  final Map<String, RnsRequestHandler> _requestHandlers = {};
+
+  /// Answer link requests for [path] on our own xprs/wapp destination.
+  void serveRequests(String path, RnsRequestHandler handler) {
+    _requestHandlers[path] = handler;
+    _requests?.register(path, handler);
+  }
+
+  RnsRequestServer? _ensureRequests() {
+    final me = _id;
+    if (me == null || _requestHandlers.isEmpty) return null;
+    final dest = RnsDestination.hash(me, _app, _aspectsWapp);
+    final have = _requests;
+    if (have != null && RnsCrypto.constantTimeEquals(have.destHash, dest)) return have;
+    final r = RnsRequestServer(
+      identity: me,
+      destHash: dest,
+      send: (raw) => _transport?.sendLinkAware(raw),
+      log: (m) => LogService.instance.add('RNS/api: $m'),
+    );
+    _requestHandlers.forEach(r.register);
+    return _requests = r;
+  }
+
+  /// A fresh announce of our xprs/wapp destination, packed: what a gateway
+  /// hands a client of its own that asks for this station, so the client has
+  /// the path at once rather than after the hubs' announce budget allows one.
+  Future<Uint8List?> ownWappAnnounce() async {
+    final me = _id;
+    if (me == null) return null;
+    return (await RnsAnnounceBuilder.build(me, _app, _aspectsWapp)).pack();
+  }
+
+  /// Links open to our API now (for the station's status).
+  int get apiLinks => _requests?.openLinks ?? 0;
+
+  /// A client of this node that sends and takes whole packets as frames (a
+  /// browser on the gateway's WebSocket): added to the transport as a quiet
+  /// interface (no announce flood). Feed its frames to [RnsFrameClient.deliver];
+  /// [RnsFrameClient.detach] when it goes. Null while Reticulum is not up.
+  RnsFrameClient? attachFrameClient(String label, void Function(Uint8List frame) send) {
+    final t = _transport;
+    if (t == null) return null;
+    final iface = RnsFrameInterface(label, send, quiet: true, speedRank: 2);
+    t.addInterface(iface);
+    return RnsFrameClient._(iface, (raw) => _onInbound(raw, label), () => t.removeInterface(iface));
+  }
+
+  /// The Reticulum identity of station [call] (ours, or one heard on the
+  /// xprs/wapp lane), or null.
+  RnsIdentity? stationIdentity(String call) {
+    final c = _bareUpper(call);
+    final me = _id;
+    if (me != null && c == _bareUpper(XprsArchive.instance.selfCallsign)) return me;
+    return _wappStation[c];
+  }
+
   /// Our own xprs/wapp destination, worked out once per identity: the test
   /// below runs on every packet that is not an announce.
   bool _isOwnWappPacket(RnsPacket p) {
@@ -5586,6 +5651,11 @@ class RnsService {
     }
     // Remember which interface a link's traffic arrives on, so our outbound link
     // packets (resource parts, etc.) go ONLY there instead of every hub uplink.
+    // A link being asked for: its proof and everything after go back the way
+    // the request came (a quiet gateway client is never sent anything "on all").
+    if (p.packetType == RnsPacketType.linkRequest) {
+      _transport?.noteLinkIface(RnsLink.linkIdFromRequest(p), via);
+    }
     if (p.destType == RnsDestType.link) {
       _transport?.noteLinkIface(p.destHash, via);
       // …and remember it HERE too. The transport engine lives on its own
@@ -5625,6 +5695,9 @@ class RnsService {
         return;
       }
       if (await _relay?.handlePacket(p) ?? false) return;
+      if (await _ensureRequests()?.handlePacket(p, arrivalHwMtu: arrivalMtu) ?? false) {
+        return;
+      }
       if (_rvInboundDests.isNotEmpty && await _handleRvInbound(p)) return;
     }
     // Announce path: validation, dedup, path learning, transit + rebroadcast
@@ -12263,4 +12336,21 @@ class _LiveFileSource implements RangedFileSource {
     final whole = s.read(fileHash);
     return whole == null ? null : PieceMask.full(whole.length, pieceSize);
   }
+}
+
+/// A frame client attached by [RnsService.attachFrameClient].
+class RnsFrameClient {
+  RnsFrameClient._(this.iface, this._deliver, this._detach);
+  final RnsFrameInterface iface;
+  final Future<void> Function(Uint8List raw) _deliver;
+  final void Function() _detach;
+  int framesIn = 0;
+
+  /// One frame the client sent: a Reticulum packet.
+  Future<void> deliver(Uint8List raw) {
+    framesIn++;
+    return _deliver(raw);
+  }
+
+  void detach() => _detach();
 }
