@@ -32,6 +32,7 @@ import '../mesh/mesh_transfer_scheduler.dart';
 import '../../connections/lora/lora_connection.dart';
 import '../../profile/profile_service.dart';
 import '../log_service.dart';
+import '../media/media_fetch.dart';
 import '../preferences_service.dart';
 import '../power_state.dart';
 import '../reticulum/rns_service.dart';
@@ -903,6 +904,53 @@ class XprsPublisher {
   /// (`test/xprs_mail_relay_sim_test.dart`).
   void Function(String archiver, String wire)? depositTo;
 
+  /// How the BYTES behind a publication's `file:` reach one archiver: true
+  /// when the archiver took them. Wired by the core at start-up to the
+  /// Reticulum file deposit (`RnsService.depositFileToCallsign`, reading the
+  /// media store); null places nothing, which is the headless default. A test
+  /// injects it, as it does [depositTo].
+  Future<bool> Function(String archiver, String fileValue)? depositFileTo;
+
+  /// Files placed with an archiver (12.9.2), and the archiver|file pairs
+  /// already placed or on their way, so a publication aired again (an event
+  /// revised, a badge announced twice) does not send the same bytes again.
+  int filesDeposited = 0;
+
+  /// The largest file [_placeFile] hands an archiver unasked. A badge, an
+  /// icon, a photograph's preview; a film is found by asking its holders.
+  static const int archiverFileMax = 256 * 1024;
+  final Set<String> _filesPlaced = <String>{};
+  static const int filesPlacedMax = 512;
+
+  /// XPRS.md 12.9.2, "the archiver is the seeder": the archive keeps the
+  /// publication that names a file, and the file store beside it keeps the
+  /// bytes it points to. A station's own publication that references a file
+  /// it holds hands those bytes to the same archivers the publication went
+  /// to. The archiver stores them and advertises itself as a holder, so the
+  /// file is found by its hash while this station sleeps. No wapp is told,
+  /// as for the packet itself.
+  void _placeFile(List<String> archivers, String fileValue) {
+    final put = depositFileTo;
+    if (put == null || fileValue.isEmpty) return;
+    for (final call in archivers) {
+      final key = '$call|$fileValue';
+      if (_filesPlaced.contains(key)) continue;
+      if (_filesPlaced.length >= filesPlacedMax) {
+        _filesPlaced.remove(_filesPlaced.first);
+      }
+      _filesPlaced.add(key);
+      unawaited(put(call, fileValue).then((ok) {
+        if (ok) {
+          filesDeposited++;
+        } else {
+          _filesPlaced.remove(key); // the next airing tries again
+        }
+      }).catchError((_) {
+        _filesPlaced.remove(key);
+      }));
+    }
+  }
+
   /// Hand a COPY of our own publication to the archivers this operator chose
   /// (XPRS.md 12: "a station keeps its own publications and hands a COPY to
   /// the archivers its operator chose", 34.3, 36.3/36.4).
@@ -927,6 +975,7 @@ class XprsPublisher {
       // lets onto the internet goes (XPRS.md 9.11). A Local- or Regional-room
       // message stays on the air it was said on.
       if (!xprsReachAdmits(xprsScopeReach(p), XprsReach.global)) continue;
+      _placeFile(archivers, p['file'] ?? '');
       for (final call in archivers) {
         final send = depositTo;
         if (send != null) {
@@ -1651,6 +1700,19 @@ class XprsPublisher {
     // room message are publications too; directed mail is not (it has a `d:`
     // and its own custody path, armed above), and depositArchivers skips it.
     if (ours && !datagram) depositArchivers([wire], what: p.type);
+    // A wire we wrote that references a file we hold says so to the network,
+    // as every other send path does (XprsSend.onFileShared): the hash is
+    // advertised, so any holder can be asked for it later. Advertised only:
+    // the bytes are not pushed at the packet's destination from here, which
+    // is a conversation's decision and not a caller-composed wire's.
+    if (ours && !datagram && !verbatim) {
+      final f = p['file'] ?? '';
+      final ref = f.isEmpty ? null : MediaRef.parse('file:$f');
+      if (ref != null &&
+          (MediaFetch.instance.archive?.call()?.has(ref.sha256) ?? false)) {
+        XprsSend.onFileShared?.call(f, '');
+      }
+    }
     published++;
     // One line per caller-composed wire: which bearers took it. A wire that
     // silently reached nobody is the failure mode that costs a day.

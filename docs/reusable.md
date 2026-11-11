@@ -178,6 +178,20 @@ the unsigned wire or null when it does not fit 250 bytes), `XprsArchivePolicy`
 `XprsCadence` (how often to ask it), `XprsOwnedStations` (stations an operator
 owns).
 
+### Files go where their publications go (XPRS.md 12.9.2)
+
+`XprsPublisher.depositArchivers` hands a copy of each of this station's own
+publications to its chosen archivers, and now also the BYTES behind a `file:`
+the publication references (`_placeFile`): once per archiver and file, retried
+on the next airing when refused, files up to `XprsPublisher.archiverFileMax`.
+The deposit itself is the injectable `depositFileTo(archiver, fileValue)`,
+wired by `MeshService` to `RnsService.depositFileToCallsign`; the archiver
+stores the file and advertises itself on the DHT, so the hash is found while
+the author sleeps. A wapp that wants its picture fetchable later describes it
+in a `t:file` publication and does nothing else. `publishWire` also
+advertises any `file:` a caller-composed wire carries (hash only, never a
+push to `d:`), as the conversation paths always did.
+
 ## Mesh (BLE street mesh, docs/mesh.md in the app)
 
 - `MeshSession` / MSP types — the Mesh Session Protocol v1 (Plane 2).
@@ -293,10 +307,9 @@ topic to the wapp that shows it (`routeCoreNotification`,
 - `NostrSigner` / `LocalSigner` — "this program can sign as you" without
   holding the key; take a signer, not an nsec.
 - `LogService` — the in-memory ring behind `/api/log` (never a person's words).
-- `db_bytes` — the size of a sqlite database, on every platform.
 - `geohash`, `nostr_imeta` (NIP-92), `note_text` (`NoteMention`).
 - `ActivityArchive` (`services/storage/`) — a time-ordered feed store; one
-  SQLite file per owner.
+  zx store per owner.
 
 ## Visitors and the station's administrator (`services/web_chat_api.dart`)
 

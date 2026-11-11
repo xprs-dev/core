@@ -557,6 +557,21 @@ class MeshService {
         // peer reachable only over BLE jams a channel everyone shares — and
         // let the recipient ask when it wants it. Either way advertise the
         // hash, so any holder can serve it later (§12.9.2).
+        // The bytes behind our own publications' files go to the archivers
+        // the publication goes to (12.9.2, XprsPublisher._placeFile), over the
+        // Reticulum file deposit; the archiver advertises itself as a holder.
+        // Bounded: a file larger than this is left for holders to be asked
+        // for, rather than read whole into memory and pushed unasked.
+        XprsPublisher.instance.depositFileTo = (archiver, fileValue) async {
+          final ref = MediaRef.parse('file:$fileValue');
+          if (ref == null) return false;
+          final meta = mediaArchive.getMeta(ref.sha256);
+          if (meta == null || meta.size > XprsPublisher.archiverFileMax) return false;
+          final bytes = mediaArchive.get(ref.sha256);
+          if (bytes == null) return false;
+          return RnsService.instance
+              .depositFileToCallsign(bytes, ref.ext, archiver);
+        };
         XprsSend.onFileShared = (fileValue, dest, {original}) {
           final ref = MediaRef.parse('file:$fileValue');
           if (ref == null) return;
@@ -2007,7 +2022,7 @@ class MeshService {
     final last = _releaseTriedMs[callsign] ?? 0;
     if (now - last < 30000) return;
     // Arm the throttle BEFORE the store probe, not only on a hit: this sits
-    // on the funnel, every beacon lands here, and pendingFor is a sqlite
+    // on the funnel, every beacon lands here, and pendingFor is a zx
     // query on the main isolate. Armed only on a hit, the empty case — which
     // is nearly every packet on a busy bench — paid that query per beacon,
     // forever (docs/performance.md 4.2: a cheap call in a hot loop IS the
