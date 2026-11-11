@@ -155,6 +155,18 @@ class WappDelivery {
   /// Closed-group posts from a proven non-member, stopped at this door.
   static int refusedGroupAuthor = 0;
 
+  /// Signed packets addressed to us whose signer's key we did not hold.
+  static int unknownSigner = 0;
+
+  /// Somebody signed a packet TO this station and we hold no key to check it
+  /// with: go and ask for the binding (18.1) rather than wait for the next
+  /// periodic announcement. A wapp can only answer such a packet with "I
+  /// cannot tell who you are"; asked now, the sender's next copy (a command
+  /// is re-aired, 11.4) arrives checkable. Wired by the core
+  /// (mesh_service, `XprsPublisher.askIdentity`, which throttles per
+  /// callsign); null does nothing.
+  static void Function(String call)? onUnknownSigner;
+
   /// Section 26.7 at the RECEIVE point: "membership decides what a client
   /// shows", and this is the one door every wapp is shown anything through —
   /// so it is decided once, here, for every bearer, and no wapp has to know
@@ -213,6 +225,11 @@ class WappDelivery {
                     ?.call(NostrCrypto.bareCallsign(p['f'] ?? '')))
             .name
         : XprsSigState.unsigned.name;
+    if (forUs && sig == XprsSigState.unverified.name) {
+      unknownSigner++;
+      final who = NostrCrypto.bareCallsign(p['f'] ?? '');
+      if (who.isNotEmpty) onUnknownSigner?.call(who);
+    }
     final row = <String, dynamic>{
       // Section 5: derived from the packet, never transmitted, so a copy
       // heard twice over two bearers is recognised once. A wapp needs it to
@@ -400,6 +417,8 @@ class WappDelivery {
   static void debugReset() {
     refusedProtocol = 0;
     refusedGroupAuthor = 0;
+    unknownSigner = 0;
+    onUnknownSigner = null;
     published = 0;
     noSubscriber = 0;
     partsHeld = 0;

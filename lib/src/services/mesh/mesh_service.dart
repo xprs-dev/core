@@ -395,6 +395,10 @@ class MeshService {
         // reaching an admin who had never heard the invitee's `t:identity`.
         XprsGroups.instance.onUnknownSigner =
             (c) => unawaited(XprsPublisher.instance.askIdentity(c));
+        // The same for anything signed TO us that a wapp is handed: a
+        // command from a station we have not heard announce yet.
+        WappDelivery.onUnknownSigner =
+            (c) => unawaited(XprsPublisher.instance.askIdentity(c));
         // The replays (identity key bindings, closed-group acts) check a
         // signature per item. Inline they froze the app for several seconds at
         // every launch, so they run in slices that hand the isolate back to the
