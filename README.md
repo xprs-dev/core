@@ -53,7 +53,6 @@ right for a program that has none of it:
 | `secureStore` | flutter_secure_storage | none |
 | `assets` | the Flutter asset bundle | none |
 | `appSupportDir` | path_provider | home directory |
-| `prepareSqlite` | SQLCipher on Android | system SQLite |
 | `hasAllFilesAccess` | Android all-files permission | yes |
 | `mediaArchive` | the shared media store | none |
 | `battery`, `pushPowerTier` | battery_plus; the native service | on mains |

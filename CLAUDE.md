@@ -21,7 +21,7 @@ run. `../xprs/docs/architecture.md` governs it (§2a is about this repo) and
    takes the intent (`RnsService.react`, `RnsService.inReach`), never by the
    caller.
 4. **The web build compiles this.** `dart:io`, `dart:ffi`, `dart:isolate` and
-   FFI sqlite go in a `*_io.dart` behind a conditional export (`fs.dart`,
+   FFI go in a `*_io.dart` behind a conditional export (`fs.dart`,
    `os.dart`, `off_thread.dart` are the pattern).
 5. **Cost rules apply** (performance.md §8): no sub-minute poll, no whole
    file on the heap, no page fetched to count, nothing unbounded that grows per

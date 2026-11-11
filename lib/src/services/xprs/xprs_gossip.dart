@@ -241,7 +241,7 @@ class XprsGossip {
     if (db == null || callsign.isEmpty || selfCallsign.isEmpty) return;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     // This sits on the funnel: every beacon from every neighbour lands here,
-    // several a second on a busy bench, and each write below is two sqlite
+    // several a second on a busy bench, and each write below is two zx
     // statements on this isolate. The table's answer does not change by the
     // beacon — debounce identical sightings in RAM and pay the disk once a
     // minute per (callsign, bearer) (performance.md 4.2: no timers, the
@@ -295,7 +295,8 @@ class XprsGossip {
           );
         }
         // The cap: stalest pointers leave, whoever wrote them (every row
-        // past the cap-th freshest; an explicit big LIMIT, not SQLite's -1).
+        // past the cap-th freshest; an explicit big LIMIT, not the SQLite
+        // dialect's -1).
         db.execute(
           'DELETE FROM directory_ptr WHERE rowid IN '
           '(SELECT rowid FROM directory_ptr ORDER BY last_ts DESC '

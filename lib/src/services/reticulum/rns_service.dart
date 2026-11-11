@@ -420,7 +420,7 @@ class RnsService {
   int _shaFolderIndexAt = 0;
 
   // Disk-backed owner folders + consumer subscriptions. Serve source is a
-  // composite so disk-folder bytes are served straight from disk (no sqlite
+  // composite so disk-folder bytes are served straight from disk (no archive
   // copy), alongside the MediaArchive.
   String? diskFoldersPath;
   String? subscriptionsPath;
@@ -3755,7 +3755,7 @@ class RnsService {
         _mode = mode;
         // One serve source that fans out: the MediaArchive plus any owner disk
         // folders (added later by the DiskFolderManager) — disk bytes are never
-        // copied into sqlite.
+        // copied into the archive.
         _composite = CompositeFileSource([
           // Read the serve source LIVE. It used to capture `fileServeSource` at
           // this moment, so a node that had it assigned only AFTER start (the
@@ -4350,11 +4350,11 @@ class RnsService {
           // Every durably stored event — mesh push, publish, batch merge, WS
           // ingest — live-pushes to any open WS subscription.
           _relayStore!.onPut = (ev) => _nostrWs?.broadcast(ev);
-          // The NOSTR relay pipeline (WebSocket receive, decode, verify, SQLite,
+          // The NOSTR relay pipeline (WebSocket receive, decode, verify, store,
           // like/reply/profile tallies) all runs on a DEDICATED background isolate
           // via NostrEngine — the UI isolate only sends commands + reads caches, so
           // a public firehose can never make the app unresponsive. Its store is a
-          // separate SQLite file opened INSIDE that isolate.
+          // separate zx file (nostr_feed.zx) opened INSIDE that isolate.
           final base = relayStorePath?.replaceAll(RegExp(r'[^/]*$'), '');
           if (base != null && !nostrOn) {
             LogService.instance.add(
@@ -9857,7 +9857,7 @@ class RnsService {
   /// The newest event we have ever raised a card for, and the last time the user
   /// looked at the panel. BOTH persisted — see PreferencesService. Held in RAM,
   /// they were the bug: the standing `#p = me` subscription is answered out of
-  /// SQLite, so every restart replayed the stored notifications and every replay
+  /// the zx store, so every restart replayed the stored notifications and every replay
   /// popped again.
   int _notifAnnouncedMs = -1; // -1 = not loaded yet
   int _notifSeenMs = -1;
@@ -9896,7 +9896,7 @@ class RnsService {
   ///
   /// "New" means: newer than the newest thing we have ever announced. That single
   /// comparison is what makes an announce happen ONCE, EVER — the subscription is
-  /// answered out of SQLite, so every start re-injects the whole stored backlog
+  /// answered out of the zx store, so every start re-injects the whole stored backlog
   /// into this drain, and an id set that dies with the process could never tell a
   /// new reaction from a replay of a week-old one.
   void _pumpNotifications() {
@@ -11725,7 +11725,7 @@ class RnsService {
   /// Materialise one archived file and hand it to whatever the system uses to
   /// view that type. The archive keeps content as a database blob, so it has
   /// to become a real file first; the copy is streamed on a worker isolate
-  /// straight out of sqlite (docs/performance.md §8.9), never read whole here.
+  /// straight out of the zx store (docs/performance.md §8.9), never read whole here.
   ///
   /// [group] keeps exports apart, so two folders each holding "readme.txt" do
   /// not overwrite each other. Used by the folders lane and by a wapp opening

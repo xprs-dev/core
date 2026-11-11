@@ -15,7 +15,7 @@ void main() {
       a.close();
       dir.deleteSync(recursive: true);
     });
-    a.init('${dir.path}/archive.sqlite');
+    a.init('${dir.path}/archive.zx');
     a.maxGroupBytes = 3000;
     const group = 'X5GRP1';
     const quiet = 'X5QUIE';

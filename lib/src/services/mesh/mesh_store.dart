@@ -400,10 +400,11 @@ class MeshStore {
   ///
   /// `IN ()` is not valid SQL, and an empty name list used to be an `= ''`
   /// that matched nothing, so the false branch has to keep that meaning.
-  /// It is `0 = 1` and not `0`: in an `ORDER BY` term sqlite reads a bare
-  /// integer as an ORDINAL COLUMN REFERENCE, so `ORDER BY (0)` is not "sort
-  /// by false", it is "1st ORDER BY term out of range" and the statement does
-  /// not even prepare.
+  /// It is `0 = 1` and not `0`: in an `ORDER BY` term the SQLite dialect
+  /// (which zx speaks) reads a bare integer as an ORDINAL COLUMN
+  /// REFERENCE, so `ORDER BY (0)` is not "sort by false", it is
+  /// "1st ORDER BY term out of range" and the statement does not even
+  /// prepare.
   static String _mineSql(List<String> names) => names.isEmpty
       ? '0 = 1'
       : 'sender IN (${List.filled(names.length, '?').join(',')})';
@@ -561,7 +562,7 @@ class MeshStore {
     //
     // `rowid DESC` breaks ties: `ts` has second-to-millisecond resolution and a
     // burst parks several rows inside one tick, so without it "newest" is
-    // whatever sqlite feels like returning. Insertion order is the real
+    // whatever the engine feels like returning. Insertion order is the real
     // tiebreak and the table has a rowid.
     for (final r in db.select(
         'SELECT am,target,sender,wire,ts FROM mesh_store '

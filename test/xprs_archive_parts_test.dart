@@ -17,7 +17,7 @@ void main() {
       a.close();
       dir.deleteSync(recursive: true);
     });
-    a.init('${dir.path}/archive.sqlite');
+    a.init('${dir.path}/archive.zx');
     final key = BigInt.parse('fedcba0987654321fedcba0987654321', radix: 16);
     a.keyResolver = (c) => c == 'X1BOBB' ? XprsCrypto.publicKeyXOnly(key) : null;
     const head = 't:blog f:X1BOBB ts:2026-11-06_10:00:00 title:field-day';
