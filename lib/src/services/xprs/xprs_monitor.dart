@@ -496,6 +496,24 @@ class XprsMonitor {
     return [for (final s in fresh) s.callsign];
   }
 
+  /// How many stations can be reached without the internet right now: heard
+  /// within [within] on a bearer whose class (section 9.11) is local -- BLE,
+  /// LAN, WiFi, ESP-NOW -- or regional -- LoRa and the other radios. What the
+  /// Android status notification counts ("3 reachable"). Relayed packets
+  /// count too: a station a digipeater repeats to us is reachable the same
+  /// way back. Reticulum and the internet never reach [_stations] at all.
+  int reachableCount({Duration within = staleAfter, int? nowMs}) {
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    var n = 0;
+    for (final s in _stations.values) {
+      if (s.bearersFresh(now, within.inMilliseconds)
+          .any((b) => xprsBearerReach(b) != XprsReach.global)) {
+        n++;
+      }
+    }
+    return n;
+  }
+
   static String _lane(String bearer) {
     final b = bearer.trim().toLowerCase();
     return b == 'ble5' ? 'ble' : b;
