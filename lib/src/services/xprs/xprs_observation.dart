@@ -55,6 +55,8 @@ XprsPacket? xprsComposeObservation({
   String? serve,
   String? dial,
   String? room,
+  String? pos,
+  int? accM,
   BigInt? signingKey,
   String? ts,
 }) {
@@ -75,6 +77,12 @@ XprsPacket? xprsComposeObservation({
   // room for new stations. Both ride the same announcement as `serve:`.
   if (dial != null && dial.isNotEmpty) envelope = envelope.with_('dial', dial);
   if (room != null && room.isNotEmpty) envelope = envelope.with_('room', room);
+  // 15.1, 15.2: where the station is, only when its owner shares it, already
+  // coarsened to their radius (xprs_shared_position.dart).
+  if (pos != null && pos.isNotEmpty) {
+    envelope = envelope.with_('pos', pos);
+    if (accM != null && accM > 0) envelope = envelope.with_('acc', '$accM');
+  }
   if (ts != null) envelope = envelope.with_('ts', ts);
 
   final roomBytes = budget - (signingKey != null ? 65 : 0);

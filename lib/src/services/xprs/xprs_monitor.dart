@@ -161,6 +161,14 @@ class XprsStation {
   /// The sender's stability account (section 10.5), verbatim `qty` text like
   /// `26h` / `38day`. A claim, not a measurement — shown as said.
   String? uptime;
+
+  /// Where the station says it is: `pos:` and `acc:` (XPRS.md 15.1, 15.2)
+  /// from its own presence packets only (a beacon, a service announcement),
+  /// never from a packet whose `pos:` names some other place (an event, a
+  /// warning). Newest composed wins. Empty when it shares no position.
+  String pos = '';
+  int acc = 0;
+  int posAtMs = 0;
   String? lifetime;
 
   /// The firmware it runs (`fw:`, 11.8), verbatim; null until it said.
@@ -412,6 +420,15 @@ class XprsMonitor {
     if (peers != null) st.peers = peers;
     if (p.has('mail')) st.mail = xprsMail(p);
     if (p.has('uptime')) st.uptime = p['uptime'];
+    if ((p.type == 'observation' || p.type == 'service') &&
+        (p['pos'] ?? '').contains(',')) {
+      final at = xprsParseTs(p['ts']) ?? now;
+      if (at >= st.posAtMs) {
+        st.pos = p['pos']!;
+        st.acc = int.tryParse(p['acc'] ?? '') ?? 0;
+        st.posAtMs = at;
+      }
+    }
     if (p.has('lifetime')) st.lifetime = p['lifetime'];
     // `serve:`, `count:` and `hears:` follow the same rule: a beacon or a
     // service advertisement states them, an ordinary message states neither,
@@ -697,6 +714,8 @@ class XprsMonitor {
         'title': s.callsign,
         'subtitle': sub.toString(),
         'tags': tags,
+        if (s.pos.isNotEmpty) 'pos': s.pos,
+        if (s.pos.isNotEmpty && s.acc > 0) 'acc': s.acc,
         ...kind,
       };
     }).toList();
@@ -772,6 +791,8 @@ class XprsMonitor {
       if (s.mail != null) 'mail': s.mail,
       if (s.uptime != null) 'uptime': s.uptime,
       if (s.lifetime != null) 'lifetime': s.lifetime,
+      if (s.pos.isNotEmpty) 'pos': s.pos,
+      if (s.pos.isNotEmpty && s.acc > 0) 'acc': s.acc,
       if (s.fw != null) 'fw': s.fw,
       if (s.count != null) 'count': s.count,
       if (s.services.isNotEmpty) 'serve': s.services,

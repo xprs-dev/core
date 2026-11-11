@@ -50,6 +50,7 @@ import '../xprs/xprs_ingest.dart';
 import '../xprs/xprs_directory.dart';
 import '../xprs/xprs_gossip.dart';
 import '../xprs/xprs_observation.dart';
+import '../xprs/xprs_shared_position.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_passphrases.dart';
 import '../xprs/xprs_publisher.dart';
@@ -1496,6 +1497,7 @@ class MeshService {
     if (!XprsLan.instance.up) return;
     final self = (_table?.selfCallsign ?? '').trim();
     if (self.isEmpty) return;
+    await XprsSharedPosition.instance.refresh();
 
     // The one composer (xprs_observation.dart): the same packet the deposit
     // to our archivers carries, built against the format's own 250 here.
@@ -1526,6 +1528,7 @@ class MeshService {
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
     final prefs = PreferencesService.instanceSync;
     final public = prefs?.xprsPublicArchiver ?? false;
+    final at = XprsSharedPosition.instance.current();
     return xprsComposeObservation(
       self: self,
       link: link,
@@ -1546,6 +1549,8 @@ class MeshService {
       // 12.9.5: the load is the declarations naming us; past the operator's
       // ceiling, or on their word, newcomers are told to go elsewhere.
       room: public && !_hasRoom() ? 'no' : null,
+      pos: at?.pos,
+      accM: at?.acc,
       signingKey: xprsProfileScalar(),
       ts: stamped ? xprsNowTs() : null,
     );

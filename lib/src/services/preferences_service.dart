@@ -666,6 +666,19 @@ class PreferencesService {
   String get nodeGeohash => _prefs.getString('node.geohash') ?? '';
   set nodeGeohash(String v) => _prefs.setString('node.geohash', v);
 
+  // Whether this station's position goes out with its beacon (XPRS.md 15.1,
+  // 15.6), and how coarsely: the owner's radius in metres, the position
+  // snapped to a grid cell that size (xprs_shared_position.dart). Off by
+  // default for the same reason as the geohash above. [positionFixed] is
+  // "lat,lon" for a station with no GPS (a desktop, a server, the box on the
+  // roof); a GPS fix, when there is one, wins.
+  bool get positionShare => _prefs.getBool('position.share') ?? false;
+  set positionShare(bool v) => _prefs.setBool('position.share', v);
+  int get positionRadiusM => _prefs.getInt('position.radiusM') ?? 10;
+  set positionRadiusM(int v) => _prefs.setInt('position.radiusM', v);
+  String get positionFixed => _prefs.getString('position.fixed') ?? '';
+  set positionFixed(String v) => _prefs.setString('position.fixed', v);
+
   // One entry per antenna: link, range in km, the frequency it LISTENS on, the
   // mode, and when (the schedule grammar). A machine with a LoRa hat and a VHF
   // rig has two very different footprints, and one number would lie about both.
