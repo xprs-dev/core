@@ -1611,8 +1611,6 @@ class MeshService {
     if (!_deviceIsSeparate) return null;
     final dev = DeviceIdentity.instance;
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
-    final prefs = PreferencesService.instanceSync;
-    final public = prefs?.xprsPublicArchiver ?? false;
     final at = XprsSharedPosition.instance.current();
     return xprsComposeObservation(
       self: dev.callsign,
@@ -1621,13 +1619,9 @@ class MeshService {
       budget: budget,
       uptimeS: upSec,
       lifetimeS: _lifeBaseSec >= 0 ? _lifeBaseSec + upSec : null,
-      serve: xprsServeClaim(
-        public: public,
-        spoolReady: XprsArchive.instance.ready,
-        files: (prefs?.archiveQuotaGb ?? 0) > 0,
-      ),
-      dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
-      room: public && !_hasRoom() ? 'no' : null,
+      // No `serve:`/`dial:`/`room:` yet: the archive still answers as the
+      // person (architecture.md, "The device and its people"). Claiming it
+      // here made other stations poll the X3 for history it only refuses.
       pos: at?.pos,
       accM: at?.acc,
       signingKey: dev.scalar,

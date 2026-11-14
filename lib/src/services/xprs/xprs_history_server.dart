@@ -751,17 +751,10 @@ class XprsHistoryServer {
       unawaited(XprsPublisher.instance.publishDeviceIdentity());
     }
     if (q.contains('policy')) {
-      final serve = xprsServeClaim(
-        public: PreferencesService.instanceSync?.xprsPublicArchiver ?? false,
-        spoolReady: XprsArchive.instance.ready,
-        files: (PreferencesService.instanceSync?.archiveQuotaGb ?? 0) > 0,
-      );
-      final wire = xprsPolicyReportWire(
-          dev.callsign,
-          from,
-          XprsStationPolicy(
-              owners: dev.owners(),
-              serve: serve == null ? const [] : serve.split(',')));
+      // Owners only: the archive still answers as the person, so the
+      // device claims no `serve:` of its own (see the device observation).
+      final wire = xprsPolicyReportWire(dev.callsign, from,
+          XprsStationPolicy(owners: dev.owners(), serve: const []));
       final parsed = wire == null ? null : XprsPacket.parse(wire);
       final key = dev.scalar;
       if (parsed == null || key == null) return;
