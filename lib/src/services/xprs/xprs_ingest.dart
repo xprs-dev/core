@@ -282,8 +282,39 @@ class XprsIngest {
       // The room catch-up and keeping the rooms are one decision: a device
       // that polls archivers for the rooms' conversation keeps the answer.
       followRooms: p.xprsCatchup,
+      followedKinds: p.xprsFollowedKinds,
     );
   }
+
+  /// [wapp] starts (or stops) following packet type [kind]: its undirected
+  /// publications are kept whoever sent them, heard here or replayed by an
+  /// archiver, and the catch-up asks archivers for what is new of it
+  /// (XprsCatchup). Per wapp; the archive reads the union. False for a word
+  /// that is not a packet type.
+  static bool followKind(String wapp, String kind, bool on) {
+    final k = kind.trim().toLowerCase();
+    final prefs = PreferencesService.instanceSync;
+    if (prefs == null || wapp.isEmpty || !RegExp(r'^[a-z]{1,16}$').hasMatch(k)) {
+      return false;
+    }
+    final all = prefs.xprsFollowedKindsByWapp;
+    final mine = {...?all[wapp]};
+    if (on ? !mine.add(k) : !mine.remove(k)) return true; // nothing changed
+    if (mine.isEmpty) {
+      all.remove(wapp);
+    } else {
+      all[wapp] = mine.toList()..sort();
+    }
+    prefs.xprsFollowedKindsByWapp = all;
+    reloadPolicy();
+    LogService.instance.add('XPRS: $wapp ${on ? 'follows' : 'no longer follows'} '
+        't:$k (kept from anyone, asked of archivers)');
+    return true;
+  }
+
+  /// An undirected packet of a type this station follows.
+  static bool _followedKind(XprsPacket p) =>
+      policy.followedKinds.contains(p.type) && (p['d'] ?? '').trim().isEmpty;
 
   /// A room's talk heard within its scope (9.11.1): an undirected message or
   /// a reaction whose `scope:` admits the bearer it arrived on. The same
@@ -543,6 +574,7 @@ class XprsIngest {
       addressedToUs: forUs,
       followedStation: _followedStation(_base(from)),
       room: _isRoomTalk(p, _archiveBearer(bearer)),
+      followedKind: _followedKind(p),
     );
     if (shelf != null) {
       // `admit` only QUEUES. Whoever needs to know a row exists listens to
@@ -1219,6 +1251,7 @@ class XprsIngest {
       policy: policy,
       followedStation: _followedStation(fromC),
       room: _isRoomTalk(p, 'rns'),
+      followedKind: _followedKind(p),
     );
     if (shelf == null) {
       // A receipt, a ping or a result was never going to be written down by

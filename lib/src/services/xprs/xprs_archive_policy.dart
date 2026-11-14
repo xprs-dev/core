@@ -69,6 +69,7 @@ class XprsArchivePolicy {
     this.keepFollowed = true,
     this.keepChatter = false,
     this.followRooms = false,
+    this.followedKinds = const {},
   });
 
   /// Keep strangers' traffic, within the quota, and announce `serve:archive`.
@@ -96,12 +97,20 @@ class XprsArchivePolicy {
   /// conversation keeps the answer, and what it hears of them live.
   final bool followRooms;
 
+  /// Packet types a wapp on this station follows (`hal_xprs_follow_kind`):
+  /// their undirected publications are kept whoever sent them, on the
+  /// strangers' shelf under its quota, from every lane, and the catch-up asks
+  /// archivers for them. Following a TYPE is the consent, as following a
+  /// device by callsign is (docs/architecture.md, 2026-09-14).
+  final Set<String> followedKinds;
+
   XprsArchivePolicy copyWith({
     bool? public,
     bool? alwaysOn,
     bool? keepFollowed,
     bool? keepChatter,
     bool? followRooms,
+    Set<String>? followedKinds,
   }) =>
       XprsArchivePolicy(
         public: public ?? this.public,
@@ -109,6 +118,7 @@ class XprsArchivePolicy {
         keepFollowed: keepFollowed ?? this.keepFollowed,
         keepChatter: keepChatter ?? this.keepChatter,
         followRooms: followRooms ?? this.followRooms,
+        followedKinds: followedKinds ?? this.followedKinds,
       );
 }
 
@@ -143,6 +153,8 @@ Tier? xprsAdmitTier({
   /// heard within its scope's reach. The caller decides the reach; a
   /// `scope:local` heard over LoRa is in no room and is not this.
   bool room = false,
+  /// A publication (no `d:`) of a type this station follows.
+  bool followedKind = false,
 }) {
   // Never spooled by anybody: acknowledgements, results and reachability
   // tests. The archive drops these at its own door too; naming them here
@@ -187,6 +199,10 @@ Tier? xprsAdmitTier({
   // kept, under the strangers' quota. Talk heard in range only, never
   // presence, never mail.
   if (room && policy.followRooms && !presence) return Tier.stranger;
+
+  // ── The types a wapp follows. Its publications, whoever sent them: heard
+  // directly and replayed by an archiver alike, one row per packet.
+  if (followedKind && !presence) return Tier.stranger;
 
   // ── Everyone else. Silence is not consent (12): with Public archiver off
   // this station holds nothing for strangers — not their chatter, not their

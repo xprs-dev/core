@@ -38,6 +38,7 @@ import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_cadence.dart';
 import 'xprs_id.dart';
+import 'xprs_ingest.dart';
 import 'xprs_monitor.dart';
 import 'xprs_owned_stations.dart';
 import 'xprs_packet.dart';
@@ -1124,7 +1125,10 @@ class XprsCatchup {
       return;
     }
     final station = f.followStation;
-    if (station != null && _base(p['f'] ?? '') == station) {
+    if (station != null &&
+        (_isKind(station)
+            ? p.type == station.substring(_kindTarget.length)
+            : _base(p['f'] ?? '') == station)) {
       followRows++;
       final o = _followOldest[station];
       if (o == null || ts < o) _followOldest[station] = ts;
@@ -1170,9 +1174,20 @@ class XprsCatchup {
     return false;
   }
 
+  // ── Followed types (hal_xprs_follow_kind): the same fetch, for a packet
+  // TYPE rather than a station. A target is a callsign or `kind:<type>`; a
+  // type's ask is `cmd:history kind:<type> since:<newest of it held>`, from
+  // anyone, and what comes back joins what this station heard itself in the
+  // one archive (xprsAdmitTier `followedKind`), one row per packet.
+  static const String _kindTarget = 'kind:';
+  static bool _isKind(String target) => target.startsWith(_kindTarget);
+
   Future<void> _pullFollowed(String self, List<String> archivers, int now,
       PreferencesService prefs) async {
-    final followed = XprsArchive.instance.followedStations;
+    final followed = <String>[
+      ...XprsArchive.instance.followedStations,
+      for (final k in XprsIngest.policy.followedKinds) '$_kindTarget$k',
+    ];
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
     final every =
         (_visible ? followEveryVisible : followEveryHidden).inMilliseconds;
@@ -1181,7 +1196,9 @@ class XprsCatchup {
     // longest-waiting first, so one station never starves behind another.
     final due = [
       for (final c in followed)
-        if (!XprsMonitor.instance.heardDirectly(c, nowMs: now) &&
+        // A type is never "in earshot": the air carries what is near, an
+        // archiver what was said further away while we were not listening.
+        if ((_isKind(c) || !XprsMonitor.instance.heardDirectly(c, nowMs: now)) &&
             !_followAsking(c) &&
             (_followResume.containsKey(c) ||
                 now - (_followAskedAtMs[c] ?? 0) >= every))
@@ -1210,16 +1227,21 @@ class XprsCatchup {
 
   Future<bool> _askFollowed(
       String self, String archiver, String station, int now) async {
-    final held = XprsArchive.instance
-        .newestPts(station, types: const ['observation']);
+    final kind = _isKind(station) ? station.substring(_kindTarget.length) : null;
+    final held = kind != null
+        ? XprsArchive.instance.newestPtsOfType(kind)
+        : XprsArchive.instance.newestPts(station, types: const ['observation']);
     final floorMs = now - maxWindow.inMilliseconds;
-    var sinceMs = held ?? now - followFirstWindow.inMilliseconds;
+    // A type never fetched reaches back the whole background window: what
+    // was announced this week is what a person opening the wapp wants.
+    var sinceMs = held ??
+        now - (kind != null ? maxWindow : followFirstWindow).inMilliseconds;
     if (sinceMs < floorMs) sinceMs = floorMs;
     final untilMs = _followResume[station];
-    // identity first: the observations verify against a key that may ride
-    // the same page (the same order XprsGossip.askAlwaysOn uses).
+    // A station: identity first, since the observations verify against a key
+    // that may ride the same page (the order XprsGossip.askAlwaysOn uses).
     final wire = StringBuffer('t:command f:$self d:$archiver ts:${_ts(now)} '
-        'cmd:history kind:identity,observation only:$station '
+        '${kind != null ? 'cmd:history kind:$kind' : 'cmd:history kind:identity,observation only:$station'} '
         'since:${_ts(sinceMs)}');
     if (untilMs != null) wire.write(' until:${_ts(untilMs)}');
     final p = XprsPacket.parse(wire.toString());

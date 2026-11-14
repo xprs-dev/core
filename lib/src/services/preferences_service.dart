@@ -672,6 +672,27 @@ class PreferencesService {
   // default for the same reason as the geohash above. [positionFixed] is
   // "lat,lon" for a station with no GPS (a desktop, a server, the box on the
   // roof); a GPS fix, when there is one, wins.
+  /// The packet types each wapp follows (`hal_xprs_follow_kind`), as
+  /// `{"<wapp>":["event",...]}`. Per wapp, so one wapp stopping does not
+  /// stop another's; the archive and the catch-up read the union.
+  Map<String, List<String>> get xprsFollowedKindsByWapp {
+    try {
+      final m = jsonDecode(_prefs.getString('xprs.followedKinds') ?? '{}') as Map;
+      return {
+        for (final e in m.entries)
+          e.key.toString(): [for (final k in (e.value as List)) k.toString()]
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  set xprsFollowedKindsByWapp(Map<String, List<String>> v) =>
+      _prefs.setString('xprs.followedKinds', jsonEncode(v));
+
+  Set<String> get xprsFollowedKinds =>
+      {for (final l in xprsFollowedKindsByWapp.values) ...l};
+
   bool get positionShare => _prefs.getBool('position.share') ?? false;
   set positionShare(bool v) => _prefs.setBool('position.share', v);
   int get positionRadiusM => _prefs.getInt('position.radiusM') ?? 10;

@@ -1484,6 +1484,18 @@ class XprsArchive {
     return rows.isEmpty ? null : rows.first['pts'] as int;
   }
 
+  /// The newest `pts` held of packet type [type], whoever sent it: the
+  /// `since:` of a followed type's catch-up (what is new since the last
+  /// thing kept, heard directly or replayed alike).
+  int? newestPtsOfType(String type) {
+    final db = _db;
+    if (db == null || type.isEmpty) return null;
+    final rows = db.select(
+        'SELECT pts FROM packets WHERE type = ? ORDER BY pts DESC LIMIT 1',
+        [type]);
+    return rows.isEmpty ? null : rows.first['pts'] as int;
+  }
+
   /// Counters for /api/status-style checks.
   Map<String, dynamic> statusJson() {
     return {

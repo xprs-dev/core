@@ -271,4 +271,40 @@ void main() {
       expect(set, {'X4PL3M', 'X4DOOR'});
     });
   });
+
+  // A wapp following a packet TYPE (hal_xprs_follow_kind) is the consent a
+  // private phone gives for that type: check-in events from stations nobody
+  // follows yet, heard here or replayed by an archiver, on every lane.
+  group('a followed type', () {
+    test('a stranger\'s publication of it is kept, on the strangers\' shelf', () {
+      for (final internet in [false, true]) {
+        expect(
+            xprsAdmitTier(
+                tier: Tier.stranger,
+                type: 'event',
+                publication: false,
+                declared: false,
+                internet: internet,
+                policy: const XprsArchivePolicy(followedKinds: {'event'}),
+                followedKind: true),
+            Tier.stranger,
+            reason: internet ? 'replayed or heard over Reticulum' : 'heard on the air');
+      }
+    });
+    test('without the follow it is not, on a private phone', () {
+      expect(admit(Tier.stranger, 'event'), isNull);
+    });
+    test('presence is never kept this way', () {
+      expect(
+          xprsAdmitTier(
+              tier: Tier.stranger,
+              type: 'observation',
+              publication: false,
+              declared: false,
+              internet: false,
+              policy: const XprsArchivePolicy(followedKinds: {'observation'}),
+              followedKind: true),
+          isNull);
+    });
+  });
 }
