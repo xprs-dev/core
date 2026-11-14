@@ -18,6 +18,7 @@
  * bearers call [offer], and [kBearers] refuses anything else. A packet that
  * came over a hub cannot be in here to be leaked by a caller who forgot.
  */
+import '../../profile/device_identity.dart';
 import 'dart:convert';
 
 import '../receive/core_state.dart';
@@ -353,6 +354,9 @@ class XprsMonitor {
     if (from.isEmpty) return;
     final self = selfCallsign.trim().toUpperCase();
     if (from == self) return; // our own packet, heard back
+    // The device's own X3 (DeviceIdentity) is this station too: hearing it
+    // back is not hearing a neighbour, and it is never asked for history.
+    if (DeviceIdentity.instance.isDevice(from)) return;
 
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     final to = (p['d'] ?? '').trim().toUpperCase();
