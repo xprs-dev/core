@@ -471,3 +471,15 @@ The install's own `X3`: `ensure()` loads or makes it (public half in
 keychain), `callsign`, `npub`, `scalar` to sign with, `isDevice(call)`,
 `owners()` (the profiles on this device, active first, max four). Use it
 whenever a packet states a fact about the machine rather than the person.
+
+### Who may fetch a file — `WebChatApi._mayFetch`, `XprsFileAcl.groupOf` / `isOpen` / `openGroup`
+
+XPRS.md 11.2 for the visitor API: a file posted in a hosted room
+(`_bindRoomFiles` after `keep`, or `?room=` on an upload via `_uploadRoom` /
+`_bindUpload`) is bound to that room in `XprsFileAcl` as a `group`, and every
+GET (`_fileGet`, `openFile(session:)`) asks `_mayRead(room, session)` at that
+moment, so a room's visibility is read live. `isOpen(sha)` is the one answer
+for "anyone may have it" (unbound, public, or a group the host says is open
+through `openGroup`); the mesh's `cmd:file` gate in `MeshService` uses it.
+Anything that serves bytes by hash should ask `_mayFetch`/`isOpen`, never
+`scopeOf` alone.

@@ -161,6 +161,34 @@ class XprsFileAcl {
     }
   }
 
+  /// Whether a closed group's files are anybody's: a room a station hosts
+  /// that is public reads to everyone (XPRS.md 10.10.1), so do its files.
+  /// Set by the host of the rooms (WebChatApi); null: no group is open.
+  bool Function(String group)? openGroup;
+
+  /// The group [shaHex] is bound to, or null (unbound, public, a pair).
+  String? groupOf(String shaHex) {
+    if (_kv == null) return null;
+    try {
+      final row = _get(shaHex.trim().toLowerCase());
+      if (row == null || row['scope'] != 'group') return null;
+      final g = row['grp'] as String? ?? '';
+      return g.isEmpty ? null : g;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Whether anyone may fetch [shaHex], proven or not: unbound, public, or
+  /// bound to a group whose host says it is open ([openGroup]).
+  bool isOpen(String shaHex) {
+    final scope = scopeOf(shaHex);
+    if (scope == null || scope == XprsFileScope.public) return true;
+    if (scope != XprsFileScope.group) return false;
+    final g = groupOf(shaHex);
+    return g != null && (openGroup?.call(g) ?? false);
+  }
+
   /// The recorded scope of a hash, for tests and status. Null when unbound.
   XprsFileScope? scopeOf(String shaHex) {
     if (_kv == null) return null;
