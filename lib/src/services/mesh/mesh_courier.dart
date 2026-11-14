@@ -61,6 +61,7 @@ import 'package:xprs_core/src/services/events/wapp_event_broker.dart';
 import '../xprs/xprs_vocab.dart';
 import '../xprs/xprs_ingest.dart';
 import '../xprs/xprs_body.dart';
+import '../xprs/xprs_fetch.dart';
 import '../xprs/xprs_publisher.dart';
 import '../xprs/xprs_mailbox.dart';
 import '../xprs/xprs_receipt.dart';
@@ -420,6 +421,9 @@ class MeshCourier {
       // seals it.
       if (built.refusal == XprsSealRefusal.noRecipientKey) {
         unawaited(XprsPublisher.instance.askIdentity(call));
+        // ...and the archivers, which keep every t:identity (12.12.1): the
+        // station itself may be out of reach of a direct ask.
+        XprsFetch.instance.requestKey(call, reason: 'cannot seal to them');
       }
       return;
     }
@@ -725,6 +729,11 @@ class MeshCourier {
       // station can be sealed to by a peer whose key it will not hold for half
       // an hour, and every message in between is unreadable.
       unawaited(XprsPublisher.instance.askIdentity(f.from));
+      // The station may not hear that ask: a peer reached over Reticulum gets
+      // no t:identity from us and sends none our way (stations relay nothing
+      // onto Reticulum). The archivers keep every binding (12.12.1), so ask
+      // them as the send path does.
+      XprsFetch.instance.requestKey(f.from, reason: 'sealed message from them');
       body = '[sealed — no key for ${f.from} yet]';
     }
     // SECTION 6.6: A PARTIAL MESSAGE IS NEVER DISPLAYED.

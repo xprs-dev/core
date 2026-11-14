@@ -13,6 +13,8 @@
  * they are leaves: they see the street but the street can't route via them.
  */
 import '../../profile/iwi_profile.dart';
+import '../../profile/device_identity.dart';
+import '../xprs/xprs_owned_stations.dart';
 import 'package:xprs_core/src/util/compat.dart' show setEquals;
 import 'dart:async';
 import 'dart:convert';
@@ -222,9 +224,30 @@ class MeshService {
       final b = NostrCrypto.bareCallsign(c).toUpperCase();
       if (b.isNotEmpty && b != onAir) out.add(b);
     }
+    // The device's X3 is this station too: what is addressed to it lands here.
+    final dev = DeviceIdentity.instance.callsign;
+    if (dev.isNotEmpty && dev != onAir) out.add(dev);
     return out.isEmpty ? const {} : out;
   }
+
+  /// The profile owns its own device: a local fact, so it is written down
+  /// rather than learned from a packet (XprsOwnedStations).
+  void _noteDeviceOwned() {
+    final dev = DeviceIdentity.instance;
+    final owners = dev.owners();
+    if (!dev.ready || owners.isEmpty) return;
+    XprsOwnedStations.instance.learn(dev.callsign, owners.join(','), owners.first);
+  }
+
+  /// Is the device a second name beside the person's (a phone, a desktop),
+  /// rather than the profile itself (a headless X3 station)?
+  bool get _deviceIsSeparate {
+    final dev = DeviceIdentity.instance;
+    return dev.ready &&
+        dev.callsign != NostrCrypto.bareCallsign(tableCallsign).toUpperCase();
+  }
   Set<String> _aliases = const {};
+  int _bleBeaconTurn = 0;
 
   /// Start the mesh node. Idempotent; safe to call again when the profile
   /// (callsign) changes — the table is rebuilt for the new identity.
@@ -258,6 +281,10 @@ class MeshService {
       canAdvertise = true;
       _wishAdvertise = false;
     }
+    // The device's own X3, owned by the people on it (DeviceIdentity). Made
+    // once per install; a station's packets about itself are signed with it.
+    await DeviceIdentity.instance.ensure();
+    _noteDeviceOwned();
     if (_running && _table?.selfCallsign == cs) {
       // Same name on the air, but the set of names may have changed: a
       // callsign added for another jurisdiction without switching to it must
@@ -1426,6 +1453,14 @@ class MeshService {
         : p.with_('hears', fit.hears.join(','));
     if (d != null) p = xprsSign(p, d);
 
+    // Every fourth airing is the device's own X3 observation instead of the
+    // person's: the advert window is the scarcest thing a phone has, so the
+    // two take turns rather than halving each other (one frame, 'xprs').
+    if (_deviceIsSeparate && (++_bleBeaconTurn % 4) == 0) {
+      final dp = _deviceObservation('ble', fresh, budget + (d != null ? 65 : 0));
+      if (dp != null) p = dp;
+    }
+
     // No `busy:` or `txtime:` yet. Section 10.6 defines both over the last hour
     // and this node measures neither — `channelLoad` is a short sliding window
     // of adverts per second, which is a different quantity. Publishing it under
@@ -1516,6 +1551,14 @@ class MeshService {
     } else {
       _xprsLanBeaconsFailed++;
     }
+    // The device speaks for itself beside the person: the LAN has room for
+    // both, so its observation goes every time.
+    final dp = _deviceObservation('lan', XprsMonitor.instance.directlyHeard(),
+        XprsPacket.maxBytes);
+    if (dp != null) {
+      final ok = await airOnLane(dp.encode(), 'lan', slot: 'beacon:device');
+      XprsIngest.own(dp.encode(), bearer: ok ? 'lan' : 'none');
+    }
   }
 
   /// This station's observation about one radio: who it hears there, plus
@@ -1549,9 +1592,45 @@ class MeshService {
       // 12.9.5: the load is the declarations naming us; past the operator's
       // ceiling, or on their word, newcomers are told to go elsewhere.
       room: public && !_hasRoom() ? 'no' : null,
+      // The place is the device's (it is where the station stands), so it
+      // goes on the device's own observation when there is one.
+      pos: _deviceIsSeparate ? null : at?.pos,
+      accM: _deviceIsSeparate ? null : at?.acc,
+      signingKey: xprsProfileScalar(),
+      ts: stamped ? xprsNowTs() : null,
+    );
+  }
+
+  /// The device's X3 observation about one radio: who it hears, what it
+  /// serves, where it stands, how long it has run. Signed with the device
+  /// key. No `lx:` and no `mail:`: those say where to write to a person and
+  /// what is held for people, and they stay on the person's beacon. Null
+  /// when the device is the profile itself.
+  XprsPacket? _deviceObservation(String link, List<String> heard, int budget,
+      {bool stamped = false}) {
+    if (!_deviceIsSeparate) return null;
+    final dev = DeviceIdentity.instance;
+    final upSec = DateTime.now().difference(_startedAt).inSeconds;
+    final prefs = PreferencesService.instanceSync;
+    final public = prefs?.xprsPublicArchiver ?? false;
+    final at = XprsSharedPosition.instance.current();
+    return xprsComposeObservation(
+      self: dev.callsign,
+      link: link,
+      heard: heard.where((c) => !dev.isDevice(c)).toList(),
+      budget: budget,
+      uptimeS: upSec,
+      lifetimeS: _lifeBaseSec >= 0 ? _lifeBaseSec + upSec : null,
+      serve: xprsServeClaim(
+        public: public,
+        spoolReady: XprsArchive.instance.ready,
+        files: (prefs?.archiveQuotaGb ?? 0) > 0,
+      ),
+      dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
+      room: public && !_hasRoom() ? 'no' : null,
       pos: at?.pos,
       accM: at?.acc,
-      signingKey: xprsProfileScalar(),
+      signingKey: dev.scalar,
       ts: stamped ? xprsNowTs() : null,
     );
   }
@@ -1725,6 +1804,9 @@ class MeshService {
       final p = _observation(self, link, onLink, XprsPacket.maxBytes,
           stamped: true);
       if (p != null) wires.add(p.encode());
+      final dp = _deviceObservation(link, onLink, XprsPacket.maxBytes,
+          stamped: true);
+      if (dp != null) wires.add(dp.encode());
     }
     if (wires.isEmpty) return;
     // The key goes first, every half hour (29.1's cadence): to an archiver

@@ -41,6 +41,8 @@ import 'xprs_publisher.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
 import 'package:xprs_core/src/platform/core_host.dart';
+import '../../profile/device_identity.dart';
+import 'xprs_station_policy.dart';
 
 class XprsHistoryServer {
   XprsHistoryServer._();
@@ -182,6 +184,17 @@ class XprsHistoryServer {
       if (directed && from != selfBase && !_budgetAllows(from, now)) return;
       XprsFileServer.instance
           .onHave(p, selfBase: selfBase, from: from, directed: directed);
+      return;
+    }
+    // Addressed to this device's own X3 (DeviceIdentity): it answers what a
+    // station is asked about itself -- who owns it (11.9 `q:policy`) and its
+    // key binding (`q:identity`). Everything else is the person's.
+    final dev = DeviceIdentity.instance;
+    if (p.type == 'request' &&
+        dev.ready &&
+        dev.callsign != selfBase &&
+        dev.isDevice(p['d'] ?? '')) {
+      _onDeviceAsk(p);
       return;
     }
     if (_base(p['d'] ?? '') != selfBase) return;
@@ -706,6 +719,43 @@ class XprsHistoryServer {
     // window, so thirty seconds is at most one window and a card that missed
     // it never hears the answer (measured, 2026-10-07).
     await _air('xprs-pos', ans.encode(), const Duration(seconds: 150), to: to);
+  }
+
+  /// A question to the device's X3, answered as the X3 and signed with its
+  /// key. Metered and de-duplicated like any other directed ask.
+  void _onDeviceAsk(XprsPacket p) {
+    final from = _base(p['f'] ?? '');
+    final dev = DeviceIdentity.instance;
+    if (from.isEmpty || from == dev.callsign) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final id = xprsIdentifier(p);
+    _answeredIds.removeWhere((_, t) => now - t > answeredWindow.inMilliseconds);
+    if (_answeredIds.containsKey(id)) return;
+    _answeredIds[id] = now;
+    if (!_budgetAllows(from, now)) return;
+    final q = (p['q'] ?? '').split(',').map((w) => w.trim()).toSet();
+    if (q.contains('identity')) {
+      unawaited(XprsPublisher.instance.publishDeviceIdentity());
+    }
+    if (q.contains('policy')) {
+      final serve = xprsServeClaim(
+        public: PreferencesService.instanceSync?.xprsPublicArchiver ?? false,
+        spoolReady: XprsArchive.instance.ready,
+        files: (PreferencesService.instanceSync?.archiveQuotaGb ?? 0) > 0,
+      );
+      final wire = xprsPolicyReportWire(
+          dev.callsign,
+          from,
+          XprsStationPolicy(
+              owners: dev.owners(),
+              serve: serve == null ? const [] : serve.split(',')));
+      final parsed = wire == null ? null : XprsPacket.parse(wire);
+      final key = dev.scalar;
+      if (parsed == null || key == null) return;
+      final ans = xprsSign(parsed, key);
+      unawaited(_air('xprs-policy:$from', ans.encode(),
+          const Duration(seconds: 30), to: from));
+    }
   }
 
   XprsPacket? _signed(String wire) {

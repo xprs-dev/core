@@ -463,3 +463,11 @@ link". `RnsService.serveRequests(path, handler)` is the general hook for any
 request handler on that destination; `attachFrameClient` attaches a gateway
 client; `stationIdentity(call)` and `ownWappAnnounce()` serve resolution.
 The app can call `serveWebChatOverRns` for its share server the same way.
+
+## DeviceIdentity (lib/src/profile/device_identity.dart)
+
+The install's own `X3`: `ensure()` loads or makes it (public half in
+`station/device.json`, private half in `CoreHost.secureStore` when there is a
+keychain), `callsign`, `npub`, `scalar` to sign with, `isDevice(call)`,
+`owners()` (the profiles on this device, active first, max four). Use it
+whenever a packet states a fact about the machine rather than the person.

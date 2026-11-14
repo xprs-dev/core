@@ -49,6 +49,7 @@ import 'xprs_key_wait.dart';
 import 'xprs_outbox.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
+import 'xprs_fetch.dart';
 import 'xprs_publisher.dart';
 import 'package:meta/meta.dart';
 
@@ -247,6 +248,7 @@ class XprsSend {
         // Section 8 / 29.1: ask for the key rather than wait for the next
         // announcement.
         unawaited(XprsPublisher.instance.askIdentity(dest));
+        XprsFetch.instance.requestKey(dest, reason: 'cannot seal to them');
       }
       LogService.instance
           .add('XPRS send to $dest refused: ${built.refusal?.name}');

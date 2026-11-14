@@ -31,6 +31,7 @@ import '../mesh/mesh_store.dart';
 import '../mesh/mesh_transfer_scheduler.dart';
 import '../../connections/lora/lora_connection.dart';
 import '../../profile/profile_service.dart';
+import '../../profile/device_identity.dart';
 import '../log_service.dart';
 import '../media/media_fetch.dart';
 import '../preferences_service.dart';
@@ -1260,7 +1261,33 @@ class XprsPublisher {
       report.addAll(await _publishIdentityAs(call, npub,
           slot: call == active ? 'identity' : 'identity:$call'));
     }
+    // The device's own X3 rides the same cadence: its observation and its
+    // policy answer are signed with its key, and a peer checks them only
+    // against a binding it has heard.
+    await publishDeviceIdentity();
     return report;
+  }
+
+  /// The key binding of this device's X3 (DeviceIdentity), aired and kept.
+  /// Nothing when the device is the profile itself (a headless station).
+  Future<Map<String, String>> publishDeviceIdentity() async {
+    final dev = DeviceIdentity.instance;
+    final active = NostrCrypto.bareCallsign(
+            ProfileService.instance.activeProfile?.wireCallsign ?? '')
+        .toUpperCase();
+    if (!dev.ready || dev.callsign == active) return const {};
+    final wire = identityWire(dev.callsign, dev.npub, key: dev.scalar);
+    if (wire == null) return const {};
+    final air = await _fanOut([wire], slot: 'identity:device');
+    XprsIngest.own(wire, bearer: air.carriedBy ?? 'none');
+    return air.report;
+  }
+
+  /// [publishDeviceIdentity]'s wire without airing it, for a deposit.
+  String? deviceIdentityWire() {
+    final dev = DeviceIdentity.instance;
+    if (!dev.ready) return null;
+    return identityWire(dev.callsign, dev.npub, key: dev.scalar);
   }
 
   /// Leave this station's signed key binding with its archivers (12.12.1:
@@ -1270,16 +1297,21 @@ class XprsPublisher {
   /// as a signature it cannot check, which 12.9.4 says feeds nothing.
   Future<void> depositIdentity() async {
     final wire = ownIdentityWire();
-    if (wire != null) depositArchivers([wire], what: 'identity');
+    final dev = deviceIdentityWire();
+    final wires = [
+      if (wire != null) wire,
+      if (dev != null && dev != wire) dev,
+    ];
+    if (wires.isNotEmpty) depositArchivers(wires, what: 'identity');
   }
 
   /// The signed key binding of section 9.3 for [call], as one wire, or null
   /// with no signing key or a packet that does not fit. The ONE builder:
   /// the airing, the deposit and the line-up handshake all send this.
-  String? identityWire(String call, String npub, {String? ts}) {
+  String? identityWire(String call, String npub, {String? ts, BigInt? key}) {
     var p = XprsPacket.parse(
         't:identity f:${call.toUpperCase()} ts:${ts ?? xprsNowTs()} k:$npub');
-    final d = xprsProfileScalar();
+    final d = key ?? xprsProfileScalar();
     if (p == null || d == null) return null;
     p = xprsSign(p, d);
     return p.fits ? p.encode() : null;
