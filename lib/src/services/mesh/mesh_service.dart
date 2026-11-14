@@ -661,8 +661,7 @@ class MeshService {
         // member/participant. An unbound hash is public.
         XprsFileServer.instance.authorize =
             (sha, requester, {required bool sigVerified}) {
-          final scope = XprsFileAcl.instance.scopeOf(sha);
-          if (scope == null || scope == XprsFileScope.public) return true;
+          if (XprsFileAcl.instance.isOpen(sha)) return true;
           if (!sigVerified) return false; // a private file needs a proven caller
           return XprsFileAcl.instance.authorized(sha, requester);
         };

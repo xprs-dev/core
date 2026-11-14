@@ -56,6 +56,7 @@ import 'package:reticulum/reticulum.dart' show HostedWriter, MediaArchive, Nostr
 import '../platform/key_value_store.dart';
 
 import 'xprs/xprs_archive.dart' show XprsArchive;
+import 'xprs/xprs_file_acl.dart' show XprsFileAcl, XprsFileScope;
 import 'xprs/xprs_files.dart' show XprsFileServer, xprsFileSha, xprsFileExt;
 import 'xprs/xprs_group_mirror.dart';
 import 'xprs/xprs_groups.dart';
@@ -106,7 +107,8 @@ class WebAddresses {
 /// An upload under way ([WebChatApi.beginFilePut]): [reply] set means it was
 /// refused before a byte was read.
 class WebChatUpload {
-  WebChatUpload._(this.reply, this._w, this._cap, this._ref);
+  WebChatUpload._(this.reply, this._w, this._cap, this._ref, [this._kept]);
+  final void Function()? _kept;
   final WebChatReply? reply;
   final HostedWriter? _w;
   final int _cap;
@@ -141,6 +143,7 @@ class WebChatUpload {
     if (key == null) {
       return const WebChatReply(400, {'ok': false, 'error': 'the bytes do not match the reference'});
     }
+    _kept?.call();
     return WebChatReply(200, {'ok': true, 'ref': _ref, 'size': size});
   }
 
@@ -311,6 +314,9 @@ class WebChatApi {
   })  : now = now ?? DateTime.now,
         isLocalPeer = isLocalPeer ?? isPrivateAddress {
     XprsSharedPosition.instance.station = stationPosition;
+    // A public room's files are anybody's, over the mesh too (11.2).
+    XprsFileAcl.instance.openGroup =
+        (g) => _hostedRoom(g) != null && _rooms[_base(g)]?['visibility'] != 'private';
     final at = stationPosition();
     if (at != null) XprsPublisher.instance.setPlace(at.pos, at.acc);
   }
@@ -474,8 +480,8 @@ class WebChatApi {
     }
     if (path.startsWith(filePath) && fileStore != null) {
       final ref = path.substring(filePath.length);
-      if (method == 'GET' || method == 'HEAD') return _fileGet(ref);
-      if (method == 'POST') return _filePut(ref, raw, peer);
+      if (method == 'GET' || method == 'HEAD') return _fileGet(ref, query['session']);
+      if (method == 'POST') return _filePut(ref, raw, peer, query);
     }
     return const WebChatReply(404, {'ok': false, 'error': 'not here'});
   }
@@ -735,10 +741,57 @@ class WebChatApi {
     return b;
   }
 
-  /// The bytes of a held file, to anyone when its audience is public (§11.2:
-  /// the hash is public, the bytes are not). A visitor proves nothing here, so
-  /// a private file is refused, as an unsigned `cmd:file` is.
-  WebChatReply _fileGet(String ref) {
+  /// Whether the visitor behind [session] may have the bytes of [sha]
+  /// (§11.2: the hash is public, the bytes are not). A file posted in a room
+  /// this station hosts is served to whoever may read that room, decided now,
+  /// so a room made private closes its old files too. Any other private file
+  /// goes to the callsign a session proves, as to a signed `cmd:file`.
+  bool _mayFetch(String sha, String? session) {
+    final room = XprsFileAcl.instance.groupOf(sha);
+    if (room != null && _hostedRoom(room) != null) return _mayRead(_base(room), session);
+    final gate = XprsFileServer.instance.authorize;
+    if (gate == null) return true;
+    final who = sessionCall(session);
+    return gate(sha, who ?? '', sigVerified: who != null);
+  }
+
+  /// Cache-Control for [sha]: shared caches keep only an open file.
+  String _cacheOf(String sha) =>
+      '${XprsFileAcl.instance.isOpen(sha) ? 'public' : 'private'}, max-age=31536000, immutable';
+
+  /// Every `file:` reference in [wire] (the field, and in the text) is now
+  /// [room]'s: the newest post wins (11.2), as on the mesh.
+  void _bindRoomFiles(String wire, String room) {
+    for (final m in _fileRefRe.allMatches(wire)) {
+      final sha = _refSha(m.group(1)!);
+      if (sha != null) XprsFileAcl.instance.bind(sha, scope: XprsFileScope.group, group: room);
+    }
+  }
+
+  static final _fileRefRe =
+      RegExp(r'(?<![A-Za-z0-9_.-])file:([A-Za-z0-9_-]{43}\.[a-z0-9]{1,8}|[0-9a-fA-F]{64}\.[a-z0-9]{1,8})');
+
+  /// `room=` on an upload: the hosted room the file is for, checked; bound
+  /// before the post so a private picture is never open in between. An
+  /// error reply when the visitor may not name it.
+  ({String? room, WebChatReply? no}) _uploadRoom(Map<String, String> q) {
+    final v = q['room'] ?? '';
+    if (v.isEmpty) return (room: null, no: null);
+    final room = _hostedRoom(v);
+    if (room == null || !_mayRead(room, q['session'])) {
+      return (room: null, no: const WebChatReply(403, {'ok': false, 'error': 'not a room you read'}));
+    }
+    return (room: room, no: null);
+  }
+
+  /// An upload naming [room] binds the file unless a post bound it already.
+  static void _bindUpload(String sha, String? room) {
+    if (room == null || XprsFileAcl.instance.scopeOf(sha) != null) return;
+    XprsFileAcl.instance.bind(sha, scope: XprsFileScope.group, group: room);
+  }
+
+  /// The bytes of a held file, to whoever may have them ([_mayFetch]).
+  WebChatReply _fileGet(String ref, String? session) {
     WebChatReply no(int status, String why) =>
         WebChatReply(status, {'ok': false, 'error': why});
     final sha = _refSha(ref);
@@ -746,17 +799,14 @@ class WebChatApi {
     final store = fileStore!();
     final meta = store?.getMeta(sha);
     if (store == null || meta == null) return no(404, 'not held');
-    final gate = XprsFileServer.instance.authorize;
-    if (gate != null && !gate(sha, '', sigVerified: false)) {
-      return no(403, 'not a public file');
-    }
+    if (!_mayFetch(sha, session)) return no(403, 'not a public file');
     if (meta.size > fileMax) return no(413, 'larger than this page serves');
     final bytes = store.get(sha);
     if (bytes == null) return no(404, 'not held');
     return WebChatReply.bytes(200, bytes,
         fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream',
         headers: {
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': _cacheOf(sha),
           'ETag': '"$sha"',
           'X-Content-Type-Options': 'nosniff',
         });
@@ -764,11 +814,13 @@ class WebChatApi {
 
   /// Keep a file a visitor sends, if its bytes hash to the reference it is
   /// sent under. Kept as a stranger's deposit, which the store may evict.
-  WebChatReply _filePut(String ref, Uint8List? raw, String peer) {
+  WebChatReply _filePut(String ref, Uint8List? raw, String peer, Map<String, String> q) {
     WebChatReply no(int status, String why) =>
         WebChatReply(status, {'ok': false, 'error': why});
     final sha = _refSha(ref);
     if (sha == null) return no(400, 'not a file reference');
+    final up = _uploadRoom(q);
+    if (up.no != null) return up.no!;
     if (raw == null || raw.isEmpty) return no(400, 'no bytes');
     if (raw.length > fileMax) return no(413, 'larger than this station keeps');
     if (!_allowed(peer)) return no(429, 'slow down');
@@ -779,6 +831,7 @@ class WebChatApi {
     if (store == null) return no(503, 'no file store yet');
     store.putHosted(raw, xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref),
         originPubHex: '', tier: 2);
+    _bindUpload(sha, up.room);
     return WebChatReply(200, {'ok': true, 'ref': ref, 'size': raw.length});
   }
 
@@ -806,6 +859,8 @@ class WebChatApi {
     if (fileStore == null) return no(404, 'not here');
     final sha = _refSha(ref);
     if (sha == null) return no(400, 'not a file reference');
+    final up = _uploadRoom(q);
+    if (up.no != null) return WebChatUpload._(up.no, null, 0, '');
     final staff = _isUploader(q['session']);
     final cap = staff ? staffFileMax : fileMax;
     if (length > cap) return no(413, 'larger than this station keeps');
@@ -815,13 +870,13 @@ class WebChatApi {
     final ext = xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref);
     final w = store.beginHosted(ext, originPubHex: '', tier: staff ? 0 : 2, pin: staff);
     if (w == null) return no(503, 'no file store yet');
-    return WebChatUpload._(null, w, cap, ref);
+    return WebChatUpload._(null, w, cap, ref, () => _bindUpload(sha, up.room));
   }
 
   /// A held file for a host that streams it (and answers ranges): its size,
   /// type and headers, and a reader of any part. The same audience rule as
   /// GET. A refusal comes back in [WebChatFile.reply].
-  WebChatFile openFile(String ref) {
+  WebChatFile openFile(String ref, {String? session}) {
     WebChatFile no(int status, String why) =>
         WebChatFile._(WebChatReply(status, {'ok': false, 'error': why}), 0, '', const {}, null);
     final sha = _refSha(ref);
@@ -830,12 +885,9 @@ class WebChatApi {
     final meta = store?.getMeta(sha);
     final size = store?.sizeOf(sha);
     if (store == null || meta == null || size == null) return no(404, 'not held');
-    final gate = XprsFileServer.instance.authorize;
-    if (gate != null && !gate(sha, '', sigVerified: false)) {
-      return no(403, 'not a public file');
-    }
+    if (!_mayFetch(sha, session)) return no(403, 'not a public file');
     return WebChatFile._(null, size, fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream', {
-      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Cache-Control': _cacheOf(sha),
       'ETag': '"$sha"',
       'X-Content-Type-Options': 'nosniff',
     }, (o, n) => store.readRange(sha, o, n));
@@ -1196,13 +1248,14 @@ class WebChatApi {
         return no(403, 'only members post in this room');
       }
     }
-    if (split) return _postPart(p, from);
+    if (split) return _postPart(p, from, room);
     final w = p.encode();
     keep!(w);
+    _bindRoomFiles(w, room);
     return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
   }
 
-  WebChatReply _postPart(XprsPacket p, String from) {
+  WebChatReply _postPart(XprsPacket p, String from, String room) {
     WebChatReply no(int status, String why) =>
         WebChatReply(status, {'ok': false, 'error': why});
     final key = xprsSetKey(p);
@@ -1224,6 +1277,7 @@ class WebChatApi {
     }
     final w = whole.encode();
     keep!(w);
+    _bindRoomFiles(w, room);
     return WebChatReply(200, {'ok': true, 'id': _idOf(whole), 'wire': w, 'parts': done.partIds.length});
   }
 

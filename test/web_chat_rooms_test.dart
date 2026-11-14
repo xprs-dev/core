@@ -1,11 +1,15 @@
 // Rooms a station hosts (XPRS.md 10.10.1) and the alerts it shows (10.10.2).
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:hex/hex.dart';
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
+import 'package:xprs_core/src/services/xprs/xprs_file_acl.dart';
+import 'package:xprs_core/src/services/xprs/xprs_files.dart';
 import 'package:xprs_core/src/services/xprs/xprs_groups.dart';
 import 'package:xprs_core/src/services/xprs/xprs_id.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
@@ -35,7 +39,7 @@ void main() {
     return '${t.year}-${two(t.month)}-${two(t.day)}_${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
   }
 
-  WebChatApi make() => WebChatApi(
+  WebChatApi make({MediaArchive? files}) => WebChatApi(
         publicRows: ({sinceMs, untilMs, required types, from, visitor, room, required limit}) => [],
         held: (t) => 0,
         receive: received.add,
@@ -44,6 +48,7 @@ void main() {
         keyOf: (c) => keys[c],
         appPath: () => null,
         now: () => clock,
+        fileStore: files == null ? null : () => files,
         groups: groups,
         signAsStation: (c) => xprsSign(XprsPacket.parse(c)!, _station),
         publish: received.add,
@@ -593,6 +598,78 @@ void main() {
       final a = make();
       await claim(a);
       expect((await send(a, _signed('t:warning f:X1BOBB ts:${ts()} r:3c7e21 remove:warning', _bob))).status, 200);
+    });
+  });
+
+  group('files posted in a room (XPRS.md 11.2)', () {
+    late Directory dir;
+    late MediaArchive store;
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('room_files_');
+      store = MediaArchive.forDirectory('${dir.path}/media');
+      XprsFileAcl.instance.init('${dir.path}/acl.zx');
+      // The mesh's own gate, as MeshService sets it.
+      XprsFileServer.instance.authorize = (sha, who, {required bool sigVerified}) =>
+          XprsFileAcl.instance.isOpen(sha) || (sigVerified && XprsFileAcl.instance.authorized(sha, who));
+    });
+    tearDown(() {
+      XprsFileServer.instance.authorize = null;
+      XprsFileAcl.instance.close();
+      dir.deleteSync(recursive: true);
+    });
+
+    String ref(List<int> b) =>
+        '${base64Url.encode(crypto.sha256.convert(b).bytes).replaceAll('=', '')}.jpg';
+    Future<int> get(WebChatApi a, String r, [String? s]) async =>
+        (await a.handle('GET', '/api/xprs/file/$r', {if (s != null) 'session': s}, '', peer: lan)).status;
+    Future<int> put(WebChatApi a, List<int> b, Map<String, String> q) async =>
+        (await a.handle('POST', '/api/xprs/file/${ref(b)}', q, '', peer: lan, raw: Uint8List.fromList(b))).status;
+
+    test('served to whoever reads the room, decided at each ask', () async {
+      final a = make(files: store);
+      final s = await claim(a);
+      final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Photos',
+          'kind': 'gallery', 'visibility': 'public', 'posting': 'members'})).json['room'] as String;
+      final offer = (await rooms(a, s)).single['offer'];
+      await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:$offer accept:mod', _alice));
+      final c = await session(a, 'X1CARO', _carol);
+      final pic = List<int>.generate(400, (i) => i * 3 & 0xff);
+      expect(await put(a, pic, {'room': call, 'session': s}), 200);
+      final ev = _signed('t:blog f:X1ALIC d:$call ts:${ts()} title:trip m:x', _alice);
+      expect((await send(a, ev)).status, 200);
+      final evId = xprsIdentifier(XprsPacket.parse(ev)!);
+      expect((await send(a, _signed('t:message f:X1ALIC d:$call ts:${ts()} r:$evId file:${ref(pic)} m:beach', _alice))).status, 200);
+      expect(XprsFileAcl.instance.groupOf(crypto.sha256.convert(pic).toString()), call);
+      expect(await get(a, ref(pic)), 200, reason: "a public room's picture is anybody's");
+      final r = await a.handle('GET', '/api/xprs/file/${ref(pic)}', {}, '', peer: lan);
+      expect(r.headers['Cache-Control'], startsWith('public'));
+      expect(XprsFileServer.instance.authorize!(crypto.sha256.convert(pic).toString(), '', sigVerified: false), isTrue,
+          reason: 'and over the mesh too');
+
+      await post(a, '/api/rooms', {'action': 'update', 'session': s, 'call': call, 'visibility': 'private'});
+      expect(await get(a, ref(pic)), 403, reason: 'made private: refused without a session');
+      expect(await get(a, ref(pic), c), 403, reason: 'and to carol, no member');
+      expect(await get(a, ref(pic), s), 200, reason: 'but served to the administrator');
+      final r2 = await a.handle('GET', '/api/xprs/file/${ref(pic)}', {'session': s}, '', peer: lan);
+      expect(r2.headers['Cache-Control'], startsWith('private'));
+      expect(a.openFile(ref(pic)).reply!.status, 403, reason: 'a streaming host applies the same rule');
+      expect(a.openFile(ref(pic), session: s).reply, isNull);
+      expect(XprsFileServer.instance.authorize!(crypto.sha256.convert(pic).toString(), '', sigVerified: false), isFalse,
+          reason: 'nor to an unproven cmd:file');
+
+      final other = List<int>.generate(300, (i) => i * 5 & 0xff);
+      expect(await put(a, other, {'room': call, 'session': c}), 403, reason: 'carol cannot name the private room');
+      expect(await put(a, other, {'room': call, 'session': s}), 200);
+      expect(await get(a, ref(other)), 403, reason: 'an upload naming the room is closed before any post');
+      final up = a.beginFilePut(ref(other), {'room': call, 'session': c}, lan, other.length);
+      expect(up.reply!.status, 403, reason: 'the streamed upload too');
+    });
+
+    test('a file posted nowhere stays public', () async {
+      final a = make(files: store);
+      final pic = List<int>.generate(200, (i) => i & 0xff);
+      expect(await put(a, pic, {}), 200);
+      expect(await get(a, ref(pic)), 200);
     });
   });
 }
