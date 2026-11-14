@@ -734,7 +734,7 @@ class MeshCourier {
       // onto Reticulum). The archivers keep every binding (12.12.1), so ask
       // them as the send path does.
       XprsFetch.instance.requestKey(f.from, reason: 'sealed message from them');
-      body = '[sealed — no key for ${f.from} yet]';
+      body = '[sealed message — waiting for ${f.from}\'s key to open it]';
     }
     // SECTION 6.6: A PARTIAL MESSAGE IS NEVER DISPLAYED.
     //
