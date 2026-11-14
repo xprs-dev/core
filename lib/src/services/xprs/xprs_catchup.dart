@@ -27,6 +27,7 @@
  * crypto, no database. The expensive half — dialling a station to pull what it
  * holds — stays gated on a station actually saying it holds something.
  */
+import '../../profile/device_identity.dart';
 import 'dart:async';
 import 'xprs_station_policy.dart';
 import 'dart:math' as math;
@@ -616,6 +617,7 @@ class XprsCatchup {
             .map((c) => XprsMonitor.instance.stations[c])
             .whereType<XprsStation>()
             .where((s) => _base(s.callsign) != selfBase)
+            .where((s) => !DeviceIdentity.instance.isDevice(s.callsign))
             .toList(growable: false))
         : const <XprsStation>[];
 
@@ -658,6 +660,7 @@ class XprsCatchup {
     ]) {
       final base = _base(c);
       if (base.isEmpty || base == selfBase) continue;
+      if (DeviceIdentity.instance.isDevice(base)) continue;
       if (!knownAlwaysOn.contains(base)) knownAlwaysOn.add(base);
     }
     // For the ask loop, drop the ones already coming through `fresh` so they

@@ -190,8 +190,7 @@ class XprsHistoryServer {
     // station is asked about itself -- who owns it (11.9 `q:policy`) and its
     // key binding (`q:identity`). Everything else is the person's.
     final dev = DeviceIdentity.instance;
-    if (p.type == 'request' &&
-        dev.ready &&
+    if (dev.ready &&
         dev.callsign != selfBase &&
         dev.isDevice(p['d'] ?? '')) {
       _onDeviceAsk(p);
@@ -733,6 +732,20 @@ class XprsHistoryServer {
     if (_answeredIds.containsKey(id)) return;
     _answeredIds[id] = now;
     if (!_budgetAllows(from, now)) return;
+    // A command to the device (`cmd:history`, `cmd:file`, ...): the device
+    // keeps no archive of its own, the profile does, so it says so at once
+    // rather than leave the asker waiting out its timeout.
+    if (p.type == 'command') {
+      final cmdId = xprsIdentifier(p);
+      final key = dev.scalar;
+      var r = XprsPacket.parse('t:result f:${dev.callsign} d:$from '
+          'ts:${_ts()} r:$cmdId code:404');
+      if (r == null || key == null) return;
+      r = xprsSign(r, key);
+      unawaited(_air('xprs-hist:c404', r.encode(),
+          const Duration(seconds: 30), to: from));
+      return;
+    }
     final q = (p['q'] ?? '').split(',').map((w) => w.trim()).toSet();
     if (q.contains('identity')) {
       unawaited(XprsPublisher.instance.publishDeviceIdentity());
