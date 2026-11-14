@@ -66,6 +66,8 @@ import 'xprs/xprs_parts.dart';
 import 'xprs/xprs_mesh_policy.dart';
 import 'xprs/xprs_sig.dart';
 import 'web_chat_forum.dart';
+import 'xprs/xprs_publisher.dart' show XprsPublisher;
+import 'xprs/xprs_shared_position.dart' show XprsSharedPosition, xprsParseLatLon;
 import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsNowTs, xprsScope, XprsScope;
 
 /// The keys of the rooms a station hosts (XPRS.md 10.10.1): the host's store.
@@ -307,7 +309,22 @@ class WebChatApi {
     this.offerMailbox,
     this.mailFor,
   })  : now = now ?? DateTime.now,
-        isLocalPeer = isLocalPeer ?? isPrivateAddress;
+        isLocalPeer = isLocalPeer ?? isPrivateAddress {
+    XprsSharedPosition.instance.station = stationPosition;
+    final at = stationPosition();
+    if (at != null) XprsPublisher.instance.setPlace(at.pos, at.acc);
+  }
+
+  static final RegExp _posRe = RegExp(r'^-?\d{1,3}(\.\d{1,5})?,-?\d{1,3}(\.\d{1,5})?$');
+
+  /// The position the administrator set, as the beacon carries it, or null.
+  ({String pos, int acc})? stationPosition() {
+    final s = settings;
+    final p = '${s['pos'] ?? ''}';
+    if (p.isEmpty) return null;
+    final a = s['acc'];
+    return (pos: p, acc: a is int ? a : 0);
+  }
 
   /// Whether this host tells a visitor where their mail is kept and how much
   /// waits (`holders`, `mail` on `/api/session`; `page.mailbox`).
@@ -1844,6 +1861,13 @@ class WebChatApi {
     'follow': '',
     'peers_mode': 'open',
     'peers': '',
+    // Where this station says it is (XPRS.md 15.1), set by its administrator
+    // from the page: a spot, or a country's centre with its radius. `pos` is
+    // carried as given (its decimals are the precision claimed) and `acc` in
+    // metres; empty, the station keeps its own source (a GPS, its owner's
+    // fixed position) or says nothing. The page does the arithmetic.
+    'pos': '',
+    'acc': 0,
   };
 
   /// Told after the administrator changed the settings, with the new map:
@@ -2030,6 +2054,17 @@ class WebChatApi {
                 return no(400, '$k must be local, regional or global');
               }
               next[k] = v as String;
+            case 'pos':
+              if (v is! String) return no(400, 'pos is "lat,lon" or empty');
+              if (v.isNotEmpty && (!_posRe.hasMatch(v) || xprsParseLatLon(v) == null)) {
+                return no(400, 'pos is "lat,lon" in degrees, at most 5 decimals');
+              }
+              next[k] = v;
+            case 'acc':
+              if (v is! int || v < 0 || v > 3000000) {
+                return no(400, 'acc is metres, 0 to 3000000');
+              }
+              next[k] = v;
             case 'peers_mode':
               if (!const {'open', 'named', 'mesh'}.contains(v)) {
                 return no(400, '$k must be open, named or mesh');
@@ -2063,6 +2098,10 @@ class WebChatApi {
         }
         _save(_kSettings, jsonEncode(next));
         _trustedAt = 0;
+        if (want.containsKey('pos') || want.containsKey('acc')) {
+          final at = stationPosition();
+          XprsPublisher.instance.setPlace(at?.pos ?? '', at?.acc ?? 0);
+        }
         onSettings?.call(settings);
         return _adminState(session, peer);
     }

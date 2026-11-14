@@ -684,7 +684,7 @@ class XprsArchive {
   /// sender's key was still unknown must not evict the one that was checked.
   /// Unverified rows are collapsed among themselves the same way. At most four
   /// rows of each kind per station, for ever.
-  static const _identityFields = ['k', 'nick', 'file', 'm', 'url'];
+  static const _identityFields = ['k', 'nick', 'file', 'm', 'url', 'pos'];
 
   void _collapseIdentities(ZxSqlDb db, String fromc) {
     if (fromc.isEmpty) return;

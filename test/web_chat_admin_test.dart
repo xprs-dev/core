@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
+import 'package:xprs_core/src/services/xprs/xprs_shared_position.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
 
@@ -153,7 +154,7 @@ void main() {
     expect(r.json['settings'], {
       'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators',
       'reach_alerts': 'regional', 'reach_posts': 'regional', 'reach_chat': 'global',
-      'follow': '', 'peers_mode': 'open', 'peers': '',
+      'follow': '', 'peers_mode': 'open', 'peers': '', 'pos': '', 'acc': 0,
     });
     // The mesh settings: a reach word, a mode, and lists of callsigns.
     expect((await act(a, lan, {'action': 'set', 'session': s,
@@ -191,6 +192,30 @@ void main() {
     final far = await session(a, 'X1ALIC', _alice, internet);
     expect((await act(a, internet, {'action': 'set', 'session': far,
         'settings': {'who_may_post': 'everyone'}})).status, 200);
+  });
+
+  test('where the station is: pos and acc, set by the admin, carried by the '
+      'beacon ahead of any other source', () async {
+    final a = make();
+    final s = await session(a, 'X1ALIC', _alice, lan);
+    await act(a, lan, {'action': 'claim', 'session': s});
+    expect(a.stationPosition(), isNull);
+    expect(XprsSharedPosition.instance.current(), isNull);
+    for (final bad in [
+      {'pos': '91,0'}, {'pos': '38.7,-9.1,3'}, {'pos': '38.123456,-9.1'},
+      {'pos': 'Lisbon'}, {'pos': 38.7}, {'acc': -1}, {'acc': '300km'},
+      {'acc': 3000001},
+    ]) {
+      expect((await act(a, lan, {'action': 'set', 'session': s, 'settings': bad})).status,
+          400, reason: '$bad');
+    }
+    final set = await act(a, lan, {'action': 'set', 'session': s,
+        'settings': {'pos': '39,-8', 'acc': 171000}});
+    expect(set.json['settings']['pos'], '39,-8');
+    expect(set.json['settings']['acc'], 171000);
+    expect(XprsSharedPosition.instance.current(), (pos: '39,-8', acc: 171000));
+    await act(a, lan, {'action': 'set', 'session': s, 'settings': {'pos': ''}});
+    expect(XprsSharedPosition.instance.current(), isNull);
   });
 
   test('released, the station can be claimed again', () async {

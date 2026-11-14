@@ -77,6 +77,11 @@ class XprsSharedPosition {
       () => PreferencesService.instanceSync?.positionFixed ?? '';
   int Function() nowMs = () => DateTime.now().millisecondsSinceEpoch;
 
+  /// The position the station's administrator set from its page (the web
+  /// chat's `pos` and `acc` settings), already as the beacon carries it.
+  /// It comes first: the administrator chose to say it, and how precisely.
+  ({String pos, int acc})? Function() station = () => null;
+
   /// How often the host is asked for a fix. A station that moves is
   /// described by its owner's radius, not by a fresh fix every beacon.
   static const Duration refreshEvery = Duration(minutes: 5);
@@ -108,6 +113,8 @@ class XprsSharedPosition {
   /// What the beacon carries now, or null when sharing is off or there is
   /// no position to share.
   ({String pos, int acc})? current() {
+    final set = station();
+    if (set != null) return set;
     if (!enabled()) return null;
     final at = _gps ?? xprsParseLatLon(fixed());
     if (at == null) return null;

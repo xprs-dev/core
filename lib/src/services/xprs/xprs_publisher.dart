@@ -1362,6 +1362,23 @@ class XprsPublisher {
     unawaited(publishDecoration());
   }
 
+  /// Where the station says it is, as its decoration carries it (6.3.2
+  /// `pos:` and `acc:`, 15.1): the administrator's choice from the page
+  /// (the web chat's `pos` and `acc` settings). Null: never named, the field
+  /// is not stated. Empty: it had one and has none now, stated as `pos:-`.
+  String? get place => _place;
+  String? _place;
+
+  /// The administrator set (or cleared: [pos] empty) the station's place. A
+  /// change goes on the air at once as a decoration.
+  void setPlace(String pos, int acc) {
+    final p = pos.trim();
+    final next = p.isNotEmpty ? (acc > 0 ? '$p acc:$acc' : p) : (_place == null ? null : '');
+    if (next == _place) return;
+    _place = next;
+    unawaited(publishDecoration());
+  }
+
   /// The decoration of section 6.3.2, COMPOSED: `nick:`, `file:`, `url:` and
   /// `m:`, signed, as one packet when all fit [decorationFrameMax] and split
   /// when they do not: nick and picture first (with the address when it still
@@ -1385,6 +1402,7 @@ class XprsPublisher {
     required String ts,
     required BigInt? signingKey,
     String? url,
+    String? place,
   }) {
     final c = call.trim().toUpperCase();
     if (c.isEmpty || signingKey == null) return const [];
@@ -1401,9 +1419,12 @@ class XprsPublisher {
 
     int bytes(String w) => utf8.encode(w).length;
     final env = 't:identity f:$c ts:$ts';
-    final u = url == null
-        ? ''
-        : ' url:${url.isEmpty ? '-' : url.replaceAll(RegExp(r'\s'), '')}';
+    // The address and the place travel together: with the name and the
+    // picture when they fit, else in a packet of their own.
+    final u = (url == null
+            ? ''
+            : ' url:${url.isEmpty ? '-' : url.replaceAll(RegExp(r'\s'), '')}') +
+        (place == null ? '' : ' pos:${place.isEmpty ? '-' : place}');
     // The whole decoration in one packet, when the smallest controller takes it.
     final whole = signed('$env nick:${n.isEmpty ? '-' : n} file:$f$u',
         body: m.isEmpty ? '-' : m);
@@ -1464,6 +1485,7 @@ class XprsPublisher {
       ts: ts,
       signingKey: xprsProfileScalar(),
       url: _publicUrl,
+      place: _place,
     );
     if (wires.isEmpty) return const {};
     final air = await _fanOut(wires, slot: 'decoration');
