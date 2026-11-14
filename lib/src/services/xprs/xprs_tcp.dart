@@ -228,7 +228,12 @@ class XprsTcp {
       // Served here, inline, and marked answered so the paced replay the
       // funnel would also start (the same ask reaches the history server
       // through the internet lane) does not send the page a second time.
-      if ((p['cmd'] ?? '') == 'history') {
+      // Only what this socket will answer: an ask addressed to the device's
+      // X3 is not served inline, and marking it answered here silenced the
+      // 404 the history server gives for it (DeviceIdentity).
+      if ((p['cmd'] ?? '') == 'history' &&
+          NostrCrypto.bareCallsign(p['d'] ?? '').toUpperCase() ==
+              selfBase.toUpperCase()) {
         XprsHistoryServer.instance.markAnswered(xprsIdentifier(p));
       }
       final page =

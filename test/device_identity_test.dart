@@ -4,6 +4,10 @@
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/profile/device_identity.dart';
+import 'dart:convert';
+
+import 'package:xprs_core/src/services/xprs/xprs_history_server.dart';
+import 'package:xprs_core/src/services/xprs/xprs_ingest.dart';
 import 'package:xprs_core/src/services/xprs/xprs_observation.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
@@ -52,6 +56,29 @@ void main() {
     expect(p['pos'], '38.7077,-9.1365');
     expect(p.has('lx'), isFalse);
     expect(xprsVerify(p, XprsCrypto.publicKeyXOnly(dev.scalar!)),
+        XprsSigState.verified);
+  });
+
+  test('a history ask to the device gets a signed 404 from the device', () async {
+    final dev = DeviceIdentity.instance;
+    final srv = XprsHistoryServer.instance..install();
+    final aired = <String>[];
+    srv.txOverride = (key, bytes, ttl) async {
+      aired.add(utf8.decode(bytes));
+      return true;
+    };
+    addTearDown(() => srv.txOverride = null);
+    final ask = XprsPacket.parse('t:command f:X3ASKR d:${dev.callsign} '
+        'ts:2026-11-14_14:26:08 cmd:history kind:message')!;
+    XprsIngest.onCommand!(ask, selfBase: 'X1OWNR', bearer: 'lan');
+    await Future<void>.delayed(Duration.zero);
+    expect(aired, hasLength(1));
+    final r = XprsPacket.parse(aired.single)!;
+    expect(r.type, 'result');
+    expect(r['f'], dev.callsign);
+    expect(r['d'], 'X3ASKR');
+    expect(r['code'], '404');
+    expect(xprsVerify(r, XprsCrypto.publicKeyXOnly(dev.scalar!)),
         XprsSigState.verified);
   });
 }
