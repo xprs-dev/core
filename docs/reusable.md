@@ -464,6 +464,28 @@ request handler on that destination; `attachFrameClient` attaches a gateway
 client; `stationIdentity(call)` and `ownWappAnnounce()` serve resolution.
 The app can call `serveWebChatOverRns` for its share server the same way.
 
+## Visiting a station's API (`services/station/`)
+
+The visitor's side of spec/API-HTTP.md: what the portal page does in
+JavaScript, in Dart, one client for every deployment that serves the API
+(firmware, server, phone).
+
+- `StationVisits.instance.to(call)` opens the Reticulum link, checks the
+  station's proof (`stationProofFault`) and returns a `StationVisit`; unused
+  visits close after five minutes. `faultOf(call)` says why there is none.
+- `StationVisit`: `services()`, `session()` (posts the profile's identity on
+  a 409, as the page does), `rooms()`, `topics(room)`, `collection(room)`
+  (the page's `galTree` as `StationCollection`, read a page at a time with
+  `into:`), `file(ref)`, `fileParts(ref, onPart, from:)` for a file of any
+  size (`Range` over the link, resumable), `send(wire)` signed as the visitor.
+- `StationCarrier` is the only thing that knows the transport.
+  `stationLinkCarrier(RnsRequestClient)` for a link; `stationRequestCarrier`
+  over anything that takes the `/xprs/api` request map, which is how
+  `test/station_api_test.dart` runs every call against a real `WebChatApi`
+  through `webChatLinkAnswer`. Write new client features against that test.
+- `tool/station_visit.dart <gateway> <call>` runs the same client against a
+  live station from a computer.
+
 ## DeviceIdentity (lib/src/profile/device_identity.dart)
 
 The install's own `X3`: `ensure()` loads or makes it (public half in

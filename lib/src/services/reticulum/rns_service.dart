@@ -5569,6 +5569,37 @@ class RnsService {
     return (await RnsAnnounceBuilder.build(me, _app, _aspectsWapp)).pack();
   }
 
+  // ---- the other side: this node visiting a station's API ----------------
+
+  final Map<String, RnsRequestClient> _apiClients = {};
+
+  /// A request link to station [call]'s xprs/wapp destination (opened on its
+  /// first request), or null while Reticulum is down or the station has not
+  /// announced that destination. One per station, kept until
+  /// [dropStationRequests]: the visit's proof and session belong to the link.
+  RnsRequestClient? stationRequests(String call) {
+    final c = _bareUpper(call);
+    final have = _apiClients[c];
+    if (have != null) return have;
+    final id = _wappStation[c];
+    if (!_up || _transport == null || id == null) return null;
+    return _apiClients[c] = RnsRequestClient(
+      peer: id,
+      appName: _app,
+      aspects: _aspectsWapp,
+      send: (raw) => _transport?.sendLinkAware(raw),
+      nextHopForDest: (h) => _transport?.pathFor(h)?.nextHop,
+      hasPathForDest: (h) => _transport?.hasPath(h) ?? false,
+      nextHopMtuForDest: (h) => _transport?.nextHopInterfaceHwMtu(h) ?? kRnsMtu,
+      requestPath: (h) => _transport?.requestPath(h, force: true),
+      log: (m) => LogService.instance.add('RNS/visit: $m'),
+    );
+  }
+
+  /// Close the link to [call]'s API and forget it.
+  void dropStationRequests(String call) =>
+      _apiClients.remove(_bareUpper(call))?.close();
+
   /// Links open to our API now (for the station's status).
   int get apiLinks => _requests?.openLinks ?? 0;
 
@@ -5719,6 +5750,19 @@ class RnsService {
       if (await _relay?.handlePacket(p) ?? false) {
         took('relay');
         return;
+      }
+      if (_apiClients.isNotEmpty) {
+        var mine = false;
+        for (final c in _apiClients.values.toList()) {
+          if (await c.handlePacket(p)) {
+            mine = true;
+            break;
+          }
+        }
+        if (mine) {
+          took('visit');
+          return;
+        }
       }
       if (await _ensureRequests()?.handlePacket(p, arrivalHwMtu: arrivalMtu) ?? false) {
         took('requests');

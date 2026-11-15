@@ -7,7 +7,9 @@
  * nothing about the API differs but the transport.
  *
  * Request data (msgpack map): m method, p path, q query (string map),
- * b body (bytes or string). Response data: s status, t content type,
+ * b body (bytes or string), h headers (string map, optional: `Range` on a
+ * file, answered 206 with `Content-Range` as over HTTP, which is how a file
+ * larger than one answer crosses a link, a part at a time). Response data: s status, t content type,
  * b body (bytes), h headers (string map, optional).
  *
  * The visitor is never on the station's own network: its peer is `rns:` and
@@ -31,39 +33,47 @@ const String kXprsApiRequestPath = '/xprs/api';
 /// the nonce, so a gateway in the middle cannot stand in for the station.
 const String kXprsProveRequestPath = '/xprs/prove';
 
+/// The answer to one `/xprs/api` request: [data] is the request map, the
+/// result the response map. [peer] names the link (never a local visitor).
+Future<Object?> webChatLinkAnswer(WebChatApi api, Object? data, String peer) async {
+  if (data is! Map) return {'s': 400, 't': 'application/json', 'b': _json({'ok': false, 'error': 'bad request'})};
+  final m = '${data['m'] ?? 'GET'}'.toUpperCase();
+  final p = '${data['p'] ?? ''}';
+  if (!p.startsWith('/api/')) {
+    return {'s': 404, 't': 'application/json', 'b': _json({'ok': false, 'error': 'not here'})};
+  }
+  final q = <String, String>{};
+  final qm = data['q'];
+  if (qm is Map) qm.forEach((k, v) => q['$k'] = '$v');
+  final b = data['b'];
+  Uint8List? raw;
+  var body = '';
+  if (b is List<int>) {
+    raw = Uint8List.fromList(b);
+    body = utf8.decode(raw, allowMalformed: true);
+  } else if (b is String) {
+    body = b;
+  }
+  final range = _rangeOf(data['h']);
+  if (m == 'GET' && range != null && p.startsWith(_filePath)) {
+    return _filePart(api, p.substring(_filePath.length), q['session'], range);
+  }
+  final r = await api.handle(m, p, q, body, peer: peer, raw: raw);
+  if (r.bytes != null) {
+    return {
+      's': r.status,
+      't': r.contentType ?? 'application/octet-stream',
+      'b': r.bytes,
+      if (r.headers.isNotEmpty) 'h': r.headers,
+    };
+  }
+  return {'s': r.status, 't': 'application/json', 'b': _json(r.json)};
+}
+
 /// Serve [api] over Reticulum links to this node's xprs/wapp destination.
 void serveWebChatOverRns(WebChatApi api, {RnsService? rns}) {
-  (rns ?? RnsService.instance).serveRequests(kXprsApiRequestPath, (data, link) async {
-    if (data is! Map) return {'s': 400, 't': 'application/json', 'b': _json({'ok': false, 'error': 'bad request'})};
-    final m = '${data['m'] ?? 'GET'}'.toUpperCase();
-    final p = '${data['p'] ?? ''}';
-    if (!p.startsWith('/api/')) {
-      return {'s': 404, 't': 'application/json', 'b': _json({'ok': false, 'error': 'not here'})};
-    }
-    final q = <String, String>{};
-    final qm = data['q'];
-    if (qm is Map) qm.forEach((k, v) => q['$k'] = '$v');
-    final b = data['b'];
-    Uint8List? raw;
-    var body = '';
-    if (b is List<int>) {
-      raw = Uint8List.fromList(b);
-      body = utf8.decode(raw, allowMalformed: true);
-    } else if (b is String) {
-      body = b;
-    }
-    final peer = 'rns:${_hex(link.linkId)}';
-    final r = await api.handle(m, p, q, body, peer: peer, raw: raw);
-    if (r.bytes != null) {
-      return {
-        's': r.status,
-        't': r.contentType ?? 'application/octet-stream',
-        'b': r.bytes,
-        if (r.headers.isNotEmpty) 'h': r.headers,
-      };
-    }
-    return {'s': r.status, 't': 'application/json', 'b': _json(r.json)};
-  });
+  (rns ?? RnsService.instance).serveRequests(kXprsApiRequestPath,
+      (data, link) => webChatLinkAnswer(api, data, 'rns:${_hex(link.linkId)}'));
   (rns ?? RnsService.instance).serveRequests(kXprsProveRequestPath, (data, link) async {
     final sign = api.signAsStation;
     final nonce = data is String ? data : data is List<int> ? utf8.decode(data, allowMalformed: true) : '';
@@ -86,6 +96,48 @@ void serveWebChatOverRns(WebChatApi api, {RnsService? rns}) {
     }
     return {'session': session?.encode(), 'identity': identity};
   });
+}
+
+const String _filePath = '/api/xprs/file/';
+
+/// The most one ranged answer carries: a part crosses the link as a
+/// Resource, and a smaller one keeps the link answering other calls between.
+const int kXprsLinkPartMax = 256 * 1024;
+
+/// `Range: bytes=a-b` (or `a-`) from the request's headers, as (first, last
+/// or -1); null when there is none or it is not that form.
+(int, int)? _rangeOf(Object? headers) {
+  if (headers is! Map) return null;
+  String? v;
+  headers.forEach((k, x) {
+    if ('$k'.toLowerCase() == 'range') v = '$x';
+  });
+  final m = v == null ? null : RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(v!.trim());
+  if (m == null) return null;
+  return (int.parse(m[1]!), m[2]!.isEmpty ? -1 : int.parse(m[2]!));
+}
+
+/// One part of a held file: the audience rule of the whole file
+/// ([WebChatApi.openFile]), read from the store without holding the rest.
+Map<String, Object?> _filePart(WebChatApi api, String ref, String? session, (int, int) range) {
+  final f = api.openFile(ref, session: session);
+  final no = f.reply;
+  if (no != null) return {'s': no.status, 't': 'application/json', 'b': _json(no.json)};
+  final first = range.$1;
+  if (first >= f.size) {
+    return {'s': 416, 't': 'application/json', 'b': _json({'ok': false, 'error': 'past the end'}),
+        'h': {'Content-Range': 'bytes */${f.size}'}};
+  }
+  var last = range.$2 < 0 || range.$2 >= f.size ? f.size - 1 : range.$2;
+  if (last - first + 1 > kXprsLinkPartMax) last = first + kXprsLinkPartMax - 1;
+  final bytes = f.read(first, last - first + 1);
+  if (bytes == null) return {'s': 404, 't': 'application/json', 'b': _json({'ok': false, 'error': 'not held'})};
+  return {
+    's': 206,
+    't': f.contentType,
+    'b': bytes,
+    'h': {...f.headers, 'Content-Range': 'bytes $first-$last/${f.size}', 'Accept-Ranges': 'bytes'},
+  };
 }
 
 String _hexAll(Uint8List? b) =>
