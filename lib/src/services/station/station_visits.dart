@@ -60,7 +60,11 @@ class StationVisits {
     final c = _bare(call);
     final have = _open[c];
     if (have != null) return Future.value(have);
-    return _opening[c] ??= _visit(c).whenComplete(() => _opening.remove(c));
+    // A block, not an arrow: whenComplete waits for a future its callback
+    // returns, and `remove` returns this very future, which then never ends.
+    return _opening[c] ??= _visit(c).whenComplete(() {
+      _opening.remove(c);
+    });
   }
 
   Future<StationVisit?> _visit(String c) async {

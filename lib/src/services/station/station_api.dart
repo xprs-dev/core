@@ -252,7 +252,9 @@ class StationVisit {
   /// proof tried once more, as the page does.
   Future<String?> session() {
     if (_session != null) return Future.value(_session);
-    return _opening ??= _openSession().whenComplete(() => _opening = null);
+    return _opening ??= _openSession().whenComplete(() {
+      _opening = null;
+    });
   }
 
   Future<String?> _openSession() async {
