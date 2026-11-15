@@ -10,11 +10,17 @@
  * forgets it.
  */
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:reticulum/reticulum.dart' show MediaRef;
 
 import '../media/media_fetch.dart';
 import '../receive/core_state.dart';
+import '../reticulum/rns_service.dart';
+import '../xprs/xprs_monitor.dart';
+import '../xprs/xprs_presence.dart';
+import '../xprs/xprs_shared_position.dart';
+import '../xprs/xprs_vocab.dart' show XprsReach, xprsBearerReach;
 import 'station_api.dart';
 import 'station_visits.dart';
 
@@ -197,6 +203,102 @@ class StationBrowse {
             'preview': _token(it.preview),
             'file': _token(it.ref.isEmpty ? it.preview : it.ref),
           },
+      ],
+    };
+  }
+
+  // ---- the stations themselves, a page at a time -------------------------
+  //
+  // One row per device the presence rule counts (xprs_presence.dart), classed
+  // by the nearest bearer it is heard on (9.11: local, regional, global), so
+  // a list of hundreds across Reticulum is read by scope and by page, never
+  // whole. The rule and the class are the core's; a screen draws rows.
+
+  /// Test seams.
+  List<XprsDevice> Function() presence = () => RnsService.instance.xprsPresence();
+  Map<String, dynamic>? Function(String call) heardHere =
+      (c) => XprsMonitor.instance.stationJson(c);
+  bool Function(String call) offersApi = (c) => RnsService.instance.isWappStation(c);
+  Map<String, dynamic>? Function(String call) announced =
+      (c) => RnsService.instance.announcedVia(c);
+  ({double lat, double lon})? Function() here = () {
+    final at = XprsSharedPosition.instance.current();
+    return at == null ? null : xprsParseLatLon(at.pos);
+  };
+
+  List<(XprsDevice, XprsReach)>? _listed;
+  int _listedMs = 0;
+
+  static XprsReach _reachOf(XprsDevice d) {
+    var best = XprsReach.global;
+    for (final b in d.bearers) {
+      final r = xprsBearerReach(b);
+      if (r.index < best.index) best = r;
+    }
+    return best;
+  }
+
+  /// Metres between two positions (a sphere is plenty for "how far").
+  static int _metres(({double lat, double lon}) a, ({double lat, double lon}) b) {
+    const r = 6371000.0, k = math.pi / 180;
+    final dLat = (b.lat - a.lat) * k, dLon = (b.lon - a.lon) * k;
+    final h = math.pow(math.sin(dLat / 2), 2) +
+        math.cos(a.lat * k) * math.cos(b.lat * k) * math.pow(math.sin(dLon / 2), 2);
+    return (2 * r * math.asin(math.sqrt(h))).round();
+  }
+
+  /// The stations in [scope] (`local`, `regional`, `global` or `all`) whose
+  /// callsign contains [search], nearest class and newest first, [pageMax]
+  /// from [offset]: `{counts:{local,regional,global,all}, total, offset,
+  /// rows:[{call, kind, reach, bearers, age_s, api, hops?, dist_m?}]}`.
+  Map<String, dynamic> list({String scope = 'all', String search = '', int offset = 0}) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    var all = _listed;
+    if (all == null || now - _listedMs > 2000) {
+      all = [for (final d in presence()) (d, _reachOf(d))]
+        ..sort((a, b) {
+          final c = a.$2.index.compareTo(b.$2.index);
+          return c != 0 ? c : b.$1.lastSeenMs.compareTo(a.$1.lastSeenMs);
+        });
+      _listed = all;
+      _listedMs = now;
+    }
+    final counts = {'local': 0, 'regional': 0, 'global': 0, 'all': all.length};
+    for (final e in all) {
+      counts[e.$2.name] = counts[e.$2.name]! + 1;
+    }
+    final q = search.trim().toUpperCase();
+    final rows = [
+      for (final e in all)
+        if ((scope == 'all' || e.$2.name == scope) &&
+            (q.isEmpty || e.$1.callsign.contains(q)))
+          e,
+    ];
+    final from = offset < 0 ? 0 : offset;
+    final me = here();
+    return {
+      'counts': counts,
+      'scope': scope,
+      'total': rows.length,
+      'offset': from,
+      'rows': [
+        for (final e in rows.skip(from).take(pageMax))
+          () {
+            final d = e.$1;
+            final h = heardHere(d.callsign);
+            final at = me == null || h == null ? null : xprsParseLatLon('${h['pos'] ?? ''}');
+            final a = announced(d.callsign);
+            return {
+              'call': d.callsign,
+              'kind': d.kindWord,
+              'reach': e.$2.name,
+              'bearers': d.bearers,
+              'age_s': (now - d.lastSeenMs) ~/ 1000,
+              'api': offersApi(d.callsign),
+              if (a != null && a['hops'] is int) 'hops': a['hops'],
+              if (at != null) 'dist_m': _metres(me!, at),
+            };
+          }(),
       ],
     };
   }

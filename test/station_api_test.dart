@@ -18,6 +18,7 @@ import 'package:xprs_core/src/services/xprs/xprs_file_acl.dart';
 import 'package:xprs_core/src/services/xprs/xprs_groups.dart';
 import 'package:xprs_core/src/services/xprs/xprs_id.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
+import 'package:xprs_core/src/services/xprs/xprs_presence.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
 import 'package:xprs_core/src/services/xprs/xprs_vocab.dart' show xprsParseTs, xprsNowTs;
 
@@ -268,6 +269,37 @@ void main() {
     expect((items['items'] as List), hasLength(2));
     expect((items['items'] as List).first['file'], 'file:${refOf(pic)}');
     browse.forget('X3STAT');
+  });
+
+  test('hundreds of stations are read by scope and by page', () {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    XprsDevice dev(String call, List<String> bearers, int ageS) => XprsDevice(
+        callsign: call, kind: XprsKind.user, fixed: false, evidence: XprsEvidence.air,
+        bearers: bearers, reachable: true, services: const [], lastSeenMs: now - ageS * 1000);
+    final browse = StationBrowse.instance
+      ..presence = (() => [
+            for (var i = 0; i < 300; i++) dev('X1G${i.toString().padLeft(3, '0')}', ['rns'], i),
+            dev('X1LORA', ['lora', 'rns'], 5),
+            dev('X1NEAR', ['rns', 'ble'], 50),
+            dev('X3LAN', ['lan'], 9),
+          ])
+      ..heardHere = ((c) => c == 'X3LAN' ? {'pos': '38.7100,-9.1400'} : null)
+      ..offersApi = ((c) => c == 'X3LAN')
+      ..announced = ((_) => null)
+      ..here = (() => (lat: 38.7077, lon: -9.1365));
+    final all = browse.list();
+    expect(all['counts'], {'local': 2, 'regional': 1, 'global': 300, 'all': 303});
+    final rows = all['rows'] as List;
+    expect(rows, hasLength(StationBrowse.pageMax), reason: 'never the whole list');
+    expect([for (final r in rows.take(3)) r['call']], ['X3LAN', 'X1NEAR', 'X1LORA'],
+        reason: 'the nearest class first, the newest first within it');
+    expect(rows.first['api'], isTrue);
+    expect(rows.first['dist_m'], inInclusiveRange(350, 450));
+    expect(rows[1]['reach'], 'local', reason: 'classed by the nearest bearer it is heard on');
+    final global = browse.list(scope: 'global', offset: 290);
+    expect(global['total'], 300);
+    expect(global['rows'], hasLength(10));
+    expect(browse.list(search: 'lor')['total'], 1);
   });
 
   test('a proof holds only for the station, this link and this nonce', () {
