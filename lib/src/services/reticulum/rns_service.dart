@@ -997,6 +997,31 @@ class RnsService {
         reachableByCallsign(callsign);
   }
 
+  /// Diagnostic, for a screen that shows how a station is heard: the newest
+  /// Reticulum announce of [callsign] as it arrived here. `hops` (1 = a
+  /// neighbour), `via` the interface it came in on and its `kind` (ble, lan,
+  /// lora, radio, internet), `relayer` the callsign of the node that handed
+  /// it to us when that node is known by one ('' otherwise), `ageMs`. Null
+  /// when it never announced. Nothing routes on this.
+  Map<String, dynamic>? announcedVia(String callsign) {
+    final want = _bareUpper(callsign);
+    if (want.isEmpty) return null;
+    _ObservedNode? best;
+    for (final n in _observed.values) {
+      if (_bareUpper(n.callsign ?? '') != want) continue;
+      if (best == null || n.lastSeenMs > best.lastSeenMs) best = n;
+    }
+    if (best == null) return null;
+    final r = best.relayerHex;
+    return {
+      'hops': best.hops,
+      'via': best.via,
+      'kind': rnsIfaceKind(best.via),
+      'relayer': r == null ? '' : _bareUpper(_observed[r]?.callsign ?? ''),
+      'ageMs': DateTime.now().millisecondsSinceEpoch - best.lastSeenMs,
+    };
+  }
+
   /// Diagnostic: our routing to [destHex] (next hop, interface, hops, age) plus
   /// our live interfaces and passive state — to debug WHY addressed packets to a
   /// destination do or don't get forwarded.

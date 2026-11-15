@@ -246,6 +246,12 @@ class XprsStation {
   /// on the far side of a digipeater, which section 10.6.3 forbids.
   int lastDirectMs = 0;
 
+  /// How the newest packet from it came: the number of stations that carried
+  /// it (the length of its `via:`, 0 = from its own transmitter) and the last
+  /// of them, the one this station heard. What `/api/xprs/devices` answers.
+  int lastHops = 0;
+  String lastVia = '';
+
   /// Whether the FRESHEST hearing came through the station's HTTP API (a
   /// browser on the web chat page) rather than off a radio or the LAN
   /// socket. Internal: never a word on the wire. Such a station is at our
@@ -458,6 +464,9 @@ class XprsMonitor {
     }
     // No `via:` means this arrived from the sender's own transmitter.
     if (!p.has('via')) st.lastDirectMs = now;
+    final carried = xprsVia(p);
+    st.lastHops = carried.length;
+    st.lastVia = carried.isEmpty ? '' : carried.last;
 
     _bump();
   }
@@ -496,6 +505,31 @@ class XprsMonitor {
         .toList()
       ..sort((a, b) => b.lastDirectMs.compareTo(a.lastDirectMs));
     return fresh.map((s) => s.callsign).toList();
+  }
+
+  /// Who this station hears, for `/api/xprs/devices` (spec/API-HTTP.md):
+  /// the rows the firmware answers, newest first, [max] at most. `hops` is
+  /// the `via:` length of the newest packet and `via` the station that
+  /// handed it over; `dist_m` is -1, this station ranging nobody.
+  List<Map<String, dynamic>> devicesForApi(
+      {Duration within = staleAfter, int max = 200, int? nowMs}) {
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final fresh = _stations.values
+        .where((s) => now - s.lastMs <= within.inMilliseconds)
+        .toList()
+      ..sort((a, b) => b.lastMs.compareTo(a.lastMs));
+    return [
+      for (final s in fresh.take(max))
+        {
+          'call': s.callsign,
+          'bearer': s.bearer,
+          'rssi': s.rssi,
+          'dist_m': -1,
+          'hops': s.lastHops,
+          'age_s': (now - s.lastMs) ~/ 1000,
+          if (s.lastVia.isNotEmpty) 'via': s.lastVia,
+        },
+    ];
   }
 
   /// The callsigns heard DIRECTLY on one radio within [within], most recent

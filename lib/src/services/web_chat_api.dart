@@ -267,6 +267,10 @@ class WebChatApi {
   /// Sign a canonical wire as this station, or null when it cannot (no key).
   final XprsPacket? Function(String canonical)? signAsStation;
 
+  /// Who this station hears (`GET /api/xprs/devices`): the rows of
+  /// `XprsMonitor.devicesForApi`. Null on a host that hears nothing itself.
+  final List<Map<String, dynamic>> Function()? devices;
+
   /// Air a wire this station signed (its own moderation acts).
   final void Function(String wire)? publish;
 
@@ -299,6 +303,7 @@ class WebChatApi {
     bool Function(String peer)? isLocalPeer,
     this.groups,
     this.signAsStation,
+    this.devices,
     this.publish,
     this.roomKeys,
     this.keep,
@@ -447,6 +452,10 @@ class WebChatApi {
       return _history(query, peer);
     }
     if (method == 'GET' && path == '/api/xprs/mail') return _mail(query);
+    if (method == 'GET' && path == '/api/xprs/devices' && devices != null) {
+      final rows = devices!();
+      return WebChatReply(200, {'ok': true, 'count': rows.length, 'devices': rows});
+    }
     if (path == '/api/admin') {
       if (method == 'GET') return _adminState(query['session'], peer);
       if (method == 'POST') return _adminAct(body, peer);
@@ -511,7 +520,7 @@ class WebChatApi {
         'file': {'get': true, 'put': true, 'max': fileMax},
       'serve': <String>[],
       'page': {
-        'tabs': ['chat', 'traffic', 'alerts', if (where != null) 'station'],
+        'tabs': ['chat', 'traffic', if (devices != null) 'devices', 'alerts', if (where != null) 'station'],
         // Who may post an alert through this station (10.10.2).
         'alerts': settings['who_may_alert'],
         // What the page defines for itself and the administrator set
