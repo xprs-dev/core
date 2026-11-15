@@ -292,7 +292,7 @@ void main() {
     final rows = all['rows'] as List;
     expect(rows, hasLength(StationBrowse.pageMax), reason: 'never the whole list');
     expect([for (final r in rows.take(3)) r['call']], ['X3LAN', 'X1NEAR', 'X1LORA'],
-        reason: 'the nearest class first, the newest first within it');
+        reason: 'the nearest class first; what can be browsed first within it');
     expect(rows.first['api'], isTrue);
     expect(rows.first['dist_m'], inInclusiveRange(350, 450));
     expect(rows[1]['reach'], 'local', reason: 'classed by the nearest bearer it is heard on');

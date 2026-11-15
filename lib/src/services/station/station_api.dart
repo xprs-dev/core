@@ -112,6 +112,11 @@ class StationCollection {
   final Map<String, StationItem> items = {};
   final Map<String, List<String>> byFolder = {};
 
+  /// The packets that name files (an item's preview, its `t:file`), with the
+  /// identifier each has, newest read last: what a media index is told so a
+  /// viewer knows the original a preview stands for. Emptied by the reader.
+  final List<(XprsPacket, String)> named = [];
+
   /// True when the station had older rows than it sent: ask again with
   /// [oldestTs] as `until`.
   bool more = false;
@@ -139,8 +144,10 @@ class StationCollection {
         items[id] = StationItem(id: id, folder: to, from: from, ts: ts,
             caption: p['m'] ?? '', preview: p['file'] ?? '');
         (byFolder[to] ??= []).add(id);
+        if (p.has('file')) named.add((p, id));
       } else if (p.type == 'file') {
         orig[to] = p;
+        named.add((p, '${r['id'] ?? xprsIdentifier(p)}'));
       } else if (p.type == 'reaction' && p['add'] == 'like') {
         (likes[to] ??= {}).add(from);
       }

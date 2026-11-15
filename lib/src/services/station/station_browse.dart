@@ -7,7 +7,8 @@
  *
  * Kept: the newest [_cap] answers, each for [fresh]. A station's listing is
  * the station's, never filed in this device's archive: closing the screen
- * forgets it.
+ * forgets it. Only what each listed file is (size, name, the original behind
+ * a preview) goes to the media index, as it does for any file a message names.
  */
 import 'dart:async';
 import 'dart:math' as math;
@@ -15,6 +16,7 @@ import 'dart:math' as math;
 import 'package:reticulum/reticulum.dart' show MediaRef;
 
 import '../media/media_fetch.dart';
+import '../media/media_ref_index.dart';
 import '../receive/core_state.dart';
 import '../reticulum/rns_service.dart';
 import '../xprs/xprs_monitor.dart';
@@ -106,16 +108,33 @@ class StationBrowse {
         e.why = 'unreached';
         return;
       }
-      final session = await v.session();
-      final rooms = await v.rooms() ?? const <StationRoom>[];
       final page = s['page'];
-      e.data = {
-        'call': c,
-        'serve': s['serve'] is List ? s['serve'] : const [],
-        'tabs': page is Map && page['tabs'] is List ? page['tabs'] : const [],
-        'known': session != null,
-        'rooms': [for (final r in rooms) r.toJson()],
-      };
+      Map<String, dynamic> data(bool known, List<StationRoom> rooms) => {
+            'call': c,
+            'serve': s['serve'] is List ? s['serve'] : const [],
+            'tabs': page is Map && page['tabs'] is List ? page['tabs'] : const [],
+            'known': known,
+            'rooms': [for (final r in rooms) r.toJson()],
+          };
+      // What everybody may see first, at once; then the same as this
+      // profile, which adds the private rooms it belongs to. A station slow
+      // to take the session does not hold the public listing back.
+      if (e.state != 'ready') {
+        final open = await v.call('GET', '/api/rooms');
+        final list = open?.json['rooms'];
+        if (open != null && open.ok && list is List) {
+          e.data = data(false,
+              [for (final j in list) if (j is Map<String, dynamic>) StationRoom(j)]);
+          e.state = 'ready';
+          e.why = '';
+          CoreState.instance.changed(CoreState.station);
+        }
+      }
+      final session = await v.session();
+      final rooms = await v.rooms();
+      if (rooms != null || e.state != 'ready') {
+        e.data = data(session != null, rooms ?? const []);
+      }
       e.state = 'ready';
       e.why = '';
     });
@@ -144,7 +163,13 @@ class StationBrowse {
     for (var i = 0; i < 9 && col!.more; i++) {
       col = await v.collection(room, into: col);
     }
-    for (final it in col!.items.values) {
+    // What each file is (its size, its name, the original a preview stands
+    // for), so the viewer that opens a preview offers the file itself.
+    for (final n in col!.named) {
+      MediaRefIndex.instance.note(n.$1, msgId: n.$2);
+    }
+    col.named.clear();
+    for (final it in col.items.values) {
       for (final r in [it.preview, it.ref]) {
         final ref = r.isEmpty ? null : MediaRef.parse('file:$r');
         if (ref != null) MediaFetch.instance.noteStationFile(ref.sha256, c);
@@ -218,7 +243,7 @@ class StationBrowse {
   List<XprsDevice> Function() presence = () => RnsService.instance.xprsPresence();
   Map<String, dynamic>? Function(String call) heardHere =
       (c) => XprsMonitor.instance.stationJson(c);
-  bool Function(String call) offersApi = (c) => RnsService.instance.isWappStation(c);
+  bool Function(String call) offersApi = (c) => RnsService.instance.offersApi(c);
   Map<String, dynamic>? Function(String call) announced =
       (c) => RnsService.instance.announcedVia(c);
   ({double lat, double lon})? Function() here = () {
@@ -248,7 +273,7 @@ class StationBrowse {
   }
 
   /// The stations in [scope] (`local`, `regional`, `global` or `all`) whose
-  /// callsign contains [search], nearest class and newest first, [pageMax]
+  /// callsign contains [search], nearest class first then by callsign, [pageMax]
   /// from [offset]: `{counts:{local,regional,global,all}, total, offset,
   /// rows:[{call, kind, reach, bearers, age_s, api, hops?, dist_m?}]}`.
   Map<String, dynamic> list({String scope = 'all', String search = '', int offset = 0}) {
@@ -256,9 +281,18 @@ class StationBrowse {
     var all = _listed;
     if (all == null || now - _listedMs > 2000) {
       all = [for (final d in presence()) (d, _reachOf(d))]
+        // Nearest class, then what can be browsed, stations, people; by
+        // callsign within each, so a row stays where it was while the list
+        // is being read (newest-first reshuffled it at every packet).
         ..sort((a, b) {
-          final c = a.$2.index.compareTo(b.$2.index);
-          return c != 0 ? c : b.$1.lastSeenMs.compareTo(a.$1.lastSeenMs);
+          var c = a.$2.index.compareTo(b.$2.index);
+          if (c != 0) return c;
+          c = (offersApi(b.$1.callsign) ? 1 : 0) - (offersApi(a.$1.callsign) ? 1 : 0);
+          if (c != 0) return c;
+          if (a.$1.kind != b.$1.kind) {
+            return (b.$1.kind == XprsKind.station ? 1 : 0) - (a.$1.kind == XprsKind.station ? 1 : 0);
+          }
+          return a.$1.callsign.compareTo(b.$1.callsign);
         });
       _listed = all;
       _listedMs = now;

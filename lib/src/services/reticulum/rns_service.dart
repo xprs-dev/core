@@ -5472,8 +5472,22 @@ class RnsService {
     // with neither. A beacon's `lx:` ([noteStationAddress]) proves itself and
     // binds any callsign; a bare announce binds only a station's.
     if (call.isEmpty || xprsKindOf(call) != XprsKind.station) return;
+    // Where its visitor API answers, whatever else it runs: a server-edition
+    // station announces LXMF too and is still browsed here, which is a
+    // different question from which lane its mail takes.
+    if (_apiStation.remove(call) == null && _apiStation.length >= _wappStationMax) {
+      _apiStation.remove(_apiStation.keys.first);
+    }
+    _apiStation[call] = id;
     _bindStation(call, id);
   }
+
+  /// Stations whose xprs/wapp destination announced: where a visit's link
+  /// goes ([stationRequests]). Bounded like [_wappStation].
+  final Map<String, RnsIdentity> _apiStation = {};
+
+  /// True when [callsign] announced the destination its visitor API answers on.
+  bool offersApi(String callsign) => _apiStation.containsKey(_bareUpper(callsign));
 
   void _bindStation(String call, RnsIdentity id) {
     final n = _observed[id.hexHash];
@@ -5606,7 +5620,7 @@ class RnsService {
     final c = _bareUpper(call);
     final have = _apiClients[c];
     if (have != null) return have;
-    final id = _wappStation[c];
+    final id = _apiStation[c] ?? _wappStation[c];
     if (!_up || _transport == null || id == null) return null;
     return _apiClients[c] = RnsRequestClient(
       peer: id,

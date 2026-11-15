@@ -70,28 +70,33 @@ class StationVisits {
       _fault[c] = 'unknown';
       return null;
     }
-    if (!await link.open()) {
+    final t0 = DateTime.now().millisecondsSinceEpoch;
+    if (!await link.open(timeout: const Duration(seconds: 20))) {
       unreached++;
       _fault[c] = 'unreached';
+      LogService.instance.add('visit: $c: no link');
       rns.dropStationRequests(c);
       return null;
     }
     final nonce = _nonce();
     final proof = await link.request('/xprs/prove', nonce,
-        timeout: const Duration(seconds: 30));
+        timeout: const Duration(seconds: 20));
     final fault = proof == null
         ? 'unreached'
         : stationProofFault(proof, c, nonce, _hex(link.linkId));
     if (fault != null) {
       proof == null ? unreached++ : refused++;
       _fault[c] = fault;
-      if (proof != null) LogService.instance.add('visit: $c refused: $fault');
+      LogService.instance.add(proof == null ? 'visit: $c: link up, no proof' : 'visit: $c refused: $fault');
       rns.dropStationRequests(c);
       return null;
     }
     opened++;
     _fault.remove(c);
-    final v = StationVisit(c, stationLinkCarrier(link), visitor: _me())
+    LogService.instance.add(
+        'visit: $c proven in ${DateTime.now().millisecondsSinceEpoch - t0} ms');
+    final v = StationVisit(c,
+        stationLinkCarrier(link, timeout: const Duration(seconds: 25)), visitor: _me())
       ..lastUsedMs = DateTime.now().millisecondsSinceEpoch;
     _open[c] = v;
     _sweep ??= Timer(idle, _closeIdle);

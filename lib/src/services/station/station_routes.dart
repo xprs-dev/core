@@ -129,7 +129,10 @@ class StationRoutes {
       final relay = '${a['relayer'] ?? ''}';
       final age = (a['ageMs'] is int ? a['ageMs'] as int : 0) ~/ 1000;
       if (n <= 1) {
-        if (!routes.any((r) => r.length == 1 && r.first['bearer'] == kind)) {
+        // `rns` (the monitor's word) and `internet` (the interface's) are
+        // one way, and a LAN announce is the LAN hop already listed.
+        String lane(Object? b) => b == 'rns' || b == 'internet' ? 'internet' : '$b';
+        if (!routes.any((r) => r.length == 1 && lane(r.first['bearer']) == lane(kind))) {
           routes.add([_hop(me, to, kind, 'heard', ageS: age)]);
         }
       } else {
