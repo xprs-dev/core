@@ -36,6 +36,7 @@ import '../event_bus.dart';
 import '../preferences_service.dart';
 import '../receive/core_state.dart';
 import '../reticulum/rns_service.dart';
+import '../station/station_visits.dart';
 import '../xprs/xprs_files.dart';
 import '../xprs/xprs_inline_file.dart';
 import '../xprs/xprs_lan.dart';
@@ -99,6 +100,69 @@ class MediaFetch {
 
   int served = 0; // re-use hits
   int fetched = 0; // downloads that completed
+
+  // ---- files a station listed on a visit (services/station) ---------------
+  //
+  // A room's listing names its files; the station that listed them is where
+  // they are fetched, over the visit's own link, with the visit's session
+  // (which is what opens a private room's files). Bounded: the newest
+  // [_stationCap] hashes, since a listing can be any length.
+
+  static const int _stationCap = 4000;
+  final Map<String, String> _stationOf = {};
+  final Map<String, (int, int)> _visitBytes = {};
+  final Set<String> _visiting = {};
+  int visitFetched = 0, visitFailed = 0;
+
+  /// [station] listed the file [sha] (43-char base64url) on a visit.
+  void noteStationFile(String sha, String station) {
+    if (_stationOf.remove(sha) == null && _stationOf.length >= _stationCap) {
+      _stationOf.remove(_stationOf.keys.first);
+    }
+    _stationOf[sha] = station;
+  }
+
+  /// Read [ref] from [station] over the visit, a part at a time into the
+  /// archive (never whole on the heap), going on from what a stopped fetch
+  /// left only within this run. The archive checks the hash; its onPut is
+  /// what completes the want.
+  Future<void> _runVisit(MediaRef ref, String station) async {
+    final sha = ref.sha256;
+    if (!_visiting.add(sha)) return;
+    HostedWriter? w;
+    var ok = false;
+    try {
+      final v = await StationVisits.instance.to(station);
+      final a = archive?.call();
+      if (v == null || a == null) return;
+      w = a.beginHosted(ref.ext, originPubHex: '', tier: 2);
+      if (w == null) return;
+      final st = await v.fileParts('$sha.${ref.ext}', (part, offset, size) async {
+        w!.add(part);
+        _visitBytes[sha] = (offset + part.length, size);
+        if (_state[sha] != MediaState.ready) {
+          _state[sha] = MediaState.fetching;
+          _emit(sha, MediaState.fetching);
+        }
+      });
+      if (st == 200) ok = w.finish(expectKey: sha) != null;
+    } catch (_) {
+      // Counted below; the want's own timeout is not waited for.
+    } finally {
+      if (!ok) w?.abort();
+      _visiting.remove(sha);
+      _visitBytes.remove(sha);
+      if (ok) {
+        visitFetched++;
+      } else {
+        visitFailed++;
+        final waiter = _inflight.remove(sha);
+        _state[sha] = MediaState.failed;
+        _emit(sha, MediaState.failed);
+        if (waiter != null && !waiter.isCompleted) waiter.complete(false);
+      }
+    }
+  }
 
   /// The archive's [MediaArchive.onPut] target: bytes landed for [sha],
   /// whichever lane brought them. Completes any waiter and tells listeners.
@@ -178,7 +242,10 @@ class MediaFetch {
       from = said!.from;
     }
 
-    final link = (from != null && from.isNotEmpty &&
+    final station = _stationOf[sha];
+    if (station != null) from = station;
+    final link = station != null ||
+        (from != null && from.isNotEmpty &&
             RnsService.instance.reachableByCallsign(from)) ||
         XprsLan.instance.peerCount > 0;
     final lanes = (from == null || from.isEmpty)
@@ -232,6 +299,13 @@ class MediaFetch {
             bleOnly: false,
             maxMb: PreferencesService.instanceSync?.mediaAutoMaxMb ?? 10,
             userTapped: userTapped);
+    final station = _stationOf[ref.sha256];
+    if (station != null) {
+      // Listed by a station on a visit: its own link carries it, and its
+      // session is what a private room's file needs. No other lane asks.
+      if (chosen != MediaLane.wait) unawaited(_runVisit(ref, station));
+      return;
+    }
     switch (chosen) {
       case MediaLane.packet:
         _askPacketLane(ref, from);
@@ -290,6 +364,11 @@ class MediaFetch {
     final a = archive?.call();
     if (a != null && a.has(sha)) return const MediaProgress(MediaState.ready);
     // Byte progress, first lane that reports.
+    final visit = _visitBytes[sha];
+    if (visit != null) {
+      return MediaProgress(MediaState.fetching,
+          received: visit.$1, total: visit.$2, lane: 'visit');
+    }
     final inline = XprsInlineAsm.instance.progressOf(sha);
     if (inline != null) {
       return MediaProgress(MediaState.fetching,

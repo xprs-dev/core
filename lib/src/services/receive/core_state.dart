@@ -81,6 +81,10 @@ class CoreState {
   /// instead of asking once a second forever on the chance one arrived.
   static String datagram(String tag) => 'core.datagram.$tag';
 
+  /// What a visit to another station learned (services/station): its rooms,
+  /// a room's folders and items. Read with `hal_station_read`.
+  static const station = 'core.station';
+
   /// Every fixed topic this file publishes, for the subscription UI and for a
   /// test that wants to assert the list rather than a literal. `datagram` is
   /// not here: its topics are named after a wapp, not after core state.
@@ -92,6 +96,7 @@ class CoreState {
     media,
     tasks,
     groups,
+    station,
   ];
 
   /// How long changes are collected before one publication goes out.

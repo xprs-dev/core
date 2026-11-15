@@ -11,6 +11,7 @@ import 'package:hex/hex.dart';
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/station/station_api.dart';
+import 'package:xprs_core/src/services/station/station_browse.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
 import 'package:xprs_core/src/services/web_chat_rns.dart';
 import 'package:xprs_core/src/services/xprs/xprs_file_acl.dart';
@@ -234,6 +235,39 @@ void main() {
     expect(rest.length, 100 * 1024);
     final b = visit(bob, _bob);
     expect(await b.fileParts(refOf(big), (b, o, n) async => fail('served to a stranger')), 403);
+  });
+
+  test('a screen reads at once and is told when the visit answered', () async {
+    final a = visit(alice, _alice, lan: true);
+    final (room, eid, pic) = await gallery(a, n: 3);
+    final b = visit(bob, _bob);
+    final browse = StationBrowse.instance
+      ..visit = ((_) async => b)
+      ..faultOf = ((_) => '');
+    Future<Map<String, dynamic>> settled(Map<String, dynamic> Function() read) async {
+      var r = read();
+      for (var i = 0; i < 200 && (r['busy'] == true || r['state'] == 'loading'); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        r = read();
+      }
+      return r;
+    }
+
+    expect(browse.offers('X3STAT')['state'], 'loading', reason: 'nobody waits on the network');
+    final offers = await settled(() => browse.offers('X3STAT'));
+    expect(offers['state'], 'ready');
+    expect(offers['known'], isTrue);
+    expect((offers['rooms'] as List).single['kind'], 'gallery');
+    final folders = await settled(() => browse.folders('X3STAT', room));
+    final f = (folders['folders'] as List).single as Map;
+    expect(f['id'], eid);
+    expect(f['count'], 3);
+    expect(f['cover'], 'file:${refOf(pic)}');
+    final items = browse.items('X3STAT', room, eid, offset: 1);
+    expect(items['total'], 3);
+    expect((items['items'] as List), hasLength(2));
+    expect((items['items'] as List).first['file'], 'file:${refOf(pic)}');
+    browse.forget('X3STAT');
   });
 
   test('a proof holds only for the station, this link and this nonce', () {
