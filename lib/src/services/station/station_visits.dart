@@ -69,13 +69,22 @@ class StationVisits {
 
   Future<StationVisit?> _visit(String c) async {
     final rns = RnsService.instance;
-    final link = rns.stationRequests(c);
+    var link = rns.stationRequests(c);
     if (link == null) {
       _fault[c] = 'unknown';
       return null;
     }
     final t0 = DateTime.now().millisecondsSinceEpoch;
-    if (!await link.open(timeout: const Duration(seconds: 20))) {
+    var up = await link.open(timeout: const Duration(seconds: 20));
+    if (!up) {
+      // The first try asked for the path; just after a start the answer is
+      // often a few seconds behind it (measured: no link, then proven on the
+      // next tap). Once more on a fresh link, before the person is told.
+      rns.dropStationRequests(c);
+      link = rns.stationRequests(c);
+      up = link != null && await link.open(timeout: const Duration(seconds: 20));
+    }
+    if (link == null || !up) {
       unreached++;
       _fault[c] = 'unreached';
       LogService.instance.add('visit: $c: no link');
