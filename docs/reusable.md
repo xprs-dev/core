@@ -473,6 +473,10 @@ JavaScript, in Dart, one client for every deployment that serves the API
 - `StationVisits.instance.to(call)` opens the Reticulum link, checks the
   station's proof (`stationProofFault`) and returns a `StationVisit`; unused
   visits close after five minutes. `faultOf(call)` says why there is none.
+- `RnsService.offersApi(call)` / `stationRequests(call)`: whether a station can be
+  visited, and the link to it. They resolve the station's identity from its API
+  announce, its beacon's `lx:`, or a named announce kept across restarts: ask
+  these, never wait for one particular announce.
 - `StationVisit`: `services()`, `session()` (posts the profile's identity on
   a 409, as the page does), `rooms()`, `topics(room)`, `collection(room)`
   (the page's `galTree` as `StationCollection`, read a page at a time with
