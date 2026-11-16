@@ -121,6 +121,30 @@ class StationRoutes {
       routes.add(hops);
     }
 
+    // 2b. Heard here only as carried by others, and nobody said they hear it:
+    // the packet named who handed it to us and counted the carriers. The last
+    // hand is heard; who heard the station itself is asked, a guess until told.
+    final via = h == null ? '' : _bare('${h['via'] ?? ''}');
+    final carriers = h != null && h['hops'] is int ? h['hops'] as int : 0;
+    final lastMs = h != null && h['lastMs'] is int ? h['lastMs'] as int : 0;
+    if (routes.isEmpty && via.isNotEmpty && via != me && via != to && carriers > 0 &&
+        now - lastMs < 3600000) {
+      final hops = <Map<String, dynamic>>[
+        _hop(me, via, '${h!['bearer'] ?? ''}', 'heard', ageS: (now - lastMs) ~/ 1000)
+      ];
+      for (var i = 1; i < carriers; i++) {
+        hops.add(_hop(i == 1 ? via : '?', '?', '', 'guess'));
+      }
+      final told = carriers == 1 ? _told['$via|$to'] : null;
+      if (told != null && now - told.atMs < fresh.inMilliseconds * 2) {
+        hops.add(_hop(via, to, told.bearer, 'asked', ageS: told.ageS, rssi: told.rssi));
+      } else {
+        hops.add(_hop(carriers == 1 ? via : '?', to, '', 'guess'));
+        if (carriers == 1) wanted.add((via, to));
+      }
+      routes.add(hops);
+    }
+
     // 3. Over Reticulum: the announce counts hops and names the last relay.
     final a = announced(to);
     if (a != null) {

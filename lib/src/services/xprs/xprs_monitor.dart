@@ -824,6 +824,8 @@ class XprsMonitor {
       'lastMs': s.lastMs,
       'agoMs': now - s.lastMs,
       'lastDirectMs': s.lastDirectMs,
+      'hops': s.lastHops,
+      if (s.lastVia.isNotEmpty) 'via': s.lastVia,
       'packets': s.packets,
       if (s.peers != null) 'peers': s.peers,
       if (s.mail != null) 'mail': s.mail,

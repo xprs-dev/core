@@ -5487,7 +5487,21 @@ class RnsService {
   final Map<String, RnsIdentity> _apiStation = {};
 
   /// True when [callsign] announced the destination its visitor API answers on.
-  bool offersApi(String callsign) => _apiStation.containsKey(_bareUpper(callsign));
+  bool offersApi(String callsign) => _apiIdentity(_bareUpper(callsign)) != null;
+
+  /// The identity whose xprs/wapp destination answers for station [c] (bare,
+  /// upper case). Its wapp announce is the first source, but the hubs' budget
+  /// drops announces, so one arriving after each start was a wait of minutes
+  /// with nothing to browse. Every destination of a node hangs off one
+  /// identity: a station bound by its beacon's `lx:`, or one whose named
+  /// announce was heard (kept across restarts with the other peers), is as
+  /// well known. The name is still a claim; the visit checks the station's
+  /// proof before it believes anything ([stationProofFault]).
+  RnsIdentity? _apiIdentity(String c) {
+    final id = _apiStation[c] ?? _wappStation[c];
+    if (id != null || c.isEmpty) return id;
+    return xprsKindOf(c) == XprsKind.station ? _callIdentity[c] : null;
+  }
 
   void _bindStation(String call, RnsIdentity id) {
     final n = _observed[id.hexHash];
@@ -5620,7 +5634,7 @@ class RnsService {
     final c = _bareUpper(call);
     final have = _apiClients[c];
     if (have != null) return have;
-    final id = _apiStation[c] ?? _wappStation[c];
+    final id = _apiIdentity(c);
     if (!_up || _transport == null || id == null) return null;
     return _apiClients[c] = RnsRequestClient(
       peer: id,

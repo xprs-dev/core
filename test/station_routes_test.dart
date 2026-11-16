@@ -94,4 +94,22 @@ void main() {
   test('nothing known: no way is invented', () {
     expect(r.read('X1NONE')['routes'], isEmpty);
   });
+
+  test('heard only as carried by a station: that hand is heard, the rest asked', () {
+    r.heardHere = (_) => {
+          'bearer': 'lan',
+          'lastDirectMs': 0,
+          'lastMs': now - 4000,
+          'hops': 1,
+          'via': 'X3RELAY',
+        };
+    final a = r.read('X1FAR');
+    expect(hops(a), hasLength(2));
+    expect(hops(a).first, containsPair('to', 'X3RELAY'));
+    expect(hops(a).first, containsPair('know', 'heard'));
+    expect(hops(a).last, containsPair('to', 'X1FAR'));
+    expect(hops(a).last, containsPair('know', 'guess'));
+    expect((a['routes'] as List).single['sure'], isFalse);
+    expect(asked, ['X3RELAY']);
+  });
 }
