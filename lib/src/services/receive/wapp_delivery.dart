@@ -172,7 +172,7 @@ class WappDelivery {
     if (from.isEmpty || senderPub == null) return null;
     final clear = XprsGroupRead.instance.open(p, senderPub);
     if (clear == null) return null;
-    if (!groupAuthorMayPost(group, from)) {
+    if (!groupAuthorMayPost(group, from, tsMs: xprsParseTs(p['ts']))) {
       refusedGroupAuthor++;
       return 0;
     }
@@ -232,13 +232,25 @@ class WappDelivery {
   /// [XprsGroups.mayPost]: an unverifiable roster hides nothing. Safety types
   /// (`sos`/`warning`/`info`) never come through this test — it only ever sees
   /// `t:message`.
-  static bool groupAuthorMayPost(String dest, String author) {
+  static bool groupAuthorMayPost(String dest, String author, {int? tsMs}) {
     final g = dest.trim().toUpperCase();
     if (!g.startsWith('X5')) return true;
     final a = author.trim().toUpperCase();
     if (a.isEmpty) return true;
-    return XprsGroups.instance.mayPost(g, a,
-        haveKey: XprsGroups.instance.keyResolver?.call(g) != null);
+    final haveKey = XprsGroups.instance.keyResolver?.call(g) != null;
+    if (!XprsGroups.instance.mayPost(g, a, haveKey: haveKey) &&
+        tsMs == null) {
+      return false;
+    }
+    // 10.4: authority is judged at the moment of the act. A post is the
+    // member's if they were one when they wrote it -- so a request to join,
+    // replayed after its author was let in, stays a request, and what a
+    // member wrote before being removed stays theirs.
+    if (tsMs != null && XprsGroups.instance.rosterOf(g, haveKey: haveKey).verified) {
+      final r = XprsGroups.instance.roleAt(g, a, tsMs);
+      return r == XprsRole.member || r == XprsRole.mod || r == XprsRole.admin;
+    }
+    return XprsGroups.instance.mayPost(g, a, haveKey: haveKey);
   }
 
   /// Whether this station may accept somebody into closed group [dest]: it
@@ -283,7 +295,8 @@ class WappDelivery {
     var request = false;
     if ((p.type == 'message' || p.type == 'reaction') &&
         !groupAuthorMayPost(
-            p['d'] ?? '', NostrCrypto.bareCallsign(p['f'] ?? ''))) {
+            p['d'] ?? '', NostrCrypto.bareCallsign(p['f'] ?? ''),
+            tsMs: xprsParseTs(p['ts']))) {
       if (p.type == 'message' && mayAcceptFor(p['d'] ?? '')) {
         request = true;
       } else {
