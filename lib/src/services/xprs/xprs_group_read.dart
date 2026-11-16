@@ -38,6 +38,7 @@ import 'package:reticulum/reticulum.dart';
 import '../../storage/store_db.dart';
 import '../log_service.dart';
 import 'xprs_body.dart';
+import 'xprs_group_act.dart';
 import 'xprs_group_keys.dart';
 import 'xprs_groups.dart';
 import 'xprs_packet.dart';
@@ -261,6 +262,7 @@ class XprsGroupRead {
         mint(g);
         keys = keysOf(g);
       }
+      var handed = false;
       for (final m in members) {
         final sent = {
           for (final r in db.select(
@@ -281,7 +283,17 @@ class XprsGroupRead {
               'VALUES(?,?,?)',
               [g, m, k.pubHex]);
           await air(wire);
+          handed = true;
         }
+      }
+      // A member who was handed a key may never have heard the group say
+      // its name: its `t:identity` went out once, when it was made (10.1).
+      // Said again now, so the newcomer's screen reads "Friends", not a
+      // callsign.
+      if (handed) {
+        final id = XprsGroupAct.identity(
+            group: g, npub: own.npub, scalar: scalar, nick: own.nick);
+        if (id != null) await air(id.encode());
       }
     }
   }

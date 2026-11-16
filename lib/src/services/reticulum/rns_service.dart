@@ -175,6 +175,11 @@ class RnsService {
     };
     XprsIngest.onIdentity = (callsign, hex) {
       recordCallsignPubkey(callsign, hex, onlyIfUnknown: true);
+      // A group's name rides its identity (10.1): the screens that show the
+      // group are told, or they keep the callsign until the roster moves.
+      if (callsign.toUpperCase().startsWith('X5')) {
+        CoreState.instance.changed(CoreState.groups);
+      }
       LogService.instance.add('XPRS: $callsign signs with ${hex.substring(0, 8)}…');
     };
   }
