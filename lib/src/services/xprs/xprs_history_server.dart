@@ -532,6 +532,9 @@ class XprsHistoryServer {
   /// group's rows, because `only:` narrows the query to it.
   static bool _fellowMember(String? only, String from, String selfBase) {
     final g = _base(only ?? '');
+    // An open group (7.3) is public: anyone may post to it and read it, so
+    // what this station kept of one it follows is served to whoever asks.
+    if (XprsArchive.instance.followedGroups.contains(g)) return true;
     if (!g.startsWith('X5')) return false;
     final roster = XprsGroups.instance.rosterOf(g);
     bool member(String c) {

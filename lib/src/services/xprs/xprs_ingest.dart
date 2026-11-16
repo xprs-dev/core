@@ -320,10 +320,14 @@ class XprsIngest {
   /// a reaction whose `scope:` admits the bearer it arrived on. The same
   /// reach test the archive applies on read (XprsArchive._reachOf), so a row
   /// is kept exactly when a room would show it.
-  static bool _isRoomTalk(XprsPacket p, String bearer) =>
-      (p.type == 'reaction' ||
-          (p.type == 'message' && (p['d'] ?? '').trim().isEmpty)) &&
-      xprsReachAdmits(xprsScopeReach(p), xprsBearerReach(bearer));
+  static bool _isRoomTalk(XprsPacket p, String bearer) {
+    if (p.type != 'reaction' && p.type != 'message') return false;
+    final d = (p['d'] ?? '').trim().toUpperCase();
+    // An open group this station follows is a room too (7.3): anyone may
+    // post to it, and what is said there is what the person joined for.
+    if (d.isNotEmpty) return XprsArchive.instance.followedGroups.contains(d);
+    return xprsReachAdmits(xprsScopeReach(p), xprsBearerReach(bearer));
+  }
 
   /// Whose traffic this is: ours, somebody we follow, or a stranger.
   ///

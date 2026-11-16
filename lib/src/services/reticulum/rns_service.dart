@@ -550,6 +550,9 @@ class RnsService {
       base: NostrCrypto.bareCallsign,
       stations: stations,
     );
+    XprsArchive.instance.followedGroups =
+        (PreferencesService.instanceSync?.xprsFollowedGroups ?? const [])
+            .toSet();
     final hadStations = XprsArchive.instance.followedStations;
     if (stations.length != hadStations.length ||
         !stations.containsAll(hadStations)) {
@@ -9232,6 +9235,8 @@ class RnsService {
   /// fetch decision, not a social one. False for a callsign nothing can follow,
   /// empty, malformed, or a group (X5), whose membership is its own business.
   bool followStation(String call, bool on) {
+    // An open group's name (7.3) is followed as a room, not a station.
+    if (xprsAddressKind(call) == 'open') return followGroup(call, on);
     final base = NostrCrypto.bareCallsign(call);
     if (!_followable.hasMatch(base) || xprsKindOf(base) == null) return false;
     final prefs = PreferencesService.instanceSync;
@@ -9244,6 +9249,23 @@ class RnsService {
       prefs.xprsFollowedStations = next;
       _pushFollowedCallsigns();
     }
+    return true;
+  }
+
+  /// Follow (or stop following) an open group by its name (7.3): its talk is
+  /// kept as a room's, served to whoever asks, and fetched while this station
+  /// did not hear it (XprsCatchup), so somebody who joins sees what was said.
+  bool followGroup(String name, bool on) {
+    final g = name.trim().replaceFirst('#', '').toUpperCase();
+    if (g.isEmpty || xprsAddressKind(g) != 'open') return false;
+    final prefs = PreferencesService.instanceSync;
+    if (prefs == null) return false;
+    final had = prefs.xprsFollowedGroups;
+    final next = on
+        ? (had.contains(g) ? had : [...had, g])
+        : had.where((c) => c != g).toList();
+    if (next.length != had.length) prefs.xprsFollowedGroups = next;
+    XprsArchive.instance.followedGroups = next.toSet();
     return true;
   }
 

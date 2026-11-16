@@ -319,6 +319,14 @@ topic to the wapp that shows it (`routeCoreNotification`,
   `takeKeyMessage` on the member's side, `tend()` on the admin's (mint, renew
   on a departure, hand each member what they lack). `XprsSend.message` to an
   `X5` uses it, and `WappDelivery` opens sealed group posts with it.
+- `RnsService.followGroup(name, on)` / `XprsArchive.followedGroups` — an open
+  group (7.3) followed by name: its talk is kept as a room's
+  (`XprsIngest._isRoomTalk`), fetched by `XprsCatchup` (`only:<NAME>`) and
+  served to anyone by `XprsHistoryServer` (`_fellowMember`). Wapps reach it
+  with `hal_xprs_follow("PICNIC", 1)`.
+- `openStoreDb(..., pageCacheBytes:)` — every store's decoded-page budget
+  (`storePageCacheBytes`, 4 MB; blocks 1 MB). Ask for more only for a store
+  read hard, as the packet archive does (8 MB).
 - `XprsProfiles.instance.nickFor(call)` — the name a callsign gave itself in
   its verified `t:identity`. `XprsMonitor.stationsJson` rows carry it as
   `nick` for a person (`kind:user`), so a picker can say "Bea (X13SUZ)".

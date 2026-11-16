@@ -133,6 +133,11 @@ class XprsArchive {
   /// with [followed]; the receive funnel does one lookup.
   Set<String> followedStations = const {};
 
+  /// Open groups (7.3) this station follows, by name: a message or reaction
+  /// addressed to one is a room's talk, kept and served like the rooms by
+  /// range (XprsIngest), and fetched by XprsCatchup.
+  Set<String> followedGroups = const {};
+
   /// Counters for /api and for honest logs.
   int admitted = 0, dropped = 0, forged = 0;
 
@@ -1338,11 +1343,17 @@ class XprsArchive {
     }
     if (mailFor != null && mailFor.trim().isNotEmpty) {
       final a = _base(mailFor);
+      // An open group's talk (7.3) is nobody's mail: asked for by its name,
+      // it is served like a room's. Only a group NAME opens this -- a
+      // person's callsign in only: must never let their mail through.
+      final og = (only ?? '').trim().toUpperCase();
+      final open = og.isNotEmpty && xprsAddressKind(og) == 'open';
       where.write(" AND (toc = '' OR toc = ? OR fromc = ? "
-          "OR (toc >= 'X5' AND toc < 'X6'))");
+          "OR (toc >= 'X5' AND toc < 'X6')${open ? ' OR toc = ?' : ''})");
       args
         ..add(a)
         ..add(a);
+      if (open) args.add(og);
     }
     if (fromKind != null) {
       final prefix = xprsKindPrefix(fromKind);

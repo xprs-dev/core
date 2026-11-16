@@ -1195,6 +1195,9 @@ class XprsCatchup {
       // The closed groups we are in: what was said while we were away, or
       // before we joined, is held by the other members (26.4).
       ...XprsGroups.instance.memberGroups(_base(self)),
+      // And the open groups this station follows (7.3): somebody who joins
+      // one sees what was said before they came.
+      ...XprsArchive.instance.followedGroups,
     ];
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
     final every =
@@ -1314,7 +1317,8 @@ class XprsCatchup {
   // week again and the archive's dedup absorbs what is already held.
   static const String _groupKinds = 'identity,moderate,message,reaction';
   final Map<String, int> _groupMark = {};
-  static bool _isGroup(String c) => c.startsWith('X5');
+  static bool _isGroup(String c) =>
+      c.startsWith('X5') || XprsArchive.instance.followedGroups.contains(c);
 
   static String _base(String c) {
     final i = c.indexOf('-');

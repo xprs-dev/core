@@ -387,6 +387,13 @@ class PreferencesService {
   set xprsFollowedStations(List<String> v) =>
       _prefs.setStringList('xprs.followStations', v);
 
+  /// The open groups (XPRS.md 7.3, `d:LISBOA`) this station follows: their
+  /// talk is kept as a room's, and asked for while it was not heard.
+  List<String> get xprsFollowedGroups =>
+      _prefs.getStringList('xprs.followGroups') ?? const [];
+  set xprsFollowedGroups(List<String> v) =>
+      _prefs.setStringList('xprs.followGroups', v);
+
   int get xprsArchiveMaxMb => _prefs.getInt('xprs.archiveMaxMb') ?? 500;
   set xprsArchiveMaxMb(int v) => _prefs.setInt('xprs.archiveMaxMb', v);
 
