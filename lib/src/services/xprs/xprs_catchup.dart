@@ -39,6 +39,7 @@ import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_cadence.dart';
 import 'xprs_id.dart';
+import 'xprs_groups.dart';
 import 'xprs_ingest.dart';
 import 'xprs_monitor.dart';
 import 'xprs_owned_stations.dart';
@@ -493,6 +494,7 @@ class XprsCatchup {
     _followResume.clear();
     _followOldest.clear();
     _followLastResume.clear();
+    _groupMark.clear();
     followAsks = followRows = followRefused = 0;
   }
 
@@ -1190,6 +1192,9 @@ class XprsCatchup {
     final followed = <String>[
       ...XprsArchive.instance.followedStations,
       for (final k in XprsIngest.policy.followedKinds) '$_kindTarget$k',
+      // The closed groups we are in: what was said while we were away, or
+      // before we joined, is held by the other members (26.4).
+      ...XprsGroups.instance.memberGroups(_base(self)),
     ];
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
     final every =
@@ -1231,20 +1236,23 @@ class XprsCatchup {
   Future<bool> _askFollowed(
       String self, String archiver, String station, int now) async {
     final kind = _isKind(station) ? station.substring(_kindTarget.length) : null;
-    final held = kind != null
-        ? XprsArchive.instance.newestPtsOfType(kind)
-        : XprsArchive.instance.newestPts(station, types: const ['observation']);
+    final group = kind == null && _isGroup(station);
+    final held = group
+        ? _groupMark[station]
+        : kind != null
+            ? XprsArchive.instance.newestPtsOfType(kind)
+            : XprsArchive.instance.newestPts(station, types: const ['observation']);
     final floorMs = now - maxWindow.inMilliseconds;
     // A type never fetched reaches back the whole background window: what
     // was announced this week is what a person opening the wapp wants.
     var sinceMs = held ??
-        now - (kind != null ? maxWindow : followFirstWindow).inMilliseconds;
+        now - (kind != null || group ? maxWindow : followFirstWindow).inMilliseconds;
     if (sinceMs < floorMs) sinceMs = floorMs;
     final untilMs = _followResume[station];
     // A station: identity first, since the observations verify against a key
     // that may ride the same page (the order XprsGossip.askAlwaysOn uses).
     final wire = StringBuffer('t:command f:$self d:$archiver ts:${_ts(now)} '
-        '${kind != null ? 'cmd:history kind:$kind' : 'cmd:history kind:identity,observation only:$station'} '
+        '${kind != null ? 'cmd:history kind:$kind' : group ? 'cmd:history kind:$_groupKinds only:$station' : 'cmd:history kind:identity,observation only:$station'} '
         'since:${_ts(sinceMs)}');
     if (untilMs != null) wire.write(' until:${_ts(untilMs)}');
     final p = XprsPacket.parse(wire.toString());
@@ -1253,7 +1261,7 @@ class XprsCatchup {
     if (_followPending.length >= _pendingMax) {
       _followPending.remove(_followPending.keys.first);
     }
-    _followPending[id] = _FollowAsk(archiver, station);
+    _followPending[id] = _FollowAsk(archiver, station, now);
     _followAskedAtMs[station] = now;
     _followArchiverAtMs[archiver] = now;
     _flight = _Flight(archiver, now, followStation: station);
@@ -1293,7 +1301,20 @@ class XprsCatchup {
     }
     _followResume.remove(ask.station);
     _followLastResume.remove(ask.station);
+    // A group's window is closed: the next ask starts where this one did.
+    if (_isGroup(ask.station) && ask.atMs > 0) {
+      _groupMark[ask.station] = ask.atMs;
+    }
   }
+
+  // ── A closed group we belong to, fetched like a followed station: its
+  // messages, reactions and acts (`only:<X5>`), from the members in reach,
+  // who serve them to a fellow member (XprsHistoryServer._fellowMember). The
+  // mark is the last answered ask; in memory, so a restart reaches back a
+  // week again and the archive's dedup absorbs what is already held.
+  static const String _groupKinds = 'identity,moderate,message,reaction';
+  final Map<String, int> _groupMark = {};
+  static bool _isGroup(String c) => c.startsWith('X5');
 
   static String _base(String c) {
     final i = c.indexOf('-');
@@ -1348,7 +1369,8 @@ class _Flight {
 
 /// One outstanding fetch of a followed station: which archiver, for whom.
 class _FollowAsk {
-  const _FollowAsk(this.archiver, this.station);
+  const _FollowAsk(this.archiver, this.station, [this.atMs = 0]);
   final String archiver;
   final String station;
+  final int atMs;
 }

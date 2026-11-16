@@ -400,6 +400,21 @@ class XprsGroups {
     return _calls(p['grant']).contains(me) || _calls(p['revoke']).contains(me);
   }
 
+  /// The groups [me] belongs to (member, moderator or admin), from the acts
+  /// held. Rosters are cached, so this is a lookup per known group.
+  List<String> memberGroups(String me) {
+    final m = me.trim().toUpperCase();
+    if (m.isEmpty) return const [];
+    return [
+      for (final g in _acts.keys)
+        if (switch (rosterOf(g).roles[m]) {
+          XprsRole.member || XprsRole.mod || XprsRole.admin => true,
+          _ => false,
+        })
+          g
+    ];
+  }
+
   /// Replay the acts this station already holds (26.4).
   ///
   /// The roster lives in memory, so without this a restart loses every group —

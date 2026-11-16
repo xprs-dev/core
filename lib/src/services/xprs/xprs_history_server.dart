@@ -32,6 +32,8 @@ import 'xprs_files.dart';
 import 'xprs_folder.dart' show xprsFileShaOf;
 import '../social/archiver_service.dart';
 import 'xprs_gossip.dart';
+import 'xprs_group_keys.dart';
+import 'xprs_groups.dart';
 import '../reticulum/rns_service.dart';
 import 'xprs_id.dart';
 import 'xprs_ingest.dart';
@@ -356,7 +358,9 @@ class XprsHistoryServer {
         untilMs: untilMs,
         only: p['only'],
         types: _kinds(p) ?? XprsArchive.kXprsTalk.toList(),
-        ownOnly: !servingRoom && _ownOnlyFor(from, selfBase: selfBase),
+        ownOnly: !servingRoom &&
+            !_fellowMember(p['only'], from, selfBase) &&
+            _ownOnlyFor(from, selfBase: selfBase),
         // XPRS.md 12.1: mail is held for its addressee and never offered to
         // a third party. Without this a public archiver's page was twelve of
         // everybody's sealed DMs, and the asker's own mail competed with all
@@ -520,6 +524,24 @@ class XprsHistoryServer {
     return !(PreferencesService.instanceSync?.xprsPublicArchiver ?? false);
   }
 
+  /// A member asking for a closed group's own traffic (`only:<X5>`), of a
+  /// station in that group too. Those packets are this station's own mail
+  /// (XprsGroups.concernsUs keeps them whatever the archiver switch says),
+  /// and a member who joined late or was away has nobody else to read them
+  /// from: served as a private station serves its own publications. Only the
+  /// group's rows, because `only:` narrows the query to it.
+  static bool _fellowMember(String? only, String from, String selfBase) {
+    final g = _base(only ?? '');
+    if (!g.startsWith('X5')) return false;
+    final roster = XprsGroups.instance.rosterOf(g);
+    bool member(String c) {
+      final r = roster.roles[_base(c)];
+      return r == XprsRole.member || r == XprsRole.mod || r == XprsRole.admin;
+    }
+    return member(from) &&
+        (member(selfBase) || XprsGroupKeys.instance.holdsKey(g));
+  }
+
   /// Set by the host in `peers_mode: named`: is [call] a trusted peer?
   /// Null means every station in reach is.
   static bool Function(String call)? trusted;
@@ -595,7 +617,9 @@ class XprsHistoryServer {
         only: cmd['only'],
         types: _kinds(cmd) ?? XprsArchive.kXprsTalk.toList(),
         limit: inlinePageSize + 1,
-        ownOnly: !servingRoom && _ownOnlyFor(from, selfBase: selfBase),
+        ownOnly: !servingRoom &&
+            !_fellowMember(cmd['only'], from, selfBase) &&
+            _ownOnlyFor(from, selfBase: selfBase),
         mailFor: from); // 12.1, as on every other lane
     if (hostedRoom != null) {
       rows.removeWhere((r) {
