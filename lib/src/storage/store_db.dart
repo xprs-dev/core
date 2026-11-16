@@ -72,11 +72,23 @@ ZxSqlDb openStoreDb(String absPath,
     {StoreKind kind = StoreKind.profile,
     bool durable = false,
     int pageSize = 16384,
-    bool autoCompact = true}) {
+    bool autoCompact = true,
+    int pageCacheBytes = storePageCacheBytes}) {
   final secret = kind == StoreKind.plain ? null : storeSecretFor(absPath);
   return openStoreDbWithSecret(absPath, secret,
-      durable: durable, pageSize: pageSize, autoCompact: autoCompact);
+      durable: durable,
+      pageSize: pageSize,
+      autoCompact: autoCompact,
+      pageCacheBytes: pageCacheBytes);
 }
+
+/// What one store keeps decoded in memory. zx sizes its defaults for a
+/// desktop application holding a few databases (16 MB of pages, 4 MB of
+/// blocks, 2 MB of maps each); a node holds a dozen and more, and the caches
+/// filled towards 350 MB on the server over a few hours (2026-11-16). A
+/// store read hard (the packet archive) asks for more.
+const int storePageCacheBytes = 4 << 20;
+const int storeBlockCacheBytes = 1 << 20;
 
 /// True in the dart2js build of the web page (a browser without WebAssembly
 /// GC gets it as Flutter's fallback): numbers are JavaScript doubles there,
@@ -86,7 +98,10 @@ const bool storesUnavailable = identical(0, 0.0);
 /// Opens the store at [absPath] with a secret from [storeSecretFor] (null:
 /// plain), for isolates without the keyring.
 ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
-    {bool durable = false, int pageSize = 16384, bool autoCompact = true}) {
+    {bool durable = false,
+    int pageSize = 16384,
+    bool autoCompact = true,
+    int pageCacheBytes = storePageCacheBytes}) {
   if (storesUnavailable) {
     // Every store degrades to no persistence on an open failure.
     throw UnsupportedError('stores need the WebAssembly build of the page '
@@ -98,7 +113,9 @@ ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
         durable: durable,
       lockWaitMs: storeLockWaitMs,
       pageSize: pageSize,
-      autoCompact: autoCompact);
+      autoCompact: autoCompact,
+      pageCacheBytes: pageCacheBytes,
+      blockCacheBytes: storeBlockCacheBytes);
 }
 
 /// A store in memory (tests; a store without a path).

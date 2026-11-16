@@ -154,7 +154,7 @@ class XprsArchive {
     try {
       fs.directory(fs.file(path).parent.path).createSync(recursive: true);
       // Compacted by _flush's maybeCompact, not mid-write: it can be big.
-      final db = openStoreDb(path, autoCompact: false);
+      final db = openStoreDb(path, autoCompact: false, pageCacheBytes: 8 << 20);
       db.execute('''
         CREATE TABLE IF NOT EXISTS packets(
           id     TEXT PRIMARY KEY,
