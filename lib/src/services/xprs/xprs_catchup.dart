@@ -677,10 +677,25 @@ class XprsCatchup {
     // Followed stations first: they are few, the person asked for them by
     // name, and the in-flight gate below keeps the conversation's ask from
     // landing on the same archiver while theirs is being answered.
-    await _pullFollowed(selfCallsign, [
+    final named = [
       for (final c in prefs.xprsNamedArchivers)
         if (_base(c).isNotEmpty && _base(c) != selfBase) _base(c)
-    ], now, prefs);
+    ];
+    await _pullFollowed(selfCallsign, named, now, prefs);
+    // A group's talk is held by its members and by whoever kept it, not only
+    // by archivers the person named: those in earshot are asked too, and the
+    // always-on ones known to this station. A person who names no archiver
+    // (most) otherwise never asked anybody, and joined to an empty room.
+    await _pullFollowed(
+        selfCallsign,
+        {
+          ...named,
+          for (final s in fresh) _base(s.callsign),
+          ...deep,
+        }.toList(),
+        now,
+        prefs,
+        groups: true);
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
@@ -1188,17 +1203,20 @@ class XprsCatchup {
   static bool _isKind(String target) => target.startsWith(_kindTarget);
 
   Future<void> _pullFollowed(String self, List<String> archivers, int now,
-      PreferencesService prefs) async {
-    final followed = <String>[
-      ...XprsArchive.instance.followedStations,
-      for (final k in XprsIngest.policy.followedKinds) '$_kindTarget$k',
-      // The closed groups we are in: what was said while we were away, or
-      // before we joined, is held by the other members (26.4).
-      ...XprsGroups.instance.memberGroups(_base(self)),
-      // And the open groups this station follows (7.3): somebody who joins
-      // one sees what was said before they came.
-      ...XprsArchive.instance.followedGroups,
-    ];
+      PreferencesService prefs, {bool groups = false}) async {
+    final followed = groups
+        ? <String>[
+            // The closed groups we are in: what was said while we were away,
+            // or before we joined, is held by the other members (26.4).
+            ...XprsGroups.instance.memberGroups(_base(self)),
+            // And the open groups this station follows (7.3): somebody who
+            // joins one sees what was said before they came.
+            ...XprsArchive.instance.followedGroups,
+          ]
+        : <String>[
+            ...XprsArchive.instance.followedStations,
+            for (final k in XprsIngest.policy.followedKinds) '$_kindTarget$k',
+          ];
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
     final every =
         (_visible ? followEveryVisible : followEveryHidden).inMilliseconds;
