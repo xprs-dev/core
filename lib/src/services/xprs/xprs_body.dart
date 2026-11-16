@@ -76,6 +76,10 @@ enum XprsSealRefusal {
   /// through a gateway that relays words and cannot open a sealed body
   /// (section 9.11.5). It holds no XPRS key, so there is nothing to wait for.
   foreignNetwork,
+
+  /// A closed group this station is not a member of (26.7): its post would
+  /// be refused by every member, so it is not composed.
+  notMember,
 }
 
 /// A body that was built, or the reason it was not.

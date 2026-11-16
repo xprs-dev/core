@@ -313,6 +313,12 @@ topic to the wapp that shows it (`routeCoreNotification`,
   an act this device signed itself (its acceptance of a group's offer) uses
   the second; the group key resolver in `RnsService` falls back to it for
   `XprsSelf.isMine` callsigns.
+- `XprsGroupRead` (`services/xprs/xprs_group_read.dart`) — a closed group's
+  reading keys (XPRS.md 10.7.1): `currentPubHex(group)` to seal a post to,
+  `open(packet, senderPub)` to read one (newest key first), `learn` /
+  `takeKeyMessage` on the member's side, `tend()` on the admin's (mint, renew
+  on a departure, hand each member what they lack). `XprsSend.message` to an
+  `X5` uses it, and `WappDelivery` opens sealed group posts with it.
 - `XprsProfiles.instance.nickFor(call)` — the name a callsign gave itself in
   its verified `t:identity`. `XprsMonitor.stationsJson` rows carry it as
   `nick` for a person (`kind:user`), so a picker can say "Bea (X13SUZ)".

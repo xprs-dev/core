@@ -48,6 +48,7 @@ import 'xprs_id.dart';
 import 'xprs_key_wait.dart';
 import 'xprs_outbox.dart';
 import 'xprs_packet.dart';
+import 'xprs_group_read.dart';
 import 'xprs_presence.dart';
 import 'xprs_fetch.dart';
 import 'xprs_publisher.dart';
@@ -99,6 +100,7 @@ class XprsSendOutcome {
     return switch (refusal) {
       XprsSealRefusal.noRecipientKey => -1,
       XprsSealRefusal.foreignNetwork => -3,
+      XprsSealRefusal.notMember => -2,
       _ => 0,
     };
   }
@@ -220,6 +222,60 @@ class XprsSend {
     final lift = xprsLiftFile(text);
     head = xprsLiftOntoHead(head, lift);
     final body = lift.found ? lift.text : text;
+
+    // A closed group (26): its words are sealed to the group's READING key
+    // (xprs_group_read), never in the clear and never to the group's own key,
+    // which is its authority. Posted like any group post, to the group's
+    // address, with no receipt to wait for.
+    final group = dest.startsWith('X5');
+    if (group) {
+      if (!XprsPublisher.instance.mayAir(head)) {
+        refused++;
+        return const XprsSendOutcome(
+            form: '', id: '', parts: 0, refusal: XprsSealRefusal.notMember);
+      }
+      final read = XprsGroupRead.instance.currentPubHex(dest);
+      final gb = body.isEmpty
+          ? null
+          : xprsBuildWithFile(
+              head: head,
+              lift: lift,
+              text: body,
+              private: true,
+              recipientKeyHex: read ?? '',
+            );
+      if (gb != null && !gb.ok) {
+        refused++;
+        if (gb.refusal == XprsSealRefusal.noRecipientKey &&
+            holdForKey &&
+            original.isEmpty) {
+          refused--;
+          final held = XprsKeyWait.instance.hold(dest, text);
+          return XprsSendOutcome(form: 'h', id: held, parts: 0);
+        }
+        return XprsSendOutcome(form: '', id: '', parts: 0, refusal: gb.refusal);
+      }
+      final built = gb ??
+          xprsBuildWithFile(head: head, lift: lift, text: body, private: false);
+      if (!built.ok) {
+        refused++;
+        return XprsSendOutcome(form: '', id: '', parts: 0, refusal: built.refusal);
+      }
+      final id = xprsIdentifier(built.rejoined ?? built.packets.first);
+      for (final part in built.packets) {
+        unawaited(XprsPublisher.instance.publishWire(part.encode()));
+      }
+      if (lift.hasPreview) airFileCompanion(self, dest, id, lift);
+      if (lift.found) {
+        onFileShared?.call(lift.file!, dest, original: lift.original);
+      }
+      sent++;
+      return XprsSendOutcome(
+        form: built.privacy == XprsPrivacy.sealed ? 'x' : 'm',
+        id: id,
+        parts: built.packets.length,
+      );
+    }
 
     final built = xprsBuildWithFile(
       head: head,

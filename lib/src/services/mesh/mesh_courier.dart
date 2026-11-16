@@ -62,6 +62,7 @@ import '../xprs/xprs_vocab.dart';
 import '../xprs/xprs_ingest.dart';
 import '../xprs/xprs_body.dart';
 import '../xprs/xprs_fetch.dart';
+import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_publisher.dart';
 import '../xprs/xprs_mailbox.dart';
 import '../xprs/xprs_receipt.dart';
@@ -537,6 +538,7 @@ class MeshCourier {
         XprsSealRefusal.tooLong => 'it does not fit, even split',
         XprsSealRefusal.foreignNetwork =>
           'the recipient is on another network, which cannot open it (9.11.5)',
+        XprsSealRefusal.notMember => 'this station is not a member of that group',
       };
 
   /// `YYYY-MM-DD_HH:MM:SS` in UTC (docs/XPRS.md section 4.8).
@@ -815,6 +817,14 @@ class MeshCourier {
       if (_alreadyDelivered(xprsIdentifier(p))) return false;
     }
     if (body.isEmpty) return false;
+
+    // A closed group handing this station its reading key (xprs_group_read):
+    // the unseal against the GROUP's key is what proves the group said it.
+    // Taken, and never shown to anyone as a message.
+    if (wasSealed && XprsGroupRead.instance.takeKeyMessage(f.from, body)) {
+      _noteDelivered(xprsIdentifier(p));
+      return true;
+    }
 
     // (The identifier check that used to sit here is now the first line of this
     // method — the copy heard on air and the copy handed over in a session

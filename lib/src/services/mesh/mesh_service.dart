@@ -31,6 +31,7 @@ import '../preferences_service.dart';
 import '../xprs/xprs_airtime.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_profiles.dart';
+import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_catchup.dart';
 import '../xprs/xprs_line.dart';
@@ -86,6 +87,8 @@ import '../../platform/fs.dart';
 import 'package:xprs_core/src/platform/os.dart' as platform;
 
 class MeshService {
+  /// The roster-change listener that tends the groups' reading keys.
+  StreamSubscription<String>? _groupReadSub;
   MeshService._();
   static final MeshService instance = MeshService._();
 
@@ -381,6 +384,20 @@ class MeshService {
         // tap can try them before prompting. Same profile-encrypted store.
         XprsPassphrases.instance.init(
             wappsDataStorage(prefs).getAbsolutePath('xprs_passphrases.zx'));
+        // A closed group's reading keys (xprs_group_read): what keeps its words
+        // private without handing out its authority. Same profile store kind.
+        XprsGroupRead.instance
+          ..init(wappsDataStorage(prefs).getAbsolutePath('xprs_group_read.zx'))
+          ..self = (() => XprsArchive.instance.selfCallsign)
+          ..keyOf = ((c) => RnsService.instance.pubkeyForCallsign(c))
+          ..air = ((w) async {
+            await XprsPublisher.instance.publishWire(w, verbatim: true);
+          })
+          ..onKey = ((g) => XprsKeyWait.instance.keyLearned(g));
+        _groupReadSub?.cancel();
+        _groupReadSub = XprsGroups.instance.changes
+            .listen((_) => XprsGroupRead.instance.poke());
+        XprsGroupRead.instance.poke();
         // Who may fetch the BYTES behind a shared file: the audience of the
         // message that carried it (§11.2). The hash is public; this gates the
         // bytes. Same profile-encrypted store.

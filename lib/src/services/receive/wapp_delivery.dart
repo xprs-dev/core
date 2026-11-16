@@ -35,6 +35,7 @@ import '../log_service.dart';
 import '../xprs/xprs_id.dart';
 import 'package:reticulum/reticulum.dart';
 import '../xprs/xprs_archive.dart';
+import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_parts.dart';
@@ -152,6 +153,61 @@ class WappDelivery {
   }
 
 
+  /// Sealed posts to a closed group this station opened with a reading key.
+  static int groupOpened = 0;
+
+  /// Parts of sealed group posts, opened one by one (each part is sealed on
+  /// its own, §6.6) and joined as text. Kept apart from [_parts], whose joined
+  /// packets are archived: these carry the opened words and must not be.
+  final XprsPartTable _groupParts = XprsPartTable();
+
+  /// A sealed post to [group]: its words when a reading key opens it, handed
+  /// on in the decoded shape (`content`, `title:#X5...`), as a sealed 1:1 is.
+  /// Null when this station cannot open it, so the packet goes the ordinary
+  /// way (a wapp sees a sealed row it cannot read, and says nothing).
+  int? _groupSealed(XprsPacket p, String group, String bearer) {
+    final from = NostrCrypto.bareCallsign(p['f'] ?? '');
+    final senderPub = XprsArchive.instance.keyResolver?.call(from);
+    if (from.isEmpty || senderPub == null) return null;
+    final clear = XprsGroupRead.instance.open(p, senderPub);
+    if (clear == null) return null;
+    if (!groupAuthorMayPost(group, from)) {
+      refusedGroupAuthor++;
+      return 0;
+    }
+    var whole = p;
+    var text = clear;
+    if (p.has('n')) {
+      final done = _groupParts.offer(p, clear: clear);
+      if (done == null) {
+        partsHeld++;
+        return 0;
+      }
+      partsJoined++;
+      whole = done.packet;
+      text = done.text;
+    }
+    groupOpened++;
+    // The unseal is the proof of authorship (§9.2): it only opens against the
+    // sender's announced key.
+    deliverMessage(
+      from: from,
+      call: from,
+      content: text,
+      title: '#$group',
+      bearer: bearer,
+      ts: xprsParseTs(p['ts']),
+      id: xprsIdentifier(whole),
+      sig: XprsSigState.verified.name,
+      sealed: true,
+      file: p['file'] ?? '',
+      size: p['size'] ?? '',
+      name: p['name'] ?? '',
+      edit: p['edit'] ?? '',
+    );
+    return 1;
+  }
+
   /// Closed-group posts from a proven non-member, stopped at this door.
   static int refusedGroupAuthor = 0;
 
@@ -196,6 +252,15 @@ class WappDelivery {
     required bool forUs,
     int rssi = 0,
   }) {
+    // A closed group's post sealed to its reading key (xprs_group_read):
+    // opened here, before anything else sees it, and handed on as words.
+    if (pIn.type == 'message' && pIn.has('x')) {
+      final g = (pIn['d'] ?? '').trim().toUpperCase();
+      if (g.startsWith('X5')) {
+        final done = _groupSealed(pIn, g, bearer);
+        if (done != null) return done;
+      }
+    }
     // §6.6: a part is not a message. Held until the set is whole, and a set
     // that is still short publishes nothing.
     final p = _whole(pIn, bearer: bearer, rssi: rssi);
