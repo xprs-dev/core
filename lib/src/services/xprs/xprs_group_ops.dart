@@ -19,6 +19,7 @@ import '../media/media_fetch.dart';
 import '../media/media_preview.dart';
 import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
+import 'xprs_catchup.dart';
 import 'xprs_group_act.dart';
 import 'xprs_group_keys.dart';
 import 'xprs_groups.dart';
@@ -288,6 +289,8 @@ class XprsGroupOps {
     if (grantId.isEmpty) {
       return const XprsGroupOpResult.failed('no offer to accept');
     }
+    // A new member's room is empty until what was said arrives: asked now.
+    XprsCatchup.instance.askNow(group);
     return _selfAct(
         (scalar) => XprsGroupAct.accept(
             group: group,

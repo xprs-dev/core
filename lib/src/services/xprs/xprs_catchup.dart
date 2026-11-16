@@ -278,6 +278,20 @@ class XprsCatchup {
   /// The user opened a room: an event beats a clock. Ask this archiver now,
   /// once, whatever the interval says -- the same escape hatch the mesh
   /// scheduler has in pokeFor.
+  /// Groups a person just joined or opened, asked for on the next pass past
+  /// the archiver's floor (once each).
+  final Set<String> _urgent = {};
+
+  /// Ask for [group]'s history now: somebody joined it or opened it to read,
+  /// and is looking at an empty room.
+  void askNow(String group) {
+    final g = group.trim().replaceFirst('#', '').toUpperCase();
+    if (g.isEmpty) return;
+    _urgent.add(g);
+    _followAskedAtMs.remove(g);
+    if (_selfCallsign.isNotEmpty) unawaited(tick(_selfCallsign));
+  }
+
   void pokeFor(String archiver) {
     final base = _base(archiver);
     if (base.isEmpty) return;
@@ -495,6 +509,7 @@ class XprsCatchup {
     _followOldest.clear();
     _followLastResume.clear();
     _groupMark.clear();
+    _urgent.clear();
     followAsks = followRows = followRefused = 0;
   }
 
@@ -1241,11 +1256,18 @@ class XprsCatchup {
       // floor that archiver permits or before its refusal expires.
       if (_busy(now)) break;
       if ((_refusedUntilMs[a] ?? 0) > now) continue;
+      // A person who just joined or opened a group is waiting for it: that
+      // one ask is theirs, not the background's, and goes past the floor
+      // once. A refusal still stands.
+      final urgent = due.where(_urgent.contains).toList();
       final last = math.max(_lastAskMs[a] ?? 0, _followArchiverAtMs[a] ?? 0);
-      if (last != 0 && now - last < _floorMsFor(a, prefs)) continue;
-      final station = due.first;
+      if (urgent.isEmpty && last != 0 && now - last < _floorMsFor(a, prefs)) {
+        continue;
+      }
+      final station = urgent.isNotEmpty ? urgent.first : due.first;
       if (await _askFollowed(self, a, station, now)) {
         asked.add('$station@$a');
+        _urgent.remove(station);
       }
     }
     if (asked.isNotEmpty) {

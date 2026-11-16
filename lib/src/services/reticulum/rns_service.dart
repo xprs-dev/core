@@ -32,6 +32,7 @@ import '../mesh/mesh_service.dart';
 import '../mesh/mesh_courier.dart';
 import '../xprs/xprs_key_wait.dart';
 import '../xprs/xprs_archive.dart';
+import '../xprs/xprs_catchup.dart';
 import '../xprs/xprs_archive_policy.dart';
 import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_group_keys.dart';
@@ -9275,6 +9276,8 @@ class RnsService {
         : had.where((c) => c != g).toList();
     if (next.length != had.length) prefs.xprsFollowedGroups = next;
     XprsArchive.instance.followedGroups = next.toSet();
+    // Somebody is looking at it now: what was said is asked for at once.
+    if (on) XprsCatchup.instance.askNow(g);
     return true;
   }
 
