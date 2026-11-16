@@ -36,6 +36,8 @@ import '../xprs/xprs_archive_policy.dart';
 import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_groups.dart';
+import '../xprs/xprs_self.dart';
+import '../xprs/xprs_sig.dart' show xprsProfilePubXonly;
 import '../receive/packet_gateway.dart';
 import '../receive/core_state.dart';
 import '../receive/wapp_delivery.dart';
@@ -137,7 +139,13 @@ class RnsService {
           } catch (_) {}
         }
       }
-      if (hex == null || hex.isEmpty) return null;
+      if (hex == null || hex.isEmpty) {
+        // Our own acceptance or leaving: this station never hears its own
+        // packet, so its key is in the map only if something else put it
+        // there. Without it a fresh device's own "accept" stays unverified
+        // and the person is shown as invited after joining.
+        return XprsSelf.instance.isMine(base) ? xprsProfilePubXonly() : null;
+      }
       try {
         return Uint8List.fromList(HEX.decode(hex));
       } catch (_) {

@@ -108,6 +108,25 @@ BigInt? xprsProfileScalar() {
   }
 }
 
+String? _ownNsec;
+Uint8List? _ownPub;
+
+/// The active profile's 32-byte x-only public key, or null without one.
+///
+/// A station never hears its own packets, so the callsign→key map it learns
+/// from the air may hold every key but its own. An act it signed itself (a
+/// member's acceptance of a group's offer) is checked against this. Derived
+/// once per profile: the point multiplication is not free.
+Uint8List? xprsProfilePubXonly() {
+  final nsec = ProfileService.instance.activeProfile?.nsec ?? '';
+  if (nsec.isEmpty) return null;
+  if (nsec == _ownNsec) return _ownPub;
+  final d = xprsProfileScalar();
+  if (d == null) return null;
+  _ownNsec = nsec;
+  return _ownPub = XprsCrypto.publicKeyXOnly(d);
+}
+
 /// Check the `sig:` on [p] against [pubXonly], the signer's 32-byte x-only key.
 ///
 /// Pass a null key for a signer whose key is not held: the result is

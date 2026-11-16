@@ -307,6 +307,15 @@ topic to the wapp that shows it (`routeCoreNotification`,
 - `NostrSigner` / `LocalSigner` — "this program can sign as you" without
   holding the key; take a signer, not an nsec.
 - `LogService` — the in-memory ring behind `/api/log` (never a person's words).
+- `xprsProfileScalar()` / `xprsProfilePubXonly()` (`services/xprs/xprs_sig.dart`)
+  — the active profile's signing scalar and its 32-byte public key (derived
+  once per profile). A station never hears its own packets, so any check of
+  an act this device signed itself (its acceptance of a group's offer) uses
+  the second; the group key resolver in `RnsService` falls back to it for
+  `XprsSelf.isMine` callsigns.
+- `XprsProfiles.instance.nickFor(call)` — the name a callsign gave itself in
+  its verified `t:identity`. `XprsMonitor.stationsJson` rows carry it as
+  `nick` for a person (`kind:user`), so a picker can say "Bea (X13SUZ)".
 - `geohash`, `nostr_imeta` (NIP-92), `note_text` (`NoteMention`).
 - `ActivityArchive` (`services/storage/`) — a time-ordered feed store; one
   zx store per owner.

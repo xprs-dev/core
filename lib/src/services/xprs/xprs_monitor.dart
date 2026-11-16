@@ -25,6 +25,7 @@ import '../receive/core_state.dart';
 import 'xprs_id.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
+import 'xprs_profiles.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
 
@@ -851,7 +852,17 @@ class XprsMonitor {
   static Map<String, String> _kind(String callsign, [XprsStation? st]) {
     final k = xprsKindOf(callsign);
     if (k == null) return const {};
-    if (k != XprsKind.foreign) return {'kind': xprsKindWord(k)};
+    if (k != XprsKind.foreign) {
+      // The name a person gave themselves in their own signed `t:identity`
+      // (6.3.1): shown only once that announcement verified.
+      final nick = k == XprsKind.user
+          ? XprsProfiles.instance.nickFor(callsign.trim().toUpperCase())
+          : null;
+      return {
+        'kind': xprsKindWord(k),
+        if (nick != null && nick.isNotEmpty) 'nick': nick,
+      };
+    }
     final nick = st?.foreignNick;
     return {
       'kind': xprsKindWord(k),
