@@ -5683,7 +5683,9 @@ class RnsService {
     final c = _bareUpper(call);
     final me = _id;
     if (me != null && c == _bareUpper(XprsArchive.instance.selfCallsign)) return me;
-    return _wappStation[c];
+    // A person's phone is a station when its owner says so: whoever asks
+    // tries it, as [stationRequests] does.
+    return _apiIdentity(c) ?? _callIdentity[c];
   }
 
   /// Our own xprs/wapp destination, worked out once per identity: the test
