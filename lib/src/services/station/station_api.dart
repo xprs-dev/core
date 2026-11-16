@@ -55,6 +55,7 @@ class StationRoom {
         offerRole = '${j['offer_role'] ?? 'member'}',
         // A count for a visitor; the names themselves for its administrator.
         people = j['members'] is List ? [for (final x in j['members'] as List) '$x'] : const [],
+        asked = j['invited'] is List ? [for (final x in j['invited'] as List) '$x'] : const [],
         members = j['members'] is int
             ? j['members'] as int
             : j['members'] is List ? (j['members'] as List).length : 0;
@@ -62,6 +63,10 @@ class StationRoom {
   final bool canPost;
   final int members;
   final List<String> people;
+
+  /// Added by the administrator and not there yet (they take the place the
+  /// next time they open this station).
+  final List<String> asked;
 
   /// When [role] is `invited`: the offer to accept ([StationVisit.accept]).
   final String offer, offerRole;
@@ -73,7 +78,11 @@ class StationRoom {
   Map<String, dynamic> toJson() => {
         'call': call, 'name': name, 'about': about, 'kind': kind,
         'private': private, 'role': role, 'can_post': canPost, 'members': members,
-        if (people.isNotEmpty) 'people': [for (final c in people) {'call': c}],
+        if (people.isNotEmpty || asked.isNotEmpty)
+          'people': [
+            for (final c in people) {'call': c},
+            for (final c in asked) {'call': c, 'invited': true},
+          ],
       };
 }
 

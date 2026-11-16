@@ -362,6 +362,7 @@ void main() {
     expect((await stranger.rooms())!.where((r) => r.call == music.call), isEmpty);
     expect((await stranger.file(track.ref))!.status, 403);
     expect(await StationShare.instance.manage(music.call, 'add', member: bob), isTrue);
+    expect((await host.own()!.rooms())!.firstWhere((r) => r.call == music.call).asked, contains(bob));
     final offered = (await stranger.rooms())!.firstWhere((r) => r.call == music.call);
     expect(offered.role, 'invited');
     expect((await stranger.file(track.ref))!.status, 403, reason: 'invited, not yet in');
