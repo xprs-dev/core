@@ -1566,6 +1566,11 @@ class XprsPublisher {
       {String? slot,
       Duration? ttl,
       bool verbatim = false,
+      /// A non-member's message to a closed group ASKING TO JOIN (10.3:
+      /// "asking to join is an ordinary message to the group"). It passes the
+      /// membership door; members' screens do not show it, the group's admin
+      /// and moderators see it as a request.
+      bool joinRequest = false,
       /// Restrict this send to the named bearers (by [XprsBearer.name]), for a
       /// peer reachable on one lane only. Null fans out as usual. The lane
       /// choice stays in the publisher; a caller only names it.
@@ -1606,7 +1611,7 @@ class XprsPublisher {
     // chat wapp's check, which meant every other caller -- the HTTP API, any
     // other wapp -- aired freely. One door, every caller, and the wapp only
     // shows the answer.
-    if (!mayAir(p)) {
+    if (!joinRequest && !mayAir(p)) {
       refusedNotMember++;
       LogService.instance.add(
           'XPRS: publishWire refused (not a member of ${p['d']})');

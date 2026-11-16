@@ -9235,8 +9235,12 @@ class RnsService {
   /// fetch decision, not a social one. False for a callsign nothing can follow,
   /// empty, malformed, or a group (X5), whose membership is its own business.
   bool followStation(String call, bool on) {
-    // An open group's name (7.3) is followed as a room, not a station.
-    if (xprsAddressKind(call) == 'open') return followGroup(call, on);
+    // An open group's name (7.3), or a closed group's X5, is followed as a
+    // room, not a station.
+    if (xprsAddressKind(call) == 'open' ||
+        call.trim().replaceFirst('#', '').toUpperCase().startsWith('X5')) {
+      return followGroup(call, on);
+    }
     final base = NostrCrypto.bareCallsign(call);
     if (!_followable.hasMatch(base) || xprsKindOf(base) == null) return false;
     final prefs = PreferencesService.instanceSync;
@@ -9257,7 +9261,12 @@ class RnsService {
   /// did not hear it (XprsCatchup), so somebody who joins sees what was said.
   bool followGroup(String name, bool on) {
     final g = name.trim().replaceFirst('#', '').toUpperCase();
-    if (g.isEmpty || xprsAddressKind(g) != 'open') return false;
+    // An open group's name (7.3), or a closed group read from outside: a
+    // public one (10.7.1) is readable by anyone who follows it.
+    if (g.isEmpty ||
+        (xprsAddressKind(g) != 'open' && !g.startsWith('X5'))) {
+      return false;
+    }
     final prefs = PreferencesService.instanceSync;
     if (prefs == null) return false;
     final had = prefs.xprsFollowedGroups;

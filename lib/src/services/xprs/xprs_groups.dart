@@ -585,11 +585,22 @@ class XprsGroups {
       final selfAct = a.accept.isNotEmpty || a.leave.isNotEmpty;
       if (!isAdmin && !isMod && !selfAct) continue;
 
-      // "A moderator may revoke and hide. Only the admin may appoint."
-      if (a.grant.isNotEmpty && isAdmin) {
+      // 10.3: a moderator may grant MEMBERSHIP (accepting somebody who asked
+      // to join), revoke and hide; only the admin appoints moderators and
+      // lists folders. A moderator's grant never touches somebody who
+      // already holds a place, so it cannot demote a moderator to invited.
+      final modGrant =
+          !isAdmin && isMod && a.role != 'mod' && a.role != 'sub';
+      if (a.grant.isNotEmpty && (isAdmin || modGrant)) {
         final sub = a.role == 'sub';
         final role = a.role == 'mod' ? XprsRole.mod : XprsRole.member;
         for (final c in a.grant) {
+          if (modGrant &&
+              (roles[c] == XprsRole.member ||
+                  roles[c] == XprsRole.mod ||
+                  roles[c] == XprsRole.admin)) {
+            continue;
+          }
           if (sub) {
             // 26.2/26.3.1: a subgroup is a keypair, not a person. A listing
             // "confers nothing", so asking it to consent would be ceremony.

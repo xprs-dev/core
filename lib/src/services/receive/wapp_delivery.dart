@@ -35,6 +35,7 @@ import '../log_service.dart';
 import '../xprs/xprs_id.dart';
 import 'package:reticulum/reticulum.dart';
 import '../xprs/xprs_archive.dart';
+import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_packet.dart';
@@ -240,6 +241,17 @@ class WappDelivery {
         haveKey: XprsGroups.instance.keyResolver?.call(g) != null);
   }
 
+  /// Whether this station may accept somebody into closed group [dest]: it
+  /// holds the group's key (the admin), or is a moderator there now (10.3).
+  static bool mayAcceptFor(String dest) {
+    final g = dest.trim().toUpperCase();
+    if (!g.startsWith('X5')) return false;
+    if (XprsGroupKeys.instance.holdsKey(g)) return true;
+    final me = XprsArchive.instance.selfCallsign.trim().toUpperCase();
+    return me.isNotEmpty &&
+        XprsGroups.instance.rosterOf(g).roles[me] == XprsRole.mod;
+  }
+
   /// Publish a heard packet to whoever subscribed to its type.
   ///
   /// [bearer] is the word a radio person would use (`ble`, `lan`, `rns`);
@@ -265,11 +277,19 @@ class WappDelivery {
     // that is still short publishes nothing.
     final p = _whole(pIn, bearer: bearer, rssi: rssi);
     if (p == null) return 0;
+    // A non-member's message to a closed group is not shown to its members
+    // (26.7) -- but to its admin and moderators it is somebody ASKING TO JOIN
+    // (10.3), and is handed on marked as a request.
+    var request = false;
     if ((p.type == 'message' || p.type == 'reaction') &&
         !groupAuthorMayPost(
             p['d'] ?? '', NostrCrypto.bareCallsign(p['f'] ?? ''))) {
-      refusedGroupAuthor++;
-      return 0;
+      if (p.type == 'message' && mayAcceptFor(p['d'] ?? '')) {
+        request = true;
+      } else {
+        refusedGroupAuthor++;
+        return 0;
+      }
     }
     // §9.1's verdict, computed here rather than left to the wapp. The archive
     // has always computed exactly this for its own rows; a wapp handed a packet
@@ -311,6 +331,7 @@ class WappDelivery {
       // collapsing either would quietly rename the packet.
       'fields': [for (final f in p.fields) [f.key, f.value]],
       'forUs': forUs,
+      if (request) 'request': true,
       'sealed': p.has('x'),
       // §9.2.1: an `xr:` field means part of the content is redacted (bars in
       // the text). The one honest marker — set here regardless of which bearer

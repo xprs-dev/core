@@ -427,7 +427,10 @@ class MeshService {
           })
           ..seal = ((dest, text) {
             final r = XprsSend.instance.message(dest, text, private: true);
-            return r.form == 'x' ? r.id : '';
+            // A post to a PUBLIC group leaves in the clear once the group has
+            // said it is public (10.7.1): that is its form, not a downgrade.
+            final group = dest.trim().toUpperCase().startsWith('X5');
+            return r.form == 'x' || (group && r.form == 'm') ? r.id : '';
           })
           ..report = ((held, peer, state, {String newId = ''}) =>
               WappDelivery.instance.deliverStatus(

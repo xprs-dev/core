@@ -33,6 +33,7 @@ import 'xprs_folder.dart' show xprsFileShaOf;
 import '../social/archiver_service.dart';
 import 'xprs_gossip.dart';
 import 'xprs_group_keys.dart';
+import 'xprs_group_read.dart';
 import 'xprs_groups.dart';
 import '../reticulum/rns_service.dart';
 import 'xprs_id.dart';
@@ -535,6 +536,8 @@ class XprsHistoryServer {
     // An open group (7.3) is public: anyone may post to it and read it, so
     // what this station kept of one it follows is served to whoever asks.
     if (XprsArchive.instance.followedGroups.contains(g)) return true;
+    // So is a closed group made public (10.7.1): anyone reads it.
+    if (g.startsWith('X5') && XprsGroupRead.instance.isPublic(g)) return true;
     if (!g.startsWith('X5')) return false;
     final roster = XprsGroups.instance.rosterOf(g);
     bool member(String c) {

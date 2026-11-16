@@ -50,10 +50,11 @@ class XprsGroupAct {
     String role = '',
     String? until,
     int? nowMs,
+    String? signer,
   }) =>
       _act(
         group: group,
-        signer: group,
+        signer: signer ?? group,
         scalar: scalar,
         verb: 'grant',
         callsigns: callsigns,

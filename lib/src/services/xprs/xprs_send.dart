@@ -191,7 +191,10 @@ class XprsSend {
   /// for a correction: an edit names an original that went out, and the
   /// person is better told than left with a correction that may never go.
   XprsSendOutcome message(String to, String text,
-      {required bool private, String editOf = '', bool holdForKey = false}) {
+      {required bool private,
+      String editOf = '',
+      bool holdForKey = false,
+      bool joinRequest = false}) {
     final dest = to.trim().toUpperCase();
     // Not simply the active callsign: a conversation keeps the callsign it
     // began under (XprsSelf), so somebody who wrote to EA/CT1ABC is answered
@@ -229,13 +232,38 @@ class XprsSend {
     // address, with no receipt to wait for.
     final group = dest.startsWith('X5');
     if (group) {
+      // 10.3: somebody outside the group asks to join with an ordinary
+      // message to it -- in the clear, past the membership door, and shown
+      // only to the group's admin and moderators.
+      if (joinRequest) {
+        if (XprsPublisher.instance.mayAir(head)) {
+          refused++;
+          return XprsSendOutcome.malformed; // already a member
+        }
+        final built = xprsBuildWithFile(
+            head: head, lift: lift, text: body, private: false);
+        if (!built.ok) {
+          refused++;
+          return XprsSendOutcome(
+              form: '', id: '', parts: 0, refusal: built.refusal);
+        }
+        final id = xprsIdentifier(built.rejoined ?? built.packets.first);
+        for (final part in built.packets) {
+          unawaited(XprsPublisher.instance
+              .publishWire(part.encode(), joinRequest: true));
+        }
+        sent++;
+        return XprsSendOutcome(form: 'm', id: id, parts: built.packets.length);
+      }
       if (!XprsPublisher.instance.mayAir(head)) {
         refused++;
         return const XprsSendOutcome(
             form: '', id: '', parts: 0, refusal: XprsSealRefusal.notMember);
       }
-      final read = XprsGroupRead.instance.currentPubHex(dest);
-      final gb = body.isEmpty
+      // Public (10.7.1): its words travel in the clear, readable by anyone.
+      final public = XprsGroupRead.instance.isPublic(dest);
+      final read = public ? null : XprsGroupRead.instance.currentPubHex(dest);
+      final gb = body.isEmpty || public
           ? null
           : xprsBuildWithFile(
               head: head,

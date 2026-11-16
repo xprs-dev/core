@@ -20,6 +20,13 @@
  *     newest key is tried first, then the older ones a member was given, so
  *     the history from before a rotation stays readable to who could read it.
  *
+ * PUBLIC OR PRIVATE (10.7.1, as amended). A group is public by default: anyone reads it,
+ * members post, and a member is told so by the group with `nsec:-` (the
+ * field's "taken back" form, 6.3.2), which is also what lets a member's
+ * device know it may post in the clear instead of waiting for a key. Turning
+ * a group private mints a reading key and hands it out; turning it public
+ * again sends `nsec:-`. A member's device keeps the newest word it was given.
+ *
  * The record of authority stays where it was: grants, acceptances and
  * revocations are public (10.7) and signed with the group's key or the
  * person's. Only the words move behind the reading key. Reactions,
@@ -73,6 +80,10 @@ class XprsGroupRead {
   /// Air a wire exactly as given (signed by the group). Injected for tests.
   Future<void> Function(String wire) air = (_) async {};
 
+  /// Whether a change schedules [tend] by itself (off in tests, which call
+  /// [tend] when they mean to).
+  bool autoTend = true;
+
   /// Called when a group's reading key arrives or is minted, so a post that
   /// waited for it (XprsKeyWait) can leave.
   void Function(String group)? onKey;
@@ -90,7 +101,16 @@ class XprsGroupRead {
         ts   INTEGER NOT NULL,
         PRIMARY KEY(grp, pub)
       )''');
-    // Which member was handed which key: the admin's side only.
+    // Public or private, as the admin set it (its own groups) or as the
+    // group last told this member (`nsec:-` public, a key private).
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS xprs_group_mode(
+        grp  TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        ts   INTEGER NOT NULL
+      )''');
+    // Which member was handed which key: the admin's side only. `-` is the
+    // public word.
     db.execute('''
       CREATE TABLE IF NOT EXISTS xprs_group_readsent(
         grp    TEXT NOT NULL,
@@ -135,8 +155,52 @@ class XprsGroupRead {
   /// The public half posts to [group] are sealed to, or null when this
   /// station has not been given one yet.
   String? currentPubHex(String group) {
+    if (isPublic(group)) return null;
     final k = keysOf(group);
     return k.isEmpty ? null : k.first.pubHex;
+  }
+
+  /// 'public', 'private', or null when this station has not been told. An
+  /// administered group with no word yet is public (the default), unless it
+  /// already has reading keys (made before groups could be public).
+  String? modeOf(String group) {
+    final g = _g(group);
+    final rows = _db?.select(
+        'SELECT mode FROM xprs_group_mode WHERE grp = ? LIMIT 1', [g]);
+    if (rows != null && rows.isNotEmpty) return '${rows.first['mode']}';
+    if (XprsGroupKeys.instance.holdsKey(g)) {
+      return keysOf(g).isEmpty ? 'public' : 'private';
+    }
+    return null;
+  }
+
+  bool isPublic(String group) => modeOf(group) == 'public';
+
+  void _setMode(String g, String mode) {
+    _db?.execute(
+        'INSERT OR REPLACE INTO xprs_group_mode(grp, mode, ts) VALUES(?,?,?)',
+        [g, mode, DateTime.now().millisecondsSinceEpoch]);
+  }
+
+  /// The admin turns [group] private (a reading key, handed to every member)
+  /// or public (`nsec:-` to every member). False when this station does not
+  /// administer it.
+  bool setPrivate(String group, bool private) {
+    final g = _g(group);
+    final db = _db;
+    if (db == null || !XprsGroupKeys.instance.holdsKey(g)) return false;
+    if ((modeOf(g) == 'private') == private) return true;
+    _setMode(g, private ? 'private' : 'public');
+    if (private) {
+      // A fresh key: whoever read it in the open must not hold an old one.
+      mint(g);
+    } else {
+      // Every member is told again, whatever they were told before.
+      db.execute(
+          "DELETE FROM xprs_group_readsent WHERE grp = ? AND pub = '-'", [g]);
+    }
+    poke();
+    return true;
   }
 
   /// Take a reading key for [group] from its `nsec`. True when it was new.
@@ -203,7 +267,17 @@ class XprsGroupRead {
         !XprsGroupKeys.instance.holdsKey(g)) {
       return false;
     }
-    learn(g, line.substring(5).trim());
+    final value = line.substring(5).trim();
+    if (value == '-') {
+      // The group is public: its words travel in the clear, and a post that
+      // waited for a key may leave now.
+      _setMode(g, 'public');
+      LogService.instance.add('XPRS: $g is public');
+      onKey?.call(g);
+      return true;
+    }
+    _setMode(g, 'private');
+    learn(g, value);
     return true;
   }
 
@@ -213,6 +287,7 @@ class XprsGroupRead {
 
   /// Look at the groups this station administers soon: a roster moved.
   void poke() {
+    if (!autoTend) return;
     _debounce?.cancel();
     _debounce = Timer(const Duration(seconds: 2), () {
       _debounce = null;
@@ -241,6 +316,35 @@ class XprsGroupRead {
                   e.value == XprsRole.admin))
             e.key
       };
+      if (modeOf(g) == 'public') {
+        // Tell each member once that the group is public: their device then
+        // posts in the clear rather than waiting for a key.
+        var told = false;
+        for (final m in members) {
+          final memberKey = keyOf(m);
+          if (memberKey == null || memberKey.isEmpty) continue;
+          if (db.select(
+              "SELECT 1 FROM xprs_group_readsent WHERE grp = ? AND member = ? "
+              "AND pub = '-' LIMIT 1",
+              [g, m]).isNotEmpty) {
+            continue;
+          }
+          final wire = publicMessage(g, m, memberKey, scalar);
+          if (wire == null) continue;
+          db.execute(
+              "INSERT OR IGNORE INTO xprs_group_readsent(grp, member, pub) "
+              "VALUES(?,?,'-')",
+              [g, m]);
+          await air(wire);
+          told = true;
+        }
+        if (told) {
+          final id = XprsGroupAct.identity(
+              group: g, npub: own.npub, scalar: scalar, nick: own.nick);
+          if (id != null) await air(id.encode());
+        }
+        continue;
+      }
       var keys = keysOf(g);
       if (keys.isEmpty) {
         mint(g);
@@ -308,6 +412,24 @@ class XprsGroupRead {
     final built = xprsBuildDirect(
       head: head,
       text: 'nsec:${key.nsec}',
+      private: true,
+      recipientKeyHex: memberKeyHex,
+      signingKey: groupScalar,
+    );
+    if (!built.ok || built.packets.length != 1) return null;
+    return built.packets.first.encode();
+  }
+
+  /// `nsec:-`, sealed from the group: "this group has no reading key, its
+  /// words are public".
+  static String? publicMessage(
+      String group, String member, String memberKeyHex, BigInt groupScalar) {
+    final head =
+        XprsPacket.parse('t:message f:$group d:$member ts:${xprsNowTs()}');
+    if (head == null) return null;
+    final built = xprsBuildDirect(
+      head: head,
+      text: 'nsec:-',
       private: true,
       recipientKeyHex: memberKeyHex,
       signingKey: groupScalar,

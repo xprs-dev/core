@@ -319,6 +319,12 @@ topic to the wapp that shows it (`routeCoreNotification`,
   `takeKeyMessage` on the member's side, `tend()` on the admin's (mint, renew
   on a departure, hand each member what they lack). `XprsSend.message` to an
   `X5` uses it, and `WappDelivery` opens sealed group posts with it.
+- `XprsGroupRead.modeOf/isPublic/setPrivate` — a closed group public
+  (anyone reads, members post; members told `nsec:-`) or private (sealed to
+  the reading key). `XprsSend.message(..., joinRequest: true)` sends a
+  non-member's request to join; `WappDelivery.mayAcceptFor(group)` says
+  whether this station (admin or moderator) sees and answers requests;
+  `XprsGroupOps.grant/revoke` sign as a moderator when this station is one.
 - `RnsService.followGroup(name, on)` / `XprsArchive.followedGroups` — an open
   group (7.3) followed by name: its talk is kept as a room's
   (`XprsIngest._isRoomTalk`), fetched by `XprsCatchup` (`only:<NAME>`) and

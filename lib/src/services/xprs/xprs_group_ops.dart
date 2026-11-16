@@ -180,24 +180,64 @@ class XprsGroupOps {
   /// The group speaking about somebody (26.3): grant, or revoke. Signed with
   /// the group key, which only the admin holds.
   static XprsGroupOpResult grant(String group, List<String> calls,
-          {String role = '', String until = ''}) =>
-      _adminAct(group,
-          (scalar) => XprsGroupAct.grant(
-              group: group,
-              callsigns: calls,
-              scalar: scalar,
-              role: role,
-              until: until));
+      {String role = '', String until = ''}) {
+    // 10.3: a moderator grants membership with their own key (accepting
+    // somebody who asked to join); appointing is the admin's alone.
+    final mod = _asModerator(group);
+    if (mod != null && role != 'mod' && role != 'sub') {
+      return _finish(XprsGroupAct.grant(
+          group: group,
+          callsigns: calls,
+          scalar: mod.scalar,
+          role: role,
+          until: until,
+          signer: mod.me));
+    }
+    return _adminAct(
+        group,
+        (scalar) => XprsGroupAct.grant(
+            group: group,
+            callsigns: calls,
+            scalar: scalar,
+            role: role,
+            until: until));
+  }
 
   static XprsGroupOpResult revoke(String group, List<String> calls,
-          {String until = '', String since = ''}) =>
-      _adminAct(group,
-          (scalar) => XprsGroupAct.revoke(
-              group: group,
-              callsigns: calls,
-              scalar: scalar,
-              until: until,
-              since: since));
+      {String until = '', String since = ''}) {
+    // A moderator revokes with their own key (10.3); `since:` voids a
+    // moderator's record and is the admin's alone.
+    final mod = _asModerator(group);
+    if (mod != null && since.isEmpty) {
+      return _finish(XprsGroupAct.revoke(
+          group: group,
+          callsigns: calls,
+          scalar: mod.scalar,
+          until: until,
+          signer: mod.me));
+    }
+    return _adminAct(
+        group,
+        (scalar) => XprsGroupAct.revoke(
+            group: group,
+            callsigns: calls,
+            scalar: scalar,
+            until: until,
+            since: since));
+  }
+
+  /// This station acting as a MODERATOR of [group] -- not its admin (who
+  /// signs as the group), and only while its role is `mod` now.
+  static ({BigInt scalar, String me})? _asModerator(String group) {
+    final g = group.trim().replaceFirst('#', '').toUpperCase();
+    if (XprsGroupKeys.instance.holdsKey(g)) return null;
+    final me = XprsArchive.instance.selfCallsign.trim().toUpperCase();
+    if (me.isEmpty || XprsGroups.instance.rosterOf(g).roles[me] != XprsRole.mod) {
+      return null;
+    }
+    final d = xprsProfileScalar();
+    return d == null ? null : (scalar: d, me: me);
+  }
 
   /// A moderator's or the admin's act on somebody else's publication (XPRS.md
   /// 10.4.1): [edit] replaces its text, [remove] destroys it.
