@@ -74,28 +74,36 @@ Future<Object?> webChatLinkAnswer(WebChatApi api, Object? data, String peer) asy
 void serveWebChatOverRns(WebChatApi api, {RnsService? rns}) {
   (rns ?? RnsService.instance).serveRequests(kXprsApiRequestPath,
       (data, link) => webChatLinkAnswer(api, data, 'rns:${_hex(link.linkId)}'));
-  (rns ?? RnsService.instance).serveRequests(kXprsProveRequestPath, (data, link) async {
-    final sign = api.signAsStation;
-    final nonce = data is String ? data : data is List<int> ? utf8.decode(data, allowMalformed: true) : '';
-    if (sign == null || !RegExp(r'^[A-Za-z0-9_-]{8,64}$').hasMatch(nonce)) return null;
-    final me = api.selfCallsign();
-    final linkHex = _hexAll(link.linkId);
-    final session = sign('t:session f:$me ts:${xprsNowTs()} m:$linkHex.$nonce');
-    final r = await api.handle('GET', '/api/xprs/history',
-        {'call': me, 'kind': 'identity', 'limit': '20'}, '', peer: 'self');
-    String? identity;
-    final rows = r.json['rows'];
-    if (rows is List) {
-      for (final row in rows) {
-        final w = row is Map ? '${row['wire'] ?? ''}' : '';
-        if (w.contains(' k:') && w.contains(' sig:')) {
-          identity = w;
-          break;
-        }
+  (rns ?? RnsService.instance).serveRequests(kXprsProveRequestPath,
+      (data, link) => webChatLinkProof(api, data, link.linkId));
+}
+
+/// The answer to one `/xprs/prove` request on link [linkId]: `{session,
+/// identity}`, or null when [data] is no nonce or this node cannot sign.
+Future<Object?> webChatLinkProof(WebChatApi api, Object? data, Uint8List? linkId) async {
+  final sign = api.signAsStation;
+  final nonce = data is String ? data : data is List<int> ? utf8.decode(data, allowMalformed: true) : '';
+  if (sign == null || !RegExp(r'^[A-Za-z0-9_-]{8,64}$').hasMatch(nonce)) return null;
+  final me = api.selfCallsign();
+  final linkHex = _hexAll(linkId);
+  final session = sign('t:session f:$me ts:${xprsNowTs()} m:$linkHex.$nonce');
+  final r = await api.handle('GET', '/api/xprs/history',
+      {'call': me, 'kind': 'identity', 'limit': '20'}, '', peer: 'self');
+  String? identity;
+  final rows = r.json['rows'];
+  if (rows is List) {
+    for (final row in rows) {
+      final w = row is Map ? '${row['wire'] ?? ''}' : '';
+      if (w.contains(' k:') && w.contains(' sig:')) {
+        identity = w;
+        break;
       }
     }
-    return {'session': session?.encode(), 'identity': identity};
-  });
+  }
+  // A node that keeps no copy of its own identity (a phone airs it and
+  // archives what it hears) signs one now.
+  identity ??= api.ownIdentity?.call();
+  return {'session': session?.encode(), 'identity': identity};
 }
 
 const String _filePath = '/api/xprs/file/';

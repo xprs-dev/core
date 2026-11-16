@@ -12,6 +12,8 @@ import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/station/station_api.dart';
 import 'package:xprs_core/src/services/station/station_browse.dart';
+import 'package:xprs_core/src/services/station/station_host.dart';
+import 'package:xprs_core/src/services/station/station_share.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
 import 'package:xprs_core/src/services/web_chat_rns.dart';
 import 'package:xprs_core/src/services/xprs/xprs_file_acl.dart';
@@ -316,5 +318,42 @@ void main() {
     expect(stationProofFault(proof('ab12', 'nonce123', _bob), station, 'nonce123', 'ab12'), isNotNull);
     expect(stationProofFault(proof('ab12', 'nonce123'), 'X3OTHR', 'nonce123', 'ab12'), isNotNull);
     expect(stationProofFault(null, station, 'nonce123', 'ab12'), isNotNull);
+  });
+
+  test('a phone is its own station: its owner shares files, a stranger reads the public ones', () async {
+    // The owner uses the node's own API with no link, administers it before
+    // anybody on its network can, and shares from disk as the page uploads.
+    final host = StationHost.instance
+      ..selfCall = (() => 'X3STAT')
+      ..visitor = (() => visit(alice, _alice).visitor)
+      ..api = api;
+    keys[alice] = XprsCrypto.publicKeyXOnly(_alice);
+    expect(await host.ensureOwner(), isTrue);
+    final stranger = visit(bob, _bob, lan: true);
+    final claim = await stranger.call('POST', '/api/admin', const {}, Uint8List.fromList(
+        utf8.encode(jsonEncode({'action': 'claim', 'session': await stranger.session()}))));
+    expect(claim!.ok, isFalse, reason: 'the owner holds it');
+
+    final song = File('${dir.path}/Field Day Song.mp3')
+      ..writeAsBytesSync(List<int>.generate(70000, (i) => i * 7 & 0xff));
+    final doc = File('${dir.path}/notes.txt')..writeAsStringSync('hello');
+    expect(await StationShare.instance.add(kind: 'music', folder: 'Live at the hall', paths: [song.path]), isTrue);
+    expect(await StationShare.instance.add(kind: 'library', folder: 'Notes', paths: [doc.path], private: true), isTrue);
+    // A second share into the same folder makes no second folder.
+    expect(await StationShare.instance.add(kind: 'music', folder: 'Live at the hall', paths: [doc.path]), isTrue);
+
+    final rooms = (await stranger.rooms())!;
+    expect(rooms.map((r) => r.kind), contains('music'));
+    expect(rooms.where((r) => r.kind == 'library'), isEmpty, reason: 'private: not listed to a stranger');
+    final music = rooms.firstWhere((r) => r.kind == 'music');
+    final albums = (await stranger.topics(music.call))!;
+    expect(albums.map((t) => t.title), ['live-at-the-hall']);
+    final col = (await stranger.collection(music.call))!;
+    final tracks = col.inFolder(albums.single.id);
+    expect(tracks, hasLength(2));
+    final track = tracks.firstWhere((t) => t.name == 'field-day-song.mp3');
+    expect(track.size, '68kB');
+    final got = await stranger.file(track.ref);
+    expect(got!.bytes, song.readAsBytesSync());
   });
 }

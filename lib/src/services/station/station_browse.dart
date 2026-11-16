@@ -139,9 +139,19 @@ class StationBrowse {
       }
       e.state = 'ready';
       e.why = '';
+      // A person's phone says it shares only by answering: remembered, so
+      // the list can mark it like a station that announced.
+      if (_answered.length >= 256) _answered.remove(_answered.first);
+      _answered.add(c);
     });
     return _answer(e);
   }
+
+  final Set<String> _answered = <String>{};
+
+  /// Whether [call] can be browsed as far as is known: its API announced, or
+  /// it answered a visit this session.
+  bool browsable(String call) => _answered.contains(_bare(call)) || offersApi(call);
 
   /// The folders of collection [room] on [call] (events, albums, shelves),
   /// each with its item count and a cover.
@@ -289,7 +299,7 @@ class StationBrowse {
         ..sort((a, b) {
           var c = a.$2.index.compareTo(b.$2.index);
           if (c != 0) return c;
-          c = (offersApi(b.$1.callsign) ? 1 : 0) - (offersApi(a.$1.callsign) ? 1 : 0);
+          c = (browsable(b.$1.callsign) ? 1 : 0) - (browsable(a.$1.callsign) ? 1 : 0);
           if (c != 0) return c;
           if (a.$1.kind != b.$1.kind) {
             return (b.$1.kind == XprsKind.station ? 1 : 0) - (a.$1.kind == XprsKind.station ? 1 : 0);
@@ -330,7 +340,7 @@ class StationBrowse {
               'reach': e.$2.name,
               'bearers': d.bearers,
               'age_s': (now - d.lastSeenMs) ~/ 1000,
-              'api': offersApi(d.callsign),
+              'api': browsable(d.callsign),
               if (a != null && a['hops'] is int) 'hops': a['hops'],
               if (at != null) 'dist_m': _metres(me!, at),
             };

@@ -5634,7 +5634,9 @@ class RnsService {
     final c = _bareUpper(call);
     final have = _apiClients[c];
     if (have != null) return have;
-    final id = _apiIdentity(c);
+    // A person's phone may answer too (it says so only when asked: there is
+    // no word for it on the air), so whoever asks decides whom to try.
+    final id = _apiIdentity(c) ?? _callIdentity[c];
     if (!_up || _transport == null || id == null) return null;
     return _apiClients[c] = RnsRequestClient(
       peer: id,

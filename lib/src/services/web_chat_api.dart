@@ -271,6 +271,10 @@ class WebChatApi {
   /// `XprsMonitor.devicesForApi`. Null on a host that hears nothing itself.
   final List<Map<String, dynamic>> Function()? devices;
 
+  /// This station's own signed `t:identity`, for a host whose archive does
+  /// not hold one (the proof of `/xprs/prove`).
+  String? Function()? ownIdentity;
+
   /// Air a wire this station signed (its own moderation acts).
   final void Function(String wire)? publish;
 
@@ -317,7 +321,9 @@ class WebChatApi {
     this.offerMailbox,
     this.mailFor,
   })  : now = now ?? DateTime.now,
-        isLocalPeer = isLocalPeer ?? isPrivateAddress {
+        // `self` is the node's own owner through its own API
+        // (StationHost.own): at home by definition, whatever the host's rule.
+        isLocalPeer = ((p) => p == 'self' || (isLocalPeer ?? isPrivateAddress)(p)) {
     XprsSharedPosition.instance.station = stationPosition;
     // A public room's files are anybody's, over the mesh too (11.2).
     XprsFileAcl.instance.openGroup =
@@ -912,6 +918,9 @@ class WebChatApi {
   }
 
   bool _allowed(String peer) {
+    // The node's own owner, through its own API (StationHost.own): never a
+    // stranger to pace.
+    if (peer == 'self') return true;
     final t = now().millisecondsSinceEpoch;
     final log = _sent.putIfAbsent(peer, () => <int>[]);
     log.removeWhere((x) => t - x > 60000);

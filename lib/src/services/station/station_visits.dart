@@ -12,12 +12,14 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../log_service.dart';
+import '../mesh/mesh_service.dart';
 import '../../profile/profile_service.dart';
 import '../reticulum/rns_service.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_publisher.dart';
 import '../xprs/xprs_sig.dart';
 import 'station_api.dart';
+import 'station_host.dart';
 
 class StationVisits {
   StationVisits._();
@@ -41,7 +43,8 @@ class StationVisits {
   static String _bare(String c) => c.toUpperCase().split('-').first;
 
   /// The active profile as a visitor, or null when it holds no key.
-  StationVisitor? _me() {
+  /// The profile as a visitor: its callsign, identity and signature.
+  StationVisitor? visitor() {
     final call = (ProfileService.instance.activeProfile?.wireCallsign ?? '').trim();
     final d = xprsProfileScalar();
     if (call.isEmpty || d == null) return null;
@@ -58,6 +61,10 @@ class StationVisits {
   /// The visit to [call], opening and proving it when there is none.
   Future<StationVisit?> to(String call) {
     final c = _bare(call);
+    // Our own callsign is this node: its API answers here, with no link.
+    if (c == _bare(MeshService.instance.tableCallsign)) {
+      return Future.value(StationHost.instance.own());
+    }
     final have = _open[c];
     if (have != null) return Future.value(have);
     // A block, not an arrow: whenComplete waits for a future its callback
@@ -109,7 +116,7 @@ class StationVisits {
     LogService.instance.add(
         'visit: $c proven in ${DateTime.now().millisecondsSinceEpoch - t0} ms');
     final v = StationVisit(c,
-        stationLinkCarrier(link, timeout: const Duration(seconds: 25)), visitor: _me())
+        stationLinkCarrier(link, timeout: const Duration(seconds: 25)), visitor: visitor())
       ..lastUsedMs = DateTime.now().millisecondsSinceEpoch;
     _open[c] = v;
     _sweep ??= Timer(idle, _closeIdle);

@@ -473,6 +473,21 @@ JavaScript, in Dart, one client for every deployment that serves the API
 - `StationVisits.instance.to(call)` opens the Reticulum link, checks the
   station's proof (`stationProofFault`) and returns a `StationVisit`; unused
   visits close after five minutes. `faultOf(call)` says why there is none.
+- `stationWebChatApi(...)` (services/station/station_host.dart) is THE wiring of
+  the visitor API, hosted rooms included: the server and the app both build
+  theirs from it and add only what a host has (settings store, its network,
+  the download page). Never wire a `WebChatApi` by hand again.
+- `StationHost.instance`: this node as a station. `api` (set once by the
+  host), `own()` (the owner's `StationVisit` on its own API, no link),
+  `ensureOwner()` (the owner is the administrator before a guest can claim),
+  `serve(on)` (answer visitors over Reticulum; off answers "not here" at
+  once). `StationVisits.to(<own callsign>)` returns `own()`.
+- `StationShare.instance.add(kind:, folder:, paths:, private:)` files what the
+  owner picked in a room of that kind, as the page uploads (preview, file,
+  item, `t:file`), streamed from disk. `stationSlug`, `stationSizeWord` are
+  the page's `slugOf` and `galSize`.
+- `webChatLinkProof(api, data, linkId)`: the `/xprs/prove` answer, for any
+  host of the API.
 - `RnsService.offersApi(call)` / `stationRequests(call)`: whether a station can be
   visited, and the link to it. They resolve the station's identity from its API
   announce, its beacon's `lx:`, or a named announce kept across restarts: ask

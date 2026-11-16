@@ -322,6 +322,16 @@ class PreferencesService {
     return !_isPocketDevice;
   }
 
+  /// THIS NODE AS A STATION: answer visitors who ask over Reticulum for what
+  /// it shares (its galleries, music and files; private rooms only to their
+  /// members). Off until its owner says so: a phone starts private.
+  bool get xprsHostStation => _prefs.getBool('xprs.hostStation') ?? false;
+  Future<void> setXprsHostStation(bool v) => _prefs.setBool('xprs.hostStation', v);
+
+  /// The settings store itself, for a core service that keeps its own
+  /// records beside the preferences (the station API's administrator).
+  KeyValueStore get store => _prefs;
+
   Future<void> setXprsPublicArchiver(bool v) async {
     await _prefs.setBool('xprs.public', v);
     // The legacy keys are read once, above, and are meaningless afterwards.
