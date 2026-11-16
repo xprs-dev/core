@@ -51,10 +51,20 @@ class StationRoom {
         visibility = '${j['visibility'] ?? 'public'}',
         role = '${j['role'] ?? 'none'}',
         canPost = j['can_post'] == true,
-        members = j['members'] is int ? j['members'] as int : 0;
+        offer = '${j['offer'] ?? ''}',
+        offerRole = '${j['offer_role'] ?? 'member'}',
+        // A count for a visitor; the names themselves for its administrator.
+        people = j['members'] is List ? [for (final x in j['members'] as List) '$x'] : const [],
+        members = j['members'] is int
+            ? j['members'] as int
+            : j['members'] is List ? (j['members'] as List).length : 0;
   final String call, name, about, kind, visibility, role;
   final bool canPost;
   final int members;
+  final List<String> people;
+
+  /// When [role] is `invited`: the offer to accept ([StationVisit.accept]).
+  final String offer, offerRole;
   bool get private => visibility == 'private';
 
   /// A gallery, a music room or a library: folders of items with files.
@@ -63,6 +73,7 @@ class StationRoom {
   Map<String, dynamic> toJson() => {
         'call': call, 'name': name, 'about': about, 'kind': kind,
         'private': private, 'role': role, 'can_post': canPost, 'members': members,
+        if (people.isNotEmpty) 'people': [for (final c in people) {'call': c}],
       };
 }
 
@@ -364,6 +375,16 @@ class StationVisit {
       at += b.length;
       if (total <= 0 || at >= total) return 200;
     }
+  }
+
+  /// Accept the place [room] offers this visitor (XPRS.md 26.3.1), as the
+  /// page's Join does: the visitor's own signature on the offer.
+  Future<bool> accept(StationRoom room) async {
+    final me = visitor?.call ?? '';
+    if (me.isEmpty || room.offer.isEmpty) return false;
+    final r = await send('t:moderate f:$me d:${room.call} ts:${xprsNowTs()} r:${room.offer} '
+        'accept:${room.offerRole == 'mod' ? 'mod' : 'member'}');
+    return r != null && r.ok;
   }
 
   /// Post a signed packet as the visitor (a like, a message in a room).

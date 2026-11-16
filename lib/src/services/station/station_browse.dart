@@ -133,7 +133,14 @@ class StationBrowse {
         }
       }
       final session = await v.session();
-      final rooms = await v.rooms();
+      var rooms = await v.rooms();
+      // A shared album this profile was added to: opening the station is
+      // the person saying yes, so the place is taken and the list read again.
+      var joined = false;
+      for (final r in rooms ?? const <StationRoom>[]) {
+        if (r.role == 'invited' && r.isCollection && await v.accept(r)) joined = true;
+      }
+      if (joined) rooms = await v.rooms() ?? rooms;
       if (rooms != null || e.state != 'ready') {
         e.data = data(session != null, rooms ?? const []);
       }

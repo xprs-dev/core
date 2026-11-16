@@ -25,6 +25,7 @@ import '../receive/core_state.dart';
 import '../xprs/xprs_vocab.dart' show xprsNowTs;
 import '../web_chat_api.dart';
 import 'station_api.dart';
+import 'station_browse.dart';
 import 'station_host.dart';
 
 /// The page's `slugOf`: lower case, runs of anything else become one dash,
@@ -203,5 +204,36 @@ class StationShare {
     final named = await v.send('t:file f:$me d:$room ts:${xprsNowTs()} r:$pid file:$oref '
         'size:${stationSizeWord(size)} name:${cap.isEmpty ? 'file' : cap}.$ext');
     return named != null && named.ok;
+  }
+
+  /// The owner changes a room of this node: `public` or `private` (who may
+  /// see it), `add` or `remove` a [member] of a private one, `close` (stop
+  /// sharing it; the files stay in the store until it makes room). False
+  /// when the node refused.
+  Future<bool> manage(String room, String action, {String member = ''}) async {
+    final v = StationHost.instance.own();
+    final s = await v?.session();
+    if (v == null || s == null || !await StationHost.instance.ensureOwner()) return false;
+    final body = <String, Object?>{'session': s, 'call': room};
+    switch (action) {
+      case 'public' || 'private':
+        body['action'] = 'update';
+        body['visibility'] = action;
+      case 'add' || 'remove':
+        final who = member.trim().toUpperCase().split('-').first;
+        if (who.isEmpty) return false;
+        body['action'] = action;
+        body['member'] = who;
+      case 'close':
+        body['action'] = 'close';
+      default:
+        return false;
+    }
+    final r = await v.call('POST', '/api/rooms', const {}, _json(body));
+    final ok = r != null && r.ok;
+    LogService.instance.add('station: room $action ${ok ? 'done' : 'refused (${r?.status})'}');
+    StationBrowse.instance.forget(v.station);
+    CoreState.instance.changed(CoreState.station);
+    return ok;
   }
 }

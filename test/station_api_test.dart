@@ -355,5 +355,27 @@ void main() {
     expect(track.size, '68kB');
     final got = await stranger.file(track.ref);
     expect(got!.bytes, song.readAsBytesSync());
+
+    // The owner decides who sees a room: private hides it from the
+    // stranger until the owner adds them, and closing it ends the share.
+    expect(await StationShare.instance.manage(music.call, 'private'), isTrue);
+    expect((await stranger.rooms())!.where((r) => r.call == music.call), isEmpty);
+    expect((await stranger.file(track.ref))!.status, 403);
+    expect(await StationShare.instance.manage(music.call, 'add', member: bob), isTrue);
+    final offered = (await stranger.rooms())!.firstWhere((r) => r.call == music.call);
+    expect(offered.role, 'invited');
+    expect((await stranger.file(track.ref))!.status, 403, reason: 'invited, not yet in');
+    // (StationVisit.accept signs this with the clock; the test's clock runs ahead.)
+    final yes = await stranger.send(
+        't:moderate f:$bob d:${music.call} ts:${ts()} r:${offered.offer} accept:member');
+    expect(yes!.ok, isTrue);
+    expect((await stranger.file(track.ref))!.bytes, song.readAsBytesSync());
+    final mine = (await host.own()!.rooms())!.firstWhere((r) => r.call == music.call);
+    expect(mine.people, [bob]);
+    ts(); // a second later
+    expect(await StationShare.instance.manage(music.call, 'remove', member: bob), isTrue);
+    expect((await stranger.rooms())!.where((r) => r.call == music.call), isEmpty);
+    expect(await StationShare.instance.manage(music.call, 'close'), isTrue);
+    expect((await host.own()!.rooms())!.where((r) => r.call == music.call), isEmpty);
   });
 }
