@@ -15,6 +15,7 @@ import 'dart:math' as math;
 
 import 'package:reticulum/reticulum.dart' show MediaRef;
 
+import '../log_service.dart';
 import '../media/media_fetch.dart';
 import '../media/media_ref_index.dart';
 import '../receive/core_state.dart';
@@ -76,7 +77,8 @@ class StationBrowse {
         } else {
           await read(v);
         }
-      } catch (_) {
+      } catch (err) {
+        LogService.instance.add('visit: $call: reading failed: ${err.runtimeType}');
         e.state = 'failed';
         e.why = 'unreached';
       } finally {
