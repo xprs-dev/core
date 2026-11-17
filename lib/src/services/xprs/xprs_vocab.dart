@@ -381,6 +381,19 @@ bool xprsMayCarry(XprsPacket p) {
   return s != XprsScope.local && s != XprsScope.unknown;
 }
 
+/// XPRS.md 11.4: a command expires 300 seconds after its `ts:`, and the
+/// station it names refuses it after that. Relaying or holding one past then
+/// carries nothing anybody will act on -- the live server was re-airing
+/// strangers' history asks a quarter of an hour old, once a minute each.
+const Duration xprsCommandWindow = Duration(seconds: 300);
+bool xprsCommandExpired(XprsPacket p, {int? nowMs}) {
+  if (p.type != 'command') return false;
+  final ts = xprsParseTs(p['ts']);
+  if (ts == null) return false;
+  final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+  return now - ts > xprsCommandWindow.inMilliseconds;
+}
+
 /// Types that are PRESENCE, not correspondence: true of a packet that says
 /// where a station is, what it hears or what it offers, right now.
 ///

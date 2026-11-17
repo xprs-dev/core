@@ -226,10 +226,16 @@ class XprsGroupAct {
     return xprsSign(p, scalar);
   }
 
-  /// `nick:` is a `word` (section 4.3): no spaces, and short enough to leave
-  /// room for the signature.
+  /// `nick:` is a `nick` (section 4.3): no spaces, and short enough to leave
+  /// room for the signature. A group's name is typed as words ("Book club"),
+  /// so a space travels as `_` and [xprsGroupNickShown] reads it back (10.1);
+  /// `-` stays a dash, as in `lisboa-net`.
   static String _nick(String v) {
-    final s = v.trim().replaceAll(RegExp(r'\s+'), '-');
+    final s = v.trim().replaceAll(RegExp(r'\s+'), '_');
     return s.length > 24 ? s.substring(0, 24) : s;
   }
 }
+
+/// A group's `nick:` as people read it: `_` is the space its admin typed
+/// (XPRS.md 10.1). Only for a group's name -- a person's nick is shown as sent.
+String xprsGroupNickShown(String wire) => wire.replaceAll('_', ' ').trim();

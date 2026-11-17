@@ -552,6 +552,14 @@ class XprsPublisher {
     if (!g.startsWith('X5')) return true;
     final me = XprsArchive.instance.selfCallsign.trim().toUpperCase();
     if (me.isEmpty) return true;
+    // Membership is the AUTHOR's. A packet somebody else wrote and this
+    // station only carries (a relay, a held copy, a replay) was judged where
+    // it was written and is judged again where it lands (26.7); refusing it
+    // here only re-tried the refusal on every pass -- a non-member server
+    // relaying a request to join refused it once a minute.
+    final author = (p['f'] ?? '').trim().toUpperCase();
+    final a = author.split('-').first;
+    if (a.isNotEmpty && a != me.split('-').first) return true;
     return XprsGroups.instance.mayPost(g, me,
         haveKey: XprsGroups.instance.keyResolver?.call(g) != null);
   }

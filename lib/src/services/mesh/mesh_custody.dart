@@ -909,7 +909,7 @@ class MeshCustodyDelegate implements MeshSessionDelegate {
   /// aired later is a leak wearing the shape of a feature.
   static bool _mayCarry(Uint8List wire) {
     final p = _xprsOf(wire);
-    return p == null || xprsMayCarry(p);
+    return p == null || (xprsMayCarry(p) && !xprsCommandExpired(p));
   }
 
   /// Split a compact frame `from\x1Fto\x1Ftext` (returns null when not one).

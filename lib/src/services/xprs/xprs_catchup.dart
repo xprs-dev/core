@@ -289,6 +289,7 @@ class XprsCatchup {
     if (g.isEmpty) return;
     _urgent.add(g);
     _followAskedAtMs.remove(g);
+    _followAskedAtMs.removeWhere((k, _) => k.startsWith('$g@'));
     if (_selfCallsign.isNotEmpty) unawaited(tick(_selfCallsign));
   }
 
@@ -1163,10 +1164,14 @@ class XprsCatchup {
     if (station != null &&
         (_isKind(station)
             ? p.type == station.substring(_kindTarget.length)
-            : _base(p['f'] ?? '') == station)) {
+            : _isGroup(station)
+                // A group's rows are written by its members TO it (`d:`).
+                ? (p['d'] ?? '').toUpperCase() == station
+                : _base(p['f'] ?? '') == station)) {
       followRows++;
-      final o = _followOldest[station];
-      if (o == null || ts < o) _followOldest[station] = ts;
+      final k = _fk(station, f.archiver);
+      final o = _followOldest[k];
+      if (o == null || ts < o) _followOldest[k] = ts;
     }
   }
 
@@ -1202,12 +1207,20 @@ class XprsCatchup {
   /// Counters on /api/status: asks sent, rows they brought, refusals.
   int followAsks = 0, followRows = 0, followRefused = 0;
 
-  bool _followAsking(String base) {
+  bool _followAsking(String key) {
     for (final a in _followPending.values) {
-      if (a.station == base) return true;
+      if (_fk(a.station, a.archiver) == key) return true;
     }
     return false;
   }
+
+  /// The key a fetch's state is kept under. A station's or a type's is the
+  /// target alone: whoever answers, the newest held is the newest held. A
+  /// group's is per archiver: its talk is spread over the members and
+  /// keepers who heard it, and one station's answer says nothing about what
+  /// another holds -- the window one closed is still open at the next.
+  static String _fk(String target, String archiver) =>
+      _isGroup(target) && !_isKind(target) ? '$target@$archiver' : target;
 
   // ── Followed types (hal_xprs_follow_kind): the same fetch, for a packet
   // TYPE rather than a station. A target is a callsign or `kind:<type>`; a
@@ -1235,27 +1248,29 @@ class XprsCatchup {
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
     final every =
         (_visible ? followEveryVisible : followEveryHidden).inMilliseconds;
-    // Due: out of earshot (in earshot the air already carries it) and either
-    // not fetched within the period or owed the rest of a 206 page. The
-    // longest-waiting first, so one station never starves behind another.
-    final due = [
-      for (final c in followed)
-        // A type is never "in earshot": the air carries what is near, an
-        // archiver what was said further away while we were not listening.
-        if ((_isKind(c) || !XprsMonitor.instance.heardDirectly(c, nowMs: now)) &&
-            !_followAsking(c) &&
-            (_followResume.containsKey(c) ||
-                now - (_followAskedAtMs[c] ?? 0) >= every))
-          c
-    ]..sort((a, b) =>
-        (_followAskedAtMs[a] ?? 0).compareTo(_followAskedAtMs[b] ?? 0));
-    if (due.isEmpty) return;
     final asked = <String>[];
     for (final a in archivers) {
       // One ask out at a time (see [_flight]), and never faster than the
       // floor that archiver permits or before its refusal expires.
       if (_busy(now)) break;
       if ((_refusedUntilMs[a] ?? 0) > now) continue;
+      // Due at this archiver: out of earshot (in earshot the air already
+      // carries it) and either not fetched from it within the period or owed
+      // the rest of a 206 page. The longest-waiting first, so one target
+      // never starves behind another.
+      final due = [
+        for (final c in followed)
+          // A type is never "in earshot": the air carries what is near, an
+          // archiver what was said further away while we were not listening.
+          if ((_isKind(c) ||
+                  !XprsMonitor.instance.heardDirectly(c, nowMs: now)) &&
+              !_followAsking(_fk(c, a)) &&
+              (_followResume.containsKey(_fk(c, a)) ||
+                  now - (_followAskedAtMs[_fk(c, a)] ?? 0) >= every))
+            c
+      ]..sort((x, y) => (_followAskedAtMs[_fk(x, a)] ?? 0)
+          .compareTo(_followAskedAtMs[_fk(y, a)] ?? 0));
+      if (due.isEmpty) continue;
       // A person who just joined or opened a group is waiting for it: that
       // one ask is theirs, not the background's, and goes past the floor
       // once. A refusal still stands.
@@ -1267,7 +1282,12 @@ class XprsCatchup {
       final station = urgent.isNotEmpty ? urgent.first : due.first;
       if (await _askFollowed(self, a, station, now)) {
         asked.add('$station@$a');
-        _urgent.remove(station);
+        // A group is urgent until every station in the list was asked once:
+        // the first to answer may hold only part of what was said.
+        if (!_isGroup(station) ||
+            archivers.every((b) => _followAskedAtMs.containsKey(_fk(station, b)))) {
+          _urgent.remove(station);
+        }
       }
     }
     if (asked.isNotEmpty) {
@@ -1280,8 +1300,9 @@ class XprsCatchup {
       String self, String archiver, String station, int now) async {
     final kind = _isKind(station) ? station.substring(_kindTarget.length) : null;
     final group = kind == null && _isGroup(station);
+    final k = _fk(station, archiver);
     final held = group
-        ? _groupMark[station]
+        ? _groupMark[k]
         : kind != null
             ? XprsArchive.instance.newestPtsOfType(kind)
             : XprsArchive.instance.newestPts(station, types: const ['observation']);
@@ -1291,7 +1312,7 @@ class XprsCatchup {
     var sinceMs = held ??
         now - (kind != null || group ? maxWindow : followFirstWindow).inMilliseconds;
     if (sinceMs < floorMs) sinceMs = floorMs;
-    final untilMs = _followResume[station];
+    final untilMs = _followResume[k];
     // A station: identity first, since the observations verify against a key
     // that may ride the same page (the order XprsGossip.askAlwaysOn uses).
     final wire = StringBuffer('t:command f:$self d:$archiver ts:${_ts(now)} '
@@ -1305,10 +1326,10 @@ class XprsCatchup {
       _followPending.remove(_followPending.keys.first);
     }
     _followPending[id] = _FollowAsk(archiver, station, now);
-    _followAskedAtMs[station] = now;
+    _followAskedAtMs[k] = now;
     _followArchiverAtMs[archiver] = now;
     _flight = _Flight(archiver, now, followStation: station);
-    _followOldest.remove(station);
+    _followOldest.remove(k);
     followAsks++;
     final send = sendOverride ?? XprsPublisher.instance.publishWire;
     await send(wire.toString());
@@ -1328,25 +1349,27 @@ class XprsCatchup {
     if (code != 200 && code != 206 && code != 404) return; // 202: page follows
     _followPending.remove(r);
     _land(ask.archiver);
+    final k = _fk(ask.station, ask.archiver);
     if (code == 206) {
       // More held than served: ask for what came before the oldest row this
       // page brought. A continuation that reaches back no further than the
       // last one is a loop, and is dropped back to the period.
-      final oldest = _followOldest[ask.station];
-      if (oldest == null || oldest == _followLastResume[ask.station]) {
-        _followResume.remove(ask.station);
-        _followLastResume.remove(ask.station);
+      final oldest = _followOldest[k];
+      if (oldest == null || oldest == _followLastResume[k]) {
+        _followResume.remove(k);
+        _followLastResume.remove(k);
       } else {
-        _followResume[ask.station] = oldest;
-        _followLastResume[ask.station] = oldest;
+        _followResume[k] = oldest;
+        _followLastResume[k] = oldest;
       }
       return;
     }
-    _followResume.remove(ask.station);
-    _followLastResume.remove(ask.station);
-    // A group's window is closed: the next ask starts where this one did.
+    _followResume.remove(k);
+    _followLastResume.remove(k);
+    // A group's window at THIS archiver is closed: the next ask of it starts
+    // where this one did. Another archiver's window stays its own.
     if (_isGroup(ask.station) && ask.atMs > 0) {
-      _groupMark[ask.station] = ask.atMs;
+      _groupMark[k] = ask.atMs;
     }
   }
 

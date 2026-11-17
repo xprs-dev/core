@@ -1266,6 +1266,8 @@ class MeshService {
     if (p == null) return null;
     final self = NostrCrypto.bareCallsign(tableCallsign).toUpperCase();
     if (self.isEmpty) return null;
+    // 11.4: an expired command is refused where it lands; it goes nowhere.
+    if (xprsCommandExpired(p)) return null;
     // An author is not one of its own relays.
     //
     // 13 defines `via:` as "the list of callsigns that RELAYED the packet",

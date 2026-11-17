@@ -595,10 +595,22 @@ class XprsGroups {
         final sub = a.role == 'sub';
         final role = a.role == 'mod' ? XprsRole.mod : XprsRole.member;
         for (final c in a.grant) {
-          if (modGrant &&
-              (roles[c] == XprsRole.member ||
-                  roles[c] == XprsRole.mod ||
-                  roles[c] == XprsRole.admin)) {
+          final holds = roles[c] == XprsRole.member ||
+              roles[c] == XprsRole.mod ||
+              roles[c] == XprsRole.admin;
+          if (modGrant && holds) continue;
+          if (holds && !sub) {
+            // 10.3: the admin's grant to somebody who already holds a place
+            // changes their role, never their place. A plain grant to a
+            // moderator takes the role away at once -- like a removal, it
+            // needs no consent. `role:mod` to a member is an offer that waits
+            // on `accept:mod` while they stay a member and keep posting.
+            if (role == XprsRole.mod && roles[c] == XprsRole.member) {
+              offered[c] = (id: a.id, role: role, ts: a.ts);
+            } else if (role == XprsRole.member && roles[c] == XprsRole.mod) {
+              roles[c] = XprsRole.member;
+              offered.remove(c);
+            }
             continue;
           }
           if (sub) {
