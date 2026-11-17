@@ -331,6 +331,9 @@ topic to the wapp that shows it (`routeCoreNotification`,
   waits. Wapps: `hal_xprs_group_appoint`.
 - `xprsGroupNickShown(wire)` (`xprs_group_act.dart`) — a group's `nick:` as
   people read it (`_` is a space, 10.1). Use it wherever a group's name is shown.
+- `XprsGroupRead.noteSeen(group, sealed:, tsMs:)` — a station outside a
+  group learns its mode from what it reads (newest post decides); the admin's
+  own say is never overridden.
 - `xprsCommandExpired(p)` (`xprs_vocab.dart`) — 11.4's 300 s window; nothing
   relays or holds a command past it.
 - `WappDelivery.groupAuthorMayPost(dest, author, tsMs:)` — a group post judged
