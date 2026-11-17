@@ -7,13 +7,16 @@
  * moving `until:` to the oldest `ts:` it received. `code:404` for a window
  * not held, without apology (31.3). `code:429` over budget, out loud (31.2).
  *
- * Airtime is the scarce thing (31.4): one replay in flight ever, one packet
- * every 1.5 s on a short-TTL advert slot so the replay never camps on the
- * presence beacons, and token buckets per requester (a station that declared
- * us, or whose key we hold, gets more than a stranger; another device of OURS
+ * Airtime is the scarce thing (section 30): one replay at a time on the
+ * broadcast bearers, one packet every 1.5 s on a short-TTL advert slot so the
+ * replay never camps on the presence beacons. An always-on archiver answers
+ * further askers AT THE SAME TIME on a directed lane alone (XPRS.md 12.9.4,
+ * "concurrent"): a pillar of the network must not make the internet queue
+ * behind its radio. Every asker pays its own token bucket (a station that
+ * declared us, or whose key we hold, gets more than a stranger; another device of OURS
  * is unmetered — section 3.1). The replay bytes are byte-identical to what
  * was stored: no via:, no re-sign — an archiver passes on the author's packet,
- * and the signature that travels with it is the author's (36.2).
+ * and the signature that travels with it is the author's (12.2).
  *
  * Commands arrive through XprsIngest ([install] hooks its onCommand). A
  * command off the Reticulum lane is logged and not answered in v1 — the
@@ -105,7 +108,9 @@ class XprsHistoryServer {
         'posNotOwned': posNotOwned,
         'owned': XprsOwnedStations.instance.all,
         'asksLastHour': asksLastHour,
-        'chainFor': _chainFor,
+        'chainFor': _radio?.from,
+        'directedReplays': [for (final r in _directed) r.from],
+        'directedServed': directedServed,
       };
 
   final Map<String, int> _answeredIds = {};
@@ -117,9 +122,64 @@ class XprsHistoryServer {
   }
   final Map<String, List<int>> _asksBy = {};
   final List<int> _asksGlobal = [];
-  Timer? _chain;
-  String? _chainFor;
-  bool get replaying => _chain != null;
+  /// The replay on the broadcast bearers: one at a time, because airtime is
+  /// shared (12.9.4, section 30). It also goes on the directed lane.
+  _Replay? _radio;
+
+  /// Replays running at the same time on directed lanes ONLY, for askers the
+  /// station has a non-airtime path to (12.9.4 "concurrent"; 12.0 lets an
+  /// expensive bearer hold back a page sent somewhere faster). Empty unless
+  /// this station is an always-on archiver.
+  final List<_Replay> _directed = [];
+
+  bool get replaying => _radio != null || _directed.isNotEmpty;
+
+  /// How many directed replays an always-on archiver runs at once, and how
+  /// many different questions one asker may have running (12.9.4 reference
+  /// numbers). An ordinary archiver runs none beside its radio replay.
+  static const int directedMax = 16;
+  static const int perAskerMax = 2;
+
+  /// Directed pacing: no shared airtime to protect, only the transport's own
+  /// queue, so a page goes out in a few seconds instead of eighteen.
+  static const Duration directedInterPacket = Duration(milliseconds: 300);
+  int directedServed = 0;
+
+  /// Test seams for the directed lane: whether [to] has a path that is not
+  /// shared airtime, and the send itself. Null is the real thing (the LXMF
+  /// destination the network names for the callsign).
+  bool Function(String to)? directedPathOverride;
+  Future<bool> Function(String to, String wire)? directedTxOverride;
+
+  /// Concurrency is the always-on archiver's quality (12.9.4).
+  int get _directedCap =>
+      (PreferencesService.instanceSync?.xprsAlwaysOn ?? false) ? directedMax : 0;
+
+  bool _hasDirectedPath(String to) {
+    final o = directedPathOverride;
+    if (o != null) return o(to);
+    return RnsService.instance.lxmfDestForCallsign(to).isNotEmpty;
+  }
+
+  Future<bool> _sendDirected(String to, String wire) {
+    final o = directedTxOverride;
+    if (o != null) return o(to, wire);
+    final hex = RnsService.instance.lxmfDestForCallsign(to);
+    if (hex.isEmpty) return Future.value(false);
+    return RnsService.instance
+        .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)));
+  }
+
+  /// What an ask is asking, for "the same question narrowed" vs "another
+  /// question beside it" (12.9.4): its types and its `only:`.
+  static String _question(XprsPacket p) =>
+      '${(_kinds(p) ?? const <String>[]).join(',')}|${_base(p['only'] ?? '')}';
+
+  void _stop(_Replay r) {
+    r.timer?.cancel();
+    if (identical(_radio, r)) _radio = null;
+    _directed.remove(r);
+  }
 
   /// Route heard commands here. Called once at mesh start.
   void install() {
@@ -143,7 +203,7 @@ class XprsHistoryServer {
   ///
   /// The packet types a `cmd:history` asked for, or null for every type.
   ///
-  /// `kind:` names a type (section 25.2); `only:` names a CALLSIGN (36.6) and
+  /// `kind:` names a type (section 25.2); `only:` names a CALLSIGN (12.6) and
   /// is passed through separately. They are different questions, and answering
   /// `only:` by matching a type name is what made `only:message` look like it
   /// worked while `only:X5A3F2` matched nothing.
@@ -241,7 +301,7 @@ class XprsHistoryServer {
     }
     final cmd = p['cmd'] ?? '';
     if (cmd != 'history' && cmd != 'file' && cmd != 'put') return;
-    // The rns lane is served like every other (36.0). The refusal that used
+    // The rns lane is served like every other (12.0). The refusal that used
     // to sit here guarded a reply lane that did not exist; _air now goes
     // through the publisher, whose reticulum bearer IS that lane.
     //
@@ -394,7 +454,7 @@ class XprsHistoryServer {
       LogService.instance
           .add('XPRS: history for $from — nothing held in that window (404)');
       notFound++;
-      // A miss is not a dead end (36.9): when the ask named a callsign and
+      // A miss is not a dead end (12.9): when the ask named a callsign and
       // gossip knows who HAS heard it, the 404 carries `m:try` naming them.
       final asked = _base(p['only'] ?? '');
       final tries = asked.isEmpty
@@ -409,29 +469,46 @@ class XprsHistoryServer {
           m: tries.isEmpty ? null : 'try ${tries.join(',')}');
       return;
     }
-    // A new ask from the requester whose replay is running supersedes it
-    // (they narrowed the window; the old page is stale). Anyone else waits:
-    // one replay in flight protects the channel (31.4).
-    if (_chain != null) {
-      if (_chainFor == from) {
-        _chain?.cancel();
-        _chain = null;
-        _chainFor = null;
-      } else {
-        refused429++;
-        refusedBusy++;
-        // Busy, not over budget: the channel is replaying to somebody else
-        // for a few seconds. Said so, so a standing ask retries in a minute
-        // rather than keeping 429's ten-minute distance.
-        _airControl(selfBase, from, cmdId, 429, m: 'busy');
-        return;
-      }
+    // Who answers, and on what (12.9.4 "concurrent"):
+    //  - the same question from the same asker supersedes its running
+    //    replay: they narrowed the window, the old page is stale;
+    //  - the radio carries one replay at a time (section 30);
+    //  - an always-on archiver answers further askers at the same time on
+    //    a directed lane alone, when it has one to them;
+    //  - anyone else waits, told `429 m:busy`.
+    final question = _question(p);
+    for (final r in [if (_radio != null) _radio!, ..._directed]) {
+      if (r.from == from && r.question == question) _stop(r);
+    }
+    final bool directedOnly;
+    if (_radio == null) {
+      directedOnly = false;
+    } else if (_directed.length < _directedCap &&
+        [if (_radio != null) _radio!, ..._directed]
+                .where((r) => r.from == from)
+                .length <
+            perAskerMax &&
+        _hasDirectedPath(from)) {
+      directedOnly = true;
+    } else if (_radio!.from == from && _directedCap == 0) {
+      // An ordinary archiver: one replay, and a new question from the asker
+      // it is serving replaces the old one, as it always has.
+      _stop(_radio!);
+      directedOnly = false;
+    } else {
+      refused429++;
+      refusedBusy++;
+      // Busy, not over budget: the channel is replaying to somebody else
+      // for a few seconds. Said so, so a standing ask retries in a minute
+      // rather than keeping 429's ten-minute distance.
+      _airControl(selfBase, from, cmdId, 429, m: 'busy');
+      return;
     }
     if (!selfIsAsking) _recordAsk(from, now);
 
     final more = rows.length > pageSize;
     final page = [for (final r in rows.take(pageSize)) r['wire'] as String];
-    // The keys ride the same page (36.9.4): an observation about the asked
+    // The keys ride the same page (12.9.4): an observation about the asked
     // callsign is signed by its OBSERVER, and an asker who has never met
     // that observer cannot verify it — so a page of sightings without the
     // observers' identities is a page of claims the asker must discard.
@@ -455,30 +532,46 @@ class XprsHistoryServer {
       }
       page.insertAll(0, ids);
     }
-    _airControl(selfBase, from, cmdId, 202);
+    void control(int code) {
+      if (!directedOnly) return _airControl(selfBase, from, cmdId, code);
+      final r = _result(selfBase, from, cmdId, code);
+      if (r != null) unawaited(_sendDirected(from, r.encode()));
+    }
+
+    control(202);
     var i = 0;
-    _chainFor = from;
-    _chain = Timer.periodic(interPacket, (t) {
+    final replay = _Replay(from, question);
+    if (directedOnly) {
+      _directed.add(replay);
+      directedServed++;
+    } else {
+      _radio = replay;
+    }
+    replay.timer = Timer.periodic(
+        directedOnly ? directedInterPacket : interPacket, (t) {
       if (i < page.length) {
         // The stored wire, byte for byte — the author's packet, the author's
-        // signature (25.2.1, 36.2).
-        unawaited(_air('xprs-hist:$i', page[i], const Duration(seconds: 10),
-            to: from));
+        // signature (11.2.1, 12.2).
+        if (directedOnly) {
+          unawaited(_sendDirected(from, page[i]));
+        } else {
+          unawaited(_air('xprs-hist:$i', page[i], const Duration(seconds: 10),
+              to: from));
+        }
         i++;
         return;
       }
-      t.cancel();
-      _chain = null;
-      _chainFor = null;
+      _stop(replay);
       if (more) {
         pages206++;
       } else {
         pages200++;
       }
-      _airControl(selfBase, from, cmdId, more ? 206 : 200);
+      control(more ? 206 : 200);
     });
     LogService.instance.add('XPRS: history for $from — ${page.length} '
-        'packet${page.length == 1 ? "" : "s"}${more ? ", more held" : ""}');
+        'packet${page.length == 1 ? "" : "s"}${more ? ", more held" : ""}'
+        '${directedOnly ? " (directed, beside the radio replay)" : ""}');
   }
 
   bool _budgetAllows(String from, int now) {
@@ -658,7 +751,7 @@ class XprsHistoryServer {
     // the rest, so a replayed RECORD (no d: of its own) would die on the
     // announce lane before reaching an internet asker. When the asker is
     // known and the network can name it, every page rides the directed
-    // LXMF lane BESIDE the radio broadcast -- 36.0's path rule: the lane
+    // LXMF lane BESIDE the radio broadcast -- 12.0's path rule: the lane
     // with evidence of reaching the asker. Duplicates dedup on the
     // section 5 identifier.
     if (to != null && to.isNotEmpty) {
@@ -847,11 +940,22 @@ class XprsHistoryServer {
     _answeredIds.clear();
     _asksBy.clear();
     _asksGlobal.clear();
-    _chain?.cancel();
-    _chain = null;
-    _chainFor = null;
+    for (final r in [if (_radio != null) _radio!, ..._directed]) {
+      _stop(r);
+    }
+    directedPathOverride = null;
+    directedTxOverride = null;
+    directedServed = 0;
     answered = 0;
     refused429 = 0;
     pages200 = pages206 = notFound = refusedBusy = refusedBudget = 0;
   }
+}
+
+/// One running replay: who it answers, which question, and its pacing timer.
+class _Replay {
+  _Replay(this.from, this.question);
+  final String from;
+  final String question;
+  Timer? timer;
 }

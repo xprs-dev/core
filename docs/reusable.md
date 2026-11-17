@@ -138,6 +138,18 @@ an injected `fetchText` and keeps POINTERS in `XprsGossip.notePointers` /
 lines are `XprsArchive.directoryEntries`. `XprsHistoryServer.tryFor` is
 the one composer of a 404's `m:try`: holders, keepers, then gossip.
 
+### Replays: one on the radio, many on directed lanes
+
+`XprsHistoryServer` decides who is answered and on what (XPRS.md 12.9.4
+"concurrent"): `_radio` is the one replay on the broadcast bearers; an
+always-on archiver runs up to `directedMax` more in `_directed`, sent only by
+`_sendDirected` (the LXMF destination for the callsign) at
+`directedInterPacket`, `perAskerMax` questions per asker (`_question`:
+kinds + `only:`). Tests drive it through `directedPathOverride` /
+`directedTxOverride` beside `txOverride`. Anything else that answers many
+askers (a future `cmd:file` index, `q:have`) should reuse this split rather
+than add a second "busy" rule.
+
 ### `XprsKeyWait` — a send held until the key it needs arrives
 
 `services/xprs/xprs_key_wait.dart`: a direct message that cannot be sealed yet

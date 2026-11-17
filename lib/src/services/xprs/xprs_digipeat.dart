@@ -73,7 +73,7 @@ class XprsDigipeater {
   final Future<bool> Function(String wire, String bearer) air;
 
   /// The 13.1/13.2 decision plus the `via:` append — MeshService._relayable,
-  /// which is the same routine the 36.8.1 release uses. One rule, one place.
+  /// which is the same routine the 12.8.1 release uses. One rule, one place.
   final String? Function(String wire) relayable;
 
   /// Set by the host: may [p], heard on [bearer], be repeated at all? Null

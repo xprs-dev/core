@@ -17,7 +17,7 @@
  * a hub is archived ONLY when its author declared this station as a mailbox
  * (`t:mailbox hold:` — docs/XPRS.md section 13.12) or the packet is mail to a
  * station that did. Without that rule a well-connected hub would spool the
- * whole mesh's chatter and fill its disk with strangers (section 36.3: a
+ * whole mesh's chatter and fill its disk with strangers (section 12.3: a
  * station pushes to the archivers its operator CHOSE).
  */
 import 'xprs_self.dart';
@@ -67,7 +67,7 @@ class XprsIngest {
   onCommand;
 
   /// Every heard `t:result`, for whoever asked the question it answers --
-  /// the catch-up poller advances its watermark on these (36.10.1).
+  /// the catch-up poller advances its watermark on these (12.10.1).
   static void Function(XprsPacket p)? onResult;
 
   /// Set by RnsService, which owns the callsign→key map, so a `t:identity`
@@ -86,7 +86,7 @@ class XprsIngest {
 
   /// A station heard DIRECTLY (no `via:`), on a bearer a radio person would
   /// recognise. Set by MeshService to the release-on-hearing trigger of
-  /// section 36.8.1 -- the receiver throttles and checks for held mail; this
+  /// section 12.8.1 -- the receiver throttles and checks for held mail; this
   /// funnel only reports the fact.
   ///
   /// `viaApi` says the hearing came through the station's HTTP API (a
@@ -97,7 +97,7 @@ class XprsIngest {
       onDirectHeard;
 
   /// A `t:message` for a THIRD party, off the Reticulum lane -- somebody is
-  /// handing this station mail to hold (36.7) or to move along (36.8.1).
+  /// handing this station mail to hold (12.7) or to move along (12.8.1).
   /// Set by MeshService to the custody park + forwarder.
   static void Function(String wire, String target)? onCarry;
 
@@ -106,7 +106,7 @@ class XprsIngest {
   ///
   /// Every carrier holding the named message discards its copy — that is what
   /// drains a chain of custodians instead of delivering the same message five
-  /// times (§36.8.1). It fires for a receipt addressed to ANYONE, not only to
+  /// times (§12.8.1). It fires for a receipt addressed to ANYONE, not only to
   /// us: overhearing somebody else's acknowledgement is precisely how a
   /// third-party copy gets released, and §13.3 says so — "a station that
   /// overhears a receipt for a message it is carrying discards its copy, which
@@ -135,7 +135,7 @@ class XprsIngest {
   /// split cannot drift between the archive, the ingest and the server.
   /// Compose and air the `t:pong` for a heard `t:ping`.
   ///
-  /// [bearer] is the lane it arrived on, and the answer prefers it: §36.0's
+  /// [bearer] is the lane it arrived on, and the answer prefers it: §12.0's
   /// freshest possible evidence of a working path back is the packet that just
   /// came over it. The publisher falls back to the fan-out when that bearer
   /// cannot carry the reply.
@@ -431,7 +431,7 @@ class XprsIngest {
     // means. Two lookups for an observation that carries no reading.
     if (p.type == 'observation') XprsClimate.instance.heard(p, from: from);
 
-    // ── Gossip feeds (36.9.4) + the 36.8.1 release trigger ──────────────
+    // ── Gossip feeds (12.9.4) + the 12.8.1 release trigger ──────────────
     // Cheap checks first (performance.md 4.2): everything below is a map
     // lookup or an indexed upsert; the one curve operation is gated on a
     // hears: list actually being present AND the signer's key being known.
@@ -439,7 +439,7 @@ class XprsIngest {
     // Our own radio is its own witness, and only a packet that reached us
     // unrelayed is evidence of that. A copy that came through somebody else
     // says nothing about whether WE can hear its author, so noteDirect and
-    // the 36.8.1 release trigger stay behind the `via:` gate.
+    // the 12.8.1 release trigger stay behind the `via:` gate.
     if (!p.has('via')) {
       XprsGossip.instance.noteDirect(from, self,
           bearer: gb, shortRange: viaApi ? localLink : null);
@@ -458,7 +458,7 @@ class XprsIngest {
     // `hears:` is NOT behind that gate, and putting it there was the reason a
     // station could never see more than one hop of its own mesh.
     //
-    // 36.9.4 admits "a verified observation whose `link:` names a short-range
+    // 12.9.4 admits "a verified observation whose `link:` names a short-range
     // bearer" -- it says nothing about how the packet reached the reader,
     // because it does not need to. The claim is the OBSERVER's, the signature
     // is what makes it theirs, and a relay cannot alter either: section 9.1
@@ -472,7 +472,7 @@ class XprsIngest {
     // One direction of an asymmetric pair (10.6.5), thrown away at the door,
     // and with it every route TOWARD the phone.
     //
-    // Every wall of 36.9.4 stands: the per-signer quota below, verified-only,
+    // Every wall of 12.9.4 stands: the per-signer quota below, verified-only,
     // and L2 still written only when `link:` names a short-range bearer.
     if (p.type == 'observation' &&
         p.has('hears') &&
@@ -923,7 +923,7 @@ class XprsIngest {
   /// One of OUR wires, at the moment it was put on a bearer — or attempted and
   /// carried by none, in which case [bearer] is `none`. Archived with `own=1`
   /// so a `cmd:history` asked of the author can replay the author, which is
-  /// the whole reason a station keeps its own log (section 36.5).
+  /// the whole reason a station keeps its own log (section 12.5).
   ///
   /// **This is the single recorder for outbound traffic, and it is not
   /// optional.** It ignores the public-archiver switch on purpose: that
@@ -937,7 +937,7 @@ class XprsIngest {
     final p = XprsPacket.parse(wire);
     if (p == null) return;
     // Our own log stays complete for everything a `cmd:history` asked of US
-    // could replay -- section 36.5, and the reason this ignores the archiver
+    // could replay -- section 12.5, and the reason this ignores the archiver
     // preference. Our own PRESENCE is the exception: nobody has ever asked a
     // phone to replay its own beacons, and on the bench they were 139 of the
     // newest 200 rows in this device's archive.
@@ -1037,7 +1037,7 @@ class XprsIngest {
     XprsInlineAsm.instance.feed(p);
     if (xprsIsInlineChunk(p)) return;
 
-    // The hub lane serves too (docs/XPRS.md 36.0: the archiver role does not
+    // The hub lane serves too (docs/XPRS.md 12.0: the archiver role does not
     // change with the bearer). Commands and results route to the same hooks
     // every radio feeds -- until they did, a cmd:history that crossed the
     // internet was at best archived and never answered, and the server's
@@ -1063,7 +1063,7 @@ class XprsIngest {
     }
 
     // `t:identity` binds callsign to key (9.3), and it is a publication a
-    // gateway passes verbatim (36.1). Without this the internet lane could
+    // gateway passes verbatim (12.1). Without this the internet lane could
     // never verify anything: a mailbox declaration arriving over the hubs
     // was refused for want of a key that had also arrived over the hubs --
     // two strangers meeting on the internet could not bootstrap at all.
@@ -1122,7 +1122,7 @@ class XprsIngest {
       return;
     }
 
-    // Gossip off the internet lane (36.9.4): a replayed observation arriving
+    // Gossip off the internet lane (12.9.4): a replayed observation arriving
     // over the hubs is exactly the "asker verifies and caches into its own
     // L3" step — the answer to an always-on archiver ask lands HERE, not on any
     // radio, and without this feed the ask was paid for and the answer

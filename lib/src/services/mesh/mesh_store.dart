@@ -101,7 +101,7 @@ class MeshStore {
       fs.directory(fs.file(path).parent.path).createSync(recursive: true);
       final db = openStoreDb(path);
       // relts/reln: when a release was last tried and how often (a release
-      // is an ATTEMPT, 36.8.1: only a verified receipt ends custody, so the
+      // is an ATTEMPT, 12.8.1: only a verified receipt ends custody, so the
       // row stays state 0 and these stop it re-airing at every beacon).
       // setk: the set a parked row belongs to (7.6 keys reassembly on
       // (f, ts), kept clear on sealed packets, so sealed parts of one
@@ -490,7 +490,7 @@ class MeshStore {
 
   /// How long before a released-but-unreceipted row may be released again.
   ///
-  /// A release is an ATTEMPT (§36.8.1); only a receipt ends custody. Without a
+  /// A release is an ATTEMPT (§12.8.1); only a receipt ends custody. Without a
   /// backoff the recipient's beacon — every thirty seconds on a live bearer —
   /// would re-air the same mail every time it landed. §31.1: *a retry is not a
   /// new packet*, it costs the same airtime as saying it the first time.

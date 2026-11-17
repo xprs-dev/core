@@ -12,7 +12,7 @@
  * loopback address is the LAN it looks like — bearer `lan`, on the air view,
  * archived like any local bearer. A public address travelled the internet, so
  * it gets exactly the Reticulum lane's treatment: no sighting, archived only
- * under the mailbox-declaration rule (36.3).
+ * under the mailbox-declaration rule (12.3).
  */
 import 'dart:async';
 import 'dart:convert';

@@ -156,7 +156,7 @@ class MeshTransferScheduler {
 
   DateTime? _starvedSince;
 
-  /// 36.8.1's release trigger: the recipient was just heard, so run the
+  /// 12.8.1's release trigger: the recipient was just heard, so run the
   /// decision NOW instead of waiting out the periodic tick. Clearing the
   /// peer's backoff is the point -- the backoff said "nobody answered",
   /// and a fresh packet from the peer is the counter-evidence.

@@ -2,7 +2,7 @@
  * The receipt: what ends custody (docs/XPRS.md §13.7, §13.7.1).
  *
  * Until this file existed, a held message had no terminal state. Nothing in the
- * app composed a `t:receipt`, so §36.8.1's release rule — "a verified
+ * app composed a `t:receipt`, so §12.8.1's release rule — "a verified
  * `t:receipt` ends [the retries] and releases the held copy, and every OTHER
  * holder that hears the receipt releases its copy too" — had nothing to fire
  * on. Measured on the bench after a day of carrying:

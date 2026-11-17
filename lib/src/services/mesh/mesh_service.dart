@@ -461,14 +461,14 @@ class MeshService {
           // 12.9.4: the table stops being pocket-sized.
           XprsGossip.instance.maxBytes = 256 * 1024 * 1024;
         }
-        // 36.8.1: deliver the moment the recipient is heard. The funnel
+        // 12.8.1: deliver the moment the recipient is heard. The funnel
         // reports every direct hearing; this receiver throttles per
         // callsign, checks for held mail, and fires the right lane --
         // the session scheduler for BLE peers, a verbatim re-air for
         // bearers with no session (LAN, rns).
         XprsIngest.onDirectHeard = _onDirectHeard;
         // Mail for a third party off the rns lane: park it exactly as the
-        // radio lanes do (custody, 36.7), then let 36.8.1 move it toward
+        // radio lanes do (custody, 12.7), then let 12.8.1 move it toward
         // the recipient's declared mailbox or freshest gossip gateway.
         XprsIngest.onCarry = (wire, target) {
           MeshCustodyDelegate.onAirFrame(
@@ -495,7 +495,7 @@ class MeshService {
         // Chained rather than replaced — the hook is a single slot, and a
         // second assignment would silently unhook the first.
         // A verified receipt ends custody — here and on every other holder
-        // that hears it (§13.7.1, §36.8.1). Before this nothing composed or
+        // that hears it (§13.7.1, §12.8.1). Before this nothing composed or
         // consumed one, so a parked row had no terminal state and the store
         // grew to its quota: measured at 1739 parked, 0 purged, 0 delivered.
         XprsIngest.onReceipt = (p) {
@@ -522,7 +522,7 @@ class MeshService {
           XprsOutbox.instance.noteReceipt(id,
               state: r.state, peer: (p['f'] ?? '').trim().toUpperCase());
         };
-        // A reachability test answers on the lane it arrived on (§36.0: the
+        // A reachability test answers on the lane it arrived on (§12.0: the
         // packet that just came over it is the freshest evidence of a working
         // path back). The funnel composes and signs; airing is the publisher's.
         // The bridge shares the digipeater's §13 decision and its one way onto
@@ -1189,7 +1189,7 @@ class MeshService {
   /// The wire to re-air for a held packet, with this station added to `via:`,
   /// or null when section 13 says it may not travel further.
   ///
-  /// Section 36.8.1 is explicit that a custody hand-off is a relay in every
+  /// Section 12.8.1 is explicit that a custody hand-off is a relay in every
   /// respect that matters: "the author's packet travels byte for byte with the
   /// author's signature, `via:` gains the holder's callsign, the section 13.1
   /// budget and the section 13.2 loop check apply". The release used to re-air
@@ -1201,7 +1201,7 @@ class MeshService {
   /// `xprsMayRelay` and `xprsWouldLoop` have existed, tested, with zero callers
   /// since they were written. These are the callers.
   /// 13.2.1's queue for the BLE radio. Wired to the same `_relayable` the
-  /// 36.8.1 release uses, so the hop budget and the loop check are decided in
+  /// 12.8.1 release uses, so the hop budget and the loop check are decided in
   /// one place whether a packet is being carried or merely repeated.
   late final XprsDigipeater digipeater = XprsDigipeater(
     relayable: _relayable,
@@ -1271,7 +1271,7 @@ class MeshService {
     // An author is not one of its own relays.
     //
     // 13 defines `via:` as "the list of callsigns that RELAYED the packet",
-    // and a station does not relay what it wrote. Without this the 36.8.1
+    // and a station does not relay what it wrote. Without this the 12.8.1
     // release put us in the `via:` of our own mail, which is wrong three
     // ways: it spends one of the three hops 13.1 allows before the packet has
     // been relayed at all; it makes 13.2's loop check refuse our own retry;
@@ -1281,7 +1281,7 @@ class MeshService {
     // queued repeat under 13.2.1. That is exactly the rule a second hop
     // depends on.
     //
-    // Unchanged, NOT refused: this routine is also how the 36.8.1 release airs
+    // Unchanged, NOT refused: this routine is also how the 12.8.1 release airs
     // held mail, and some of that mail is our own. Refusing it would mean our
     // own outbound never left custody. An author re-sending its own packet
     // airs it exactly as written.
@@ -1439,8 +1439,8 @@ class MeshService {
     // who it hears** — `hears:` was absent from every BLE beacon it ever sent,
     // and `peers:` read 0 while the monitor knew otherwise.
     //
-    // What that cost is the whole point of the field. §36.9.4's gossip resolves
-    // "who can reach X" from other stations' `hears:` claims, and §36.8.1's
+    // What that cost is the whole point of the field. §12.9.4's gossip resolves
+    // "who can reach X" from other stations' `hears:` claims, and §12.8.1's
     // forwarder hands mail to whoever claims X. With no claim ever made, a
     // BLE-only station could not learn that this station reaches the LAN, so
     // mail for a LAN-only peer had nowhere to go but a lottery: hope the
@@ -1452,7 +1452,7 @@ class MeshService {
     // SIGNED, like the LAN beacon and for the same reason: an unsigned beacon
     // is a callsign anybody can write.
     //
-    // This one was not, and `hears:` is what that cost. §36.9.4's gossip
+    // This one was not, and `hears:` is what that cost. §12.9.4's gossip
     // refuses an unsigned claim outright (`refusedUnsigned`), so even once the
     // list was populated it fed nothing — a BLE-only station would hear this
     // beacon, drop the claim, and still not know who reaches the LAN. Both
@@ -1502,7 +1502,7 @@ class MeshService {
       // ledger that bills for transmissions that did not happen throttles the
       // station for nothing.
       if (aired) XprsAirtime.instance.charge(const ['ble5']);
-      // Ours, so it goes in our own log either way (section 36.5) — the
+      // Ours, so it goes in our own log either way (section 12.5) — the
       // bearer says whether a radio actually took it.
       XprsIngest.own(p.encode(), bearer: aired ? 'ble' : 'none');
       if (aired) {
@@ -2119,7 +2119,7 @@ class MeshService {
         prefs.xprsAlwaysOn ? 256 * 1024 * 1024 : XprsGossip.defaultMaxBytes;
   }
 
-  /// 36.8.1's release-on-hearing, throttled: one attempt per callsign per
+  /// 12.8.1's release-on-hearing, throttled: one attempt per callsign per
   /// half minute however chatty their beacons.
   final Map<String, int> _releaseTriedMs = {};
 
@@ -2155,7 +2155,7 @@ class MeshService {
     if (pending.isEmpty) return;
     LogService.instance.add(
         'Mesh: $callsign heard on $bearer with ${pending.length} to release '
-        '(36.8.1)');
+        '(12.8.1)');
     if (bearer == 'ble') {
       // The session lane: clear the backoff and decide now. When that lane has
       // the peer in hand -- a dial just went out, or a session with it is up

@@ -241,7 +241,7 @@ class PacketGateway {
   /// The internet lane, which is a different rule and not a different door.
   ///
   /// Reticulum traffic is not bounded by radio range, so it is admission-gated
-  /// (§13.12/§36.3) and never becomes a sighting — [XprsIngest.reticulum]
+  /// (§13.12/§12.3) and never becomes a sighting — [XprsIngest.reticulum]
   /// owns that policy. It gets its own entry because the payload arrives as a
   /// wire with a source label rather than as bytes off a radio, not because
   /// the lane is allowed to route itself.

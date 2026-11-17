@@ -448,7 +448,7 @@ class PreferencesService {
 
   /// The ONE set of archiver devices this station chose: the stations it sends
   /// copies of its own publications to (XPRS 36) AND declares as its mailboxes
-  /// with a signed `t:mailbox hold:` (36.7 — an archiver is also a mailbox).
+  /// with a signed `t:mailbox hold:` (12.7 — an archiver is also a mailbox).
   /// Unifies the two legacy lists so there is a single "my archivers" list:
   /// callsigns in preference order, `xprsNamedArchivers` first (they drive the
   /// 12 push and the gossip/custody lane), then any `xprsMailboxHold`-only ones
@@ -472,7 +472,7 @@ class PreferencesService {
     xprsMailboxHold = v.join(',');
   }
 
-  /// Auto-select an archiver when the operator has chosen none (36.3 keeps zero
+  /// Auto-select an archiver when the operator has chosen none (12.3 keeps zero
   /// a valid choice; this offers the other default). ON by default so a fresh
   /// station's messages are kept by SOME volunteer node without the user having
   /// to pick one. HOW a volunteer is chosen is decided elsewhere; this is only
@@ -544,7 +544,7 @@ class PreferencesService {
     await _prefs.setBool('xprs.serveHistory', v);
   }
 
-  // The pocket device polls every station in reach (XPRS 36.10.1): on by
+  // The pocket device polls every station in reach (XPRS 12.10.1): on by
   // default, once a minute. This is the battery knob for that poll -- raise it
   // on a device that spends its life away from stations. One minute costs one
   // small frame per station per hour-of-pocket times sixty, and nothing else;

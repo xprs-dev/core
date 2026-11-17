@@ -3,7 +3,7 @@
  *
  * A wapp does not transmit. It says what it wants said and to whom, and the
  * core composes the packet, seals it if it can, signs it, splits it (§6.6),
- * chooses the bearers (§36.0), parks a custody copy and reports back. Every
+ * chooses the bearers (§12.0), parks a custody copy and reports back. Every
  * decision in that list is a transport decision, and none of them belongs to
  * somebody else's code.
  *
@@ -26,7 +26,7 @@
  * transport, and choosing the one transport that cannot reach a station over
  * the radio in the same room.
  *
- * And a wapp's own idea of what to do when sealing is impossible. §36.8 is not
+ * And a wapp's own idea of what to do when sealing is impossible. §12.8 is not
  * a preference: plaintext is disclosure, and the two forms are released under
  * different rules, so a request to seal that cannot be met is REFUSED and said
  * out loud. It is never quietly downgraded.

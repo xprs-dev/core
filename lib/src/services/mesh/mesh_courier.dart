@@ -403,7 +403,7 @@ class MeshCourier {
       recipientKeyHex: npub,
     );
     if (!built.ok) {
-      // A private message NEVER quietly becomes a plain one. Section 36.8 is
+      // A private message NEVER quietly becomes a plain one. Section 12.8 is
       // why this is correctness and not caution: "Sealed mail travels on the
       // strength of the seal ... Clear mail is released only to a declared
       // holder or fetched by the recipient itself. Plaintext is disclosure."
@@ -975,7 +975,7 @@ class MeshCourier {
     // still holding, and stops the sender's retry ladder.
     //
     // The publisher picks the lane from the sender's own `link:` evidence
-    // (§36.0), which is the freshest path we have back to them. Composed only
+    // (§12.0), which is the freshest path we have back to them. Composed only
     // when §13.7.1 allows: not for a group, not for a broadcast, not for a
     // stranger, and never unsigned.
     _acknowledge(p, via, partIds: partIds);
@@ -1038,7 +1038,7 @@ class MeshCourier {
     // `s:read`, can only be composed once a person opens the message, and by
     // then the only thing the wapp can name it by is its §5 identifier.
     //
-    // §36.0: answer down the lane the message arrived on -- the freshest
+    // §12.0: answer down the lane the message arrived on -- the freshest
     // evidence of a working path to the sender. Without it a peer reachable
     // only over Reticulum, but wearing a stale `link:ble` from a relayed
     // beacon, would have the receipt aired at a radio it cannot hear and the

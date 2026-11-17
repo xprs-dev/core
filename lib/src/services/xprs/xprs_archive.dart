@@ -41,11 +41,11 @@ import '../../platform/fs.dart';
 
 /// Packet types that are never spooled.
 ///
-/// `ping`/`pong` — section 36.1: a stale one answers a question nobody is
+/// `ping`/`pong` — section 12.1: a stale one answers a question nobody is
 /// still asking. `receipt`/`result` — control traffic whose whole value is
 /// consumed the moment it is heard; store-and-forward never carries them and
 /// a history page re-airing day-old receipts wastes the page. `command` IS
-/// kept: section 36.1 calls a command to a sleeping station mail.
+/// kept: section 12.1 calls a command to a sleeping station mail.
 // `kXprsNeverArchived` now lives with the rest of the admission rule, in
 // xprs_archive_policy.dart, and is re-exported here for its existing readers.
 export 'xprs_archive_policy.dart' show kXprsNeverArchived;
@@ -1173,7 +1173,7 @@ class XprsArchive {
         .where((c) => c.isNotEmpty)
         .toList();
     final pos = hold.indexOf(_selfBase);
-    // A declaration NOT naming us is still recorded (pos -1): section 36.8.1
+    // A declaration NOT naming us is still recorded (pos -1): section 12.8.1
     // routes held mail by "who holds for X", and an archiver that only
     // remembered its own appointments could never answer it. The return
     // value keeps its old meaning -- "named us" -- because ingest admission
@@ -1194,7 +1194,7 @@ class XprsArchive {
     return pos >= 0;
   }
 
-  /// L1 of the gossip layers (36.9.4): who [baseCallsign] declared as its
+  /// L1 of the gossip layers (12.9.4): who [baseCallsign] declared as its
   /// mailboxes, in the declaration's own order of preference (13.12). The
   /// narrowest active window wins (13.12.1); windowed beats open-ended.
   ///
@@ -1228,7 +1228,7 @@ class XprsArchive {
   }
 
   /// Whether [baseCallsign] currently has an active declaration naming us —
-  /// the admission ticket for its Reticulum-borne traffic (§36.3). A visitor
+  /// the admission ticket for its Reticulum-borne traffic (§12.3). A visitor
   /// this station serves is declared by the offer it accepted
   /// ([servesVisitor]): its mail is admitted the same way.
   bool hasActiveDecl(String baseCallsign, {int? nowMs}) {
@@ -1522,7 +1522,7 @@ class XprsArchive {
       final c = _base(only);
       // An observation ABOUT the named callsign has that callsign in its
       // `hears:` list and someone else in `f:` — matching sender/addressee
-      // alone made `only:X kind:observation` (36.9.4's bulk-gossip ask, "the
+      // alone made `only:X kind:observation` (12.9.4's bulk-gossip ask, "the
       // signed sightings this station holds about X") return nothing, ever.
       // instr() over the wire is a scan, but one confined to observation
       // rows already narrowed by the type filter and the time window; a

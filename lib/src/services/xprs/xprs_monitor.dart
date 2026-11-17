@@ -113,7 +113,7 @@ class XprsStation {
   /// Section 10.6.1: "a station reports once per bearer", and `link:` names
   /// which one -- `lora`, `ble`, `wifi`, `espnow`, `lan`. That is the station's
   /// own statement about its own radio, and it is the only trustworthy evidence
-  /// of a path TO it, which section 36.0 requires before choosing one path over
+  /// of a path TO it, which section 12.0 requires before choosing one path over
   /// another.
   ///
   /// The arrival bearer is NOT that evidence, and the difference cost a bench
@@ -202,7 +202,7 @@ class XprsStation {
   /// Not callsigns. The distinction is the whole value of the field: a poller
   /// remembers this number and asks for history when it moves, and a count of
   /// senders does not move when six known stations say six new things. This
-  /// doc used to say callsigns, which is what section 36.9's *directory* is
+  /// doc used to say callsigns, which is what section 12.9's *directory* is
   /// about, and the two are different questions.
   ///
   /// Null means the station has not said. That is a real answer and not the

@@ -16,7 +16,7 @@
 // be a new command, and re-signing it would be a curve operation per re-air
 // on the UI isolate for nothing (docs/performance.md 8.13).
 //
-// A re-air fans out. The first send takes section 36.0's path choice; silence
+// A re-air fans out. The first send takes section 12.0's path choice; silence
 // after it is evidence that the chosen path did not reach the station, which
 // is the case the section's own fallback is for.
 //

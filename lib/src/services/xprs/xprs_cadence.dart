@@ -16,9 +16,9 @@
  *    Something that has said nothing for three months does not need asking
  *    every ten minutes.
  *  - The FLOOR is what the peer permits. Section 31.2 lets an ordinary
- *    archiver answer a known caller six times an hour, and section 36.10.1
+ *    archiver answer a known caller six times an hour, and section 12.10.1
  *    says plainly that the ten-minute poll is exactly that ceiling and not an
- *    arbitrary number. Only an always-on archiver's raised budgets (36.9.4) can
+ *    arbitrary number. Only an always-on archiver's raised budgets (12.9.4) can
  *    serve a fast caller, so only an always-on archiver gets one. A station that
  *    polls an ordinary peer faster steals that peer's whole cross-caller
  *    allowance and 429-starves everyone else asking it.
@@ -64,7 +64,7 @@ class XprsCadence {
   static const Duration fastFloor = Duration(seconds: 15);
 
   /// The ordinary floor, and the ceiling for an archiver that has been quiet
-  /// less than a week: section 36.10.1's ten minutes.
+  /// less than a week: section 12.10.1's ten minutes.
   static const Duration ordinaryFloor = Duration(minutes: 10);
 
   /// Nobody is looking. Anything faster than the ordinary floor is spending

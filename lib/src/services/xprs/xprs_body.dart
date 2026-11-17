@@ -47,7 +47,7 @@ enum XprsPrivacy {
 
 /// Why a body could not be produced in the form that was asked for.
 ///
-/// A refusal is always reported and NEVER silently downgraded. Section 36.8 is
+/// A refusal is always reported and NEVER silently downgraded. Section 12.8 is
 /// what makes that a correctness rule rather than a nicety: "Sealed mail travels
 /// on the strength of the seal ... Clear mail is released only to a declared
 /// holder or fetched by the recipient itself. **Plaintext is disclosure.**" The

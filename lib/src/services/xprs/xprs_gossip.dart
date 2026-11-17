@@ -1,5 +1,5 @@
 /*
- * xprs_gossip — who was heard where (docs/XPRS.md section 36.9.4).
+ * xprs_gossip — who was heard where (docs/XPRS.md section 12.9.4).
  *
  * The layered callsign→whereabouts table every archiver keeps. Three layers,
  * consulted in this order and stored with different lifetimes, because
@@ -15,7 +15,7 @@
  *   L3  sightings    freshest (gateway, bearer, ts) claims, at most G per
  *                    callsign, TTL'd. Freshest wins.
  *
- * Validity (36.9.4): every entry is credited to the SIGNER of the packet it
+ * Validity (12.9.4): every entry is credited to the SIGNER of the packet it
  * came from. Unsigned observations feed nothing here; a per-signer interval
  * meters ingestion; the whole table lives under a byte budget.
  *
@@ -35,7 +35,7 @@ import '../log_service.dart';
 ///
 /// The same rows [XprsGossip.whereIs] reads, turned the other way up. That
 /// query answers "who can reach X" -- one hop, about one callsign, which is
-/// all a carrier deciding where to deposit mail ever needs (36.9.4). A path
+/// all a carrier deciding where to deposit mail ever needs (12.9.4). A path
 /// needs the whole adjacency at once, and this is it.
 ///
 /// `direct` marks an edge this station witnessed itself rather than one it
@@ -72,7 +72,7 @@ class GossipEdge {
 /// One place a callsign was seen, for routing.
 ///
 /// [live] tells the two layers apart for a reader that routes: an L3 row is a
-/// claim inside its TTL ("deliver NOW" in 36.9.4's words) and every such
+/// claim inside its TTL ("deliver NOW" in 12.9.4's words) and every such
 /// gateway is worth a copy; an L2 row is where the callsign TENDS to surface,
 /// and only the freshest of those is worth one, and only with no live claim.
 class GossipSighting {
@@ -89,14 +89,14 @@ class XprsGossip {
   XprsGossip._();
   static final XprsGossip instance = XprsGossip._();
 
-  /// Reference constants of 36.9.4. K and G are per-callsign caps; the TTL
+  /// Reference constants of 12.9.4. K and G are per-callsign caps; the TTL
   /// bounds L3; the byte budget bounds the whole table (an always-on archiver raises it).
   static const int visitRingK = 100;
   static const int liveCapG = 8;
   static const Duration liveTtl = Duration(hours: 24);
   static const int defaultMaxBytes = 5 * 1024 * 1024;
 
-  /// Bearers that count as radio truth for L2 (36.9.4: short-range only —
+  /// Bearers that count as radio truth for L2 (12.9.4: short-range only —
   /// `rns`/internet never writes the durable layer).
   static const Set<String> kShortRange = {
     'ble',
@@ -129,7 +129,7 @@ class XprsGossip {
   static const int flushEvery = 10000;
   int accepted = 0, refusedUnsigned = 0, refusedQuota = 0;
 
-  /// Per-signer ingestion meter (36.9.4: one observer's gossip at the rate
+  /// Per-signer ingestion meter (12.9.4: one observer's gossip at the rate
   /// its own adverts arrive). 30 s matches the fastest beacon cadence.
   final Map<String, int> _signerLastMs = {};
   final Map<String, int> _directLastMs = {};
@@ -341,7 +341,7 @@ class XprsGossip {
 
   /// A verified observation from [observer] whose `hears:` lists callsigns it
   /// hears directly on [link]. [verified] is the packet's signature verdict —
-  /// an unsigned or unverifiable claim feeds nothing (36.9.4).
+  /// an unsigned or unverifiable claim feeds nothing (12.9.4).
   void noteHears(
     String observer,
     List<String> hears, {
@@ -458,7 +458,7 @@ class XprsGossip {
                 .first['n'] as int);
         if (rows * rowBytes > maxBytes) {
           // Over budget: L3 stalest-first goes before L2 loses anything
-          // (36.9.4 — the visit history is the layer allowed to live forever).
+          // (12.9.4 — the visit history is the layer allowed to live forever).
           db.execute(
             'DELETE FROM gossip_live WHERE rowid IN '
             '(SELECT rowid FROM gossip_live ORDER BY ts ASC LIMIT 512)',
@@ -573,7 +573,7 @@ class XprsGossip {
     return out;
   }
 
-  /// Gateways worth naming in a 404's `m:try` (36.9): freshest few, never us.
+  /// Gateways worth naming in a 404's `m:try` (12.9): freshest few, never us.
   List<String> tryCandidates(
     String callsign, {
     required String selfBase,
@@ -585,7 +585,7 @@ class XprsGossip {
     ].take(max).toList();
   }
 
-  /// The miss path of 36.9.4: gossip knows nothing of [call], so ask a
+  /// The miss path of 12.9.4: gossip knows nothing of [call], so ask a
   /// configured always-on archiver -- over the directed lane, because the
   /// public hubs throttle everything else. Throttled per callsign; the
   /// answer flows back through the ordinary funnel and lands here.
@@ -603,7 +603,7 @@ class XprsGossip {
     final c = call.trim().toUpperCase();
     if (c.isEmpty || c == selfBase) return;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
-    if (now - (_askedAlwaysOnMs[c] ?? 0) < 600000) return; // 36.10.1 cadence
+    if (now - (_askedAlwaysOnMs[c] ?? 0) < 600000) return; // 12.10.1 cadence
     _askedAlwaysOnMs[c] = now;
     if (_askedAlwaysOnMs.length > 128) {
       _askedAlwaysOnMs.remove(_askedAlwaysOnMs.keys.first);

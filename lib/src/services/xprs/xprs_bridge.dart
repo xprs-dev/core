@@ -72,7 +72,7 @@ class XprsBridgePolicy {
   /// meshes that cannot see each other.
   final bool bridge;
 
-  /// Hand what is not `local` to the archivers this operator chose (§36.3).
+  /// Hand what is not `local` to the archivers this operator chose (§12.3).
   ///
   /// Directed, over Reticulum, to a station the operator named — not a
   /// broadcast, and not a gateway for the whole internet. A `local` packet is
@@ -86,7 +86,7 @@ class XprsBridge {
   static final XprsBridge instance = XprsBridge._();
 
   /// The §13.1/§13.2 decision plus the `via:` append. The same routine the
-  /// digipeater and the §36.8.1 custody release use: one rule, one place.
+  /// digipeater and the §12.8.1 custody release use: one rule, one place.
   String? Function(String wire)? relayable;
 
   /// Put [wire] on [bearer]. Returns false when that lane refused it.
@@ -253,7 +253,7 @@ class XprsBridge {
             .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)));
         if (ok) {
           toArchivers++;
-          LogService.instance.add('XPRS: $id offered to archiver $call (36.3)');
+          LogService.instance.add('XPRS: $id offered to archiver $call (12.3)');
         }
       } catch (e) {
         LogService.instance.add('XPRS: archiver $call refused $id: $e');

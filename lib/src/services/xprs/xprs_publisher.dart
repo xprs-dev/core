@@ -250,7 +250,7 @@ class _ReticulumBearer implements XprsBearer {
     // interface and none by the hub. Links are what the hubs actually
     // forward, LXMF rides links, and it adds store-and-forward for a peer
     // that is away. So a cmd:history, its t:result, and any other d: wire
-    // take the addressed lane, which is also section 36.0's path rule --
+    // take the addressed lane, which is also section 12.0's path rule --
     // the most reliable path that reaches the asker. Undirected publications
     // keep the broadcast: whoever is in announce reach hears them.
     //
@@ -333,7 +333,7 @@ class _ReticulumBearer implements XprsBearer {
         // Belt and braces, because these two lanes fail differently. The wapp
         // datagram is cheap and usually right; LXMF rides a LINK, and links
         // are what the public hubs actually forward between their own clients
-        // (36.12.1). Measured on the bench: two phones on different networks
+        // (12.12.1). Measured on the bench: two phones on different networks
         // exchanged LXMF happily while the datagram lane stayed silent, so a
         // cmd:history ask sent only on the datagram was never answered. Both
         // copies carry the same section 5 identifier and collapse on arrival.
@@ -688,10 +688,10 @@ class XprsPublisher {
   /// fell through to the advert slot `status`, so a mailbox declaration evicted
   /// the discovery beacon from the air.
   ///
-  /// [prefer] names the bearer to try first (section 36.0's path choice). When
+  /// [prefer] names the bearer to try first (section 12.0's path choice). When
   /// it carries the packet the others are not used; when it does not, every
   /// bearer is tried after all, because a preference that can become silence is
-  /// not a preference — 36.0's own words are "if the arrival bearer cannot carry
+  /// not a preference — 12.0's own words are "if the arrival bearer cannot carry
   /// the answer it does not give up".
   Future<_Air> _fanOut(
     List<String> wires, {
@@ -962,7 +962,7 @@ class XprsPublisher {
 
   /// Hand a COPY of our own publication to the archivers this operator chose
   /// (XPRS.md 12: "a station keeps its own publications and hands a COPY to
-  /// the archivers its operator chose", 34.3, 36.3/36.4).
+  /// the archivers its operator chose", 34.3, 12.3/12.4).
   ///
   /// THE CORE DOES THIS, for every publication type, and no wapp is involved
   /// or told: a wapp hands the core words, and where copies of those words are
@@ -970,7 +970,7 @@ class XprsPublisher {
   /// wapp cannot know which archivers this station named, and must not.
   ///
   /// One addressed copy per archiver, over LXMF — the lane the community hubs
-  /// actually carry between their clients (36.12.1), where a broadcast
+  /// actually carry between their clients (12.12.1), where a broadcast
   /// announce is not cross-forwarded. Only for wires meant for everybody: mail
   /// has a `d:` and its own custody path (12.7).
   void depositArchivers(List<String> wires, {required String what}) {
@@ -1154,21 +1154,21 @@ class XprsPublisher {
     final report = air.report;
     final carriedBy = air.carriedBy;
 
-    // Push to the always-on archivers this operator CHOSE (36.3, 36.4).
+    // Push to the always-on archivers this operator CHOSE (12.3, 12.4).
     //
     // A public wire goes out as a broadcast announce, and the community hubs
     // do not cross-forward those between their own clients -- so a station
     // whose neighbours are all on the far side of the internet published into
     // silence. An always-on archiver is the one place that holds everything
-    // everybody said (36.9.4), which is what makes Global chat global: every
+    // everybody said (12.9.4), which is what makes Global chat global: every
     // other station pulls it from there. Pushing is one addressed copy per
-    // configured archiver, on the lane the hubs do carry (36.12.1), and only for
+    // configured archiver, on the lane the hubs do carry (12.12.1), and only for
     // wires meant for everybody -- mail has a d: and its own custody path.
     depositArchivers(wires, what: 'status');
 
     // Our own publication enters our own spool whether or not a radio took
     // it. A cmd:history asked of the author must be able to replay the author
-    // (section 36.5), and the words exist either way: this used to be gated on
+    // (section 12.5), and the words exist either way: this used to be gated on
     // `carriedBy != null`, so a status composed with no bearer active was
     // never stored, never shown, and reported no error. The bearer records
     // what actually carried it, or `none` when nothing did — an honest row
@@ -1556,7 +1556,7 @@ class XprsPublisher {
   ///
   /// [verbatim] is for a wire this station did not write: a history replay
   /// re-airs the AUTHOR's packet, byte for byte, with the author's own
-  /// signature (25.2.1, 36.2). Two things that are right for our own words
+  /// signature (25.2.1, 12.2). Two things that are right for our own words
   /// are wrong for someone else's, and both are skipped:
   ///   - signing. The wire's identifier is derived from its bytes, so adding
   ///     a signature to a stored record renames it, and the asker's `until:`
@@ -1583,10 +1583,10 @@ class XprsPublisher {
       /// peer reachable on one lane only. Null fans out as usual. The lane
       /// choice stays in the publisher; a caller only names it.
       Set<String>? onlyBearers,
-      /// Force the section 36.0 path choice instead of deriving it from
+      /// Force the section 12.0 path choice instead of deriving it from
       /// evidence.
       ///
-      /// The caller that has better evidence than the monitor does: §36.8.1
+      /// The caller that has better evidence than the monitor does: §12.8.1
       /// releases held mail "on the bearer X was heard on, which is the
       /// freshest possible evidence of a working path". A packet that just
       /// arrived from a station beats anything a beacon can say about it.
@@ -1598,7 +1598,7 @@ class XprsPublisher {
       /// [XprsBearer.send]): a chunk of a small file is reproducible from the
       /// file, and three hundred of them are not history.
       bool datagram = false,
-      /// Skip the section 36.0 path choice and air on every bearer. For a
+      /// Skip the section 12.0 path choice and air on every bearer. For a
       /// copy sent again because the first went unanswered: the silence is
       /// evidence against the path that was chosen (XprsCommandCourier).
       bool spread = false}) async {
@@ -1704,7 +1704,7 @@ class XprsPublisher {
                 ? p.type
                 : '${p.type}:$dest');
 
-    // Section 36.0: "The one place a bearer legitimately decides anything is
+    // Section 12.0: "The one place a bearer legitimately decides anything is
     // choosing among several paths to the SAME station." When this packet names
     // a station we have recent per-peer evidence for, take the best of those
     // paths instead of every path -- and when we have no such evidence, fan out,
@@ -1840,7 +1840,7 @@ class XprsPublisher {
 
   /// Bearers this station can reach a peer over, best first.
   ///
-  /// Section 36.0 ranks by "the highest usable bandwidth among those it has
+  /// Section 12.0 ranks by "the highest usable bandwidth among those it has
   /// recent evidence are working", with the tie-break stated outright:
   /// "Reliability outranks raw speed -- a fast path that has not carried
   /// anything lately is a guess, and a slower one that answered a minute ago is
@@ -1863,13 +1863,13 @@ class XprsPublisher {
 
   /// The single bearer to use for [p], or null to fan out.
   ///
-  /// Section 36.0 pins ONE bearer only on "recent evidence [it is] working" and
+  /// Section 12.0 pins ONE bearer only on "recent evidence [it is] working" and
   /// otherwise "answers on every bearer it can". The evidence is not all the
   /// same strength, and this is the whole of the fix: a bearer whose route we
   /// have PROVEN is never suppressed by one a peer merely CLAIMS.
   String? _preferredBearer(XprsPacket p, String dest) {
     // Only a DIRECTED packet has one station to choose a path to. A broadcast
-    // has no "same station" to rank paths for, and section 36.0's rule does not
+    // has no "same station" to rank paths for, and section 12.0's rule does not
     // reach it.
     if (dest.isEmpty) return null;
     // A group is several stations behind one name, so the paths are not to the
@@ -1883,7 +1883,7 @@ class XprsPublisher {
 
     // PROVEN, local: a live GATT link or an accepted custody session reaches
     // THIS station right now -- not a claim in a beacon. It is the fastest
-    // short-range lane and it is proven, so it wins outright. Section 36.0 at
+    // short-range lane and it is proven, so it wins outright. Section 12.0 at
     // its strongest: "a slower one that answered a minute ago is knowledge".
     if (_bleSessionProven(dest)) return 'ble5';
 
@@ -1917,7 +1917,7 @@ class XprsPublisher {
     );
   }
 
-  /// The section 36.0 path decision, pure. Given the evidence for one station:
+  /// The section 12.0 path decision, pure. Given the evidence for one station:
   ///
   ///   [bleSessionProven]  a live GATT link or custody session reaches it now
   ///   [netProven]         the transport holds a live Reticulum route to it
@@ -1928,7 +1928,7 @@ class XprsPublisher {
   /// matters: a lane whose route is PROVEN is never suppressed by one that is
   /// merely CLAIMED. A proven local session wins outright (fastest and proven);
   /// otherwise a local claim standing beside a proven internet route is the
-  /// "guess vs knowledge" case (section 36.0) and we fan out so BOTH get a copy
+  /// "guess vs knowledge" case (section 12.0) and we fan out so BOTH get a copy
   /// -- deduplicated on the section 5 identifier -- rather than pinning the
   /// guess and stranding the receipt on a radio the peer cannot hear. With no
   /// internet route to confuse it, the declared link is the best a local mesh
@@ -1951,7 +1951,7 @@ class XprsPublisher {
   /// The lanes that currently have a path to [callsign] — for a caller that
   /// wants to send only where the peer can actually be reached, rather than
   /// spend every bearer (a many-packet transfer to a peer present on one lane
-  /// only). The path choice stays HERE, in the one send path (§36.0); a caller
+  /// only). The path choice stays HERE, in the one send path (§12.0); a caller
   /// names WHOM, this answers WHERE. Empty means no known path — the caller
   /// then fans out best-effort. As new bearers gain per-peer paths (a BLE
   /// session, a LAN peer, LoRa) they appear here automatically.

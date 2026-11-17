@@ -1,5 +1,5 @@
 /*
- * xprs_graph — the local topology, walked (docs/XPRS.md sections 10.6.3, 36.0).
+ * xprs_graph — the local topology, walked (docs/XPRS.md sections 10.6.3, 12.0).
  *
  * Every station already broadcasts its own one-hop neighbours: a signed
  * `t:observation` carrying `link:<bearer>` and `hears:<callsigns>`. Those are
@@ -92,7 +92,7 @@ class XprsGraph {
   }) {
     for (final e in edges) {
       final age = nowMs - e.tsMs;
-      // Stale evidence is worse than none: section 36.0 puts reliability above
+      // Stale evidence is worse than none: section 12.0 puts reliability above
       // speed precisely because "a fast path that has not carried anything
       // lately is a guess".
       if (age > maxAgeMs || age < 0) continue;
@@ -123,7 +123,7 @@ class XprsGraph {
   /// A candidate path from [from] to [to], or null when the graph does not
   /// contain one.
   ///
-  /// Ranked by section 36.0's rule rather than by hop count:
+  /// Ranked by section 12.0's rule rather than by hop count:
   ///
   ///   "the path with the highest usable bandwidth among those it has recent
   ///    evidence are working ... RELIABILITY OUTRANKS RAW SPEED -- a fast path

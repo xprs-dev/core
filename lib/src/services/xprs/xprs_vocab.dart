@@ -496,7 +496,7 @@ const Set<String> kXprsServices = {
 /// bare number that has lost what it measured.
 ///
 /// There is deliberately no storage or disk key here, because the format has
-/// none. An archiver says how much it holds with `count:` (section 36.9) and
+/// none. An archiver says how much it holds with `count:` (section 12.9) and
 /// how much mail is waiting with `mail:`, and those are the honest answers to
 /// "how full is it".
 const Set<String> kXprsReadings = {

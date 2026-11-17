@@ -1,5 +1,5 @@
 /*
- * xprs_catchup — the pocket device polls its archivers (XPRS 36.10.1).
+ * xprs_catchup — the pocket device polls its archivers (XPRS 12.10.1).
  *
  * A phone cannot tell an absence from an afternoon in a pocket, so it does
  * not try: it keeps one persisted WATERMARK — the end of the last window an
@@ -59,13 +59,13 @@ class XprsCatchup {
   int Function() nowMs = () => DateTime.now().millisecondsSinceEpoch;
   Future<Map<String, String>> Function(String wire)? sendOverride;
 
-  /// The ask window never reaches further back than this (36.10.1 rule 4).
+  /// The ask window never reaches further back than this (12.10.1 rule 4).
   static const Duration maxWindow = Duration(days: 7);
 
   /// How far back a FIRST-RUN backfill reaches, and how many messages is
   /// enough of a conversation to arrive with.
   ///
-  /// 36.10.1 rule 4 bounds a background poll to seven days and says in the
+  /// 12.10.1 rule 4 bounds a background poll to seven days and says in the
   /// same breath that "anything older is fetched deliberately, not by a
   /// background poll". This is that deliberate fetch: it runs once, on a
   /// device whose archive holds no conversation at all, so a fresh install
@@ -171,7 +171,7 @@ class XprsCatchup {
   bool get _visible => CoreHost.anyoneLooking();
 
   /// What this peer will tolerate. Only an always-on archiver's raised budgets
-  /// (36.9.4) can serve a fast caller; our own other devices are not metered
+  /// (12.9.4) can serve a fast caller; our own other devices are not metered
   /// at all by the responder, so they count as fast too.
   XprsPeerClass _classOf(String base, String selfCallsign) {
     if (_operatorTrusted(base, selfCallsign)) return XprsPeerClass.fast;
@@ -220,7 +220,7 @@ class XprsCatchup {
     var floor = XprsCadence.floorFor(peer, visible: _visible).inMilliseconds;
     // The operator's own knob still applies, in the direction that is always
     // safe: xprsCatchupMinutes may make this station poll SLOWER than the
-    // section 36.10.1 floor, never faster. Somebody minding their battery can
+    // section 12.10.1 floor, never faster. Somebody minding their battery can
     // ask for less; nobody gets to ask an ordinary archiver for more than its
     // six replays an hour.
     //
@@ -356,7 +356,7 @@ class XprsCatchup {
   static const Duration identityEvery = Duration(minutes: 30);
 
   /// Re-announce the chosen archivers (t:mailbox, 13.12) once a day. Unlike
-  /// identity this is not urgent (36.4 — publishing waits for a cheap link),
+  /// identity this is not urgent (12.4 — publishing waits for a cheap link),
   /// and mail routing changes on the scale of days, not minutes.
   static const Duration mailboxEvery = Duration(hours: 24);
   int _mailboxAtMs = 0;
@@ -369,7 +369,7 @@ class XprsCatchup {
 
   /// The longest this device will go without asking a station it can hear.
   ///
-  /// Ten minutes is section 36.10.1's own catch-up cadence and it lands exactly
+  /// Ten minutes is section 12.10.1's own catch-up cadence and it lands exactly
   /// on section 31.2's ceiling for a caller whose key the station knows -- six
   /// replays an hour. We publish `t:identity` on every bearer, so we are that
   /// caller rather than a stranger metered at two.
@@ -394,7 +394,7 @@ class XprsCatchup {
     unawaited(tick(selfCallsign));
     // Armed on any host that delivers a heartbeat: Android's native one, the
     // server's. Without this a server polled once at start, and on a fresh
-    // install that one tick only sets the watermark (36.10.1 rule 2), so it
+    // install that one tick only sets the watermark (12.10.1 rule 2), so it
     // never asked anybody for the history it was missing.
     if (_armed || !CoreHost.keepAlive.ticks) return;
     _armed = true;
@@ -580,8 +580,8 @@ class XprsCatchup {
   /// Announce this station's chosen archiver devices as a signed `t:mailbox`
   /// (13.12) — the same stations it sends copies of its publications to (36),
   /// so others and those archivers know where this station can be reached.
-  /// Aired on every bearer the station has (36.0), never internet-only. Zero
-  /// archivers is a valid configuration (36.3): then there is nothing to
+  /// Aired on every bearer the station has (12.0), never internet-only. Zero
+  /// archivers is a valid configuration (12.3): then there is nothing to
   /// announce. Fire-once at start then on the daily period; retry on the next
   /// tick if no bearer took it, exactly like [_airIdentity].
   /// Who holds mail for us, in order of preference (9.12), as the `hold:`
@@ -590,7 +590,7 @@ class XprsCatchup {
   /// because this declaration names it — then the chosen archivers. A card
   /// is NOT added to the archiver list: it cannot serve history (12.9.4),
   /// and that list is also where copies of our publications go. Empty when
-  /// there is nobody to name (36.3: a valid configuration).
+  /// there is nobody to name (12.3: a valid configuration).
   String mailboxHoldCsv() {
     final cards = XprsOwnedStations.instance.portable;
     final chosen = PreferencesService.instanceSync?.xprsArchivers ?? const [];
@@ -621,7 +621,7 @@ class XprsCatchup {
 
     final now = nowMs();
 
-    // A fresh install has no hole: start keeping from now (36.10.1 rule 2).
+    // A fresh install has no hole: start keeping from now (12.10.1 rule 2).
     if (prefs.xprsCatchupWatermark == 0) {
       prefs.xprsCatchupWatermark = now ~/ 1000;
       return;
@@ -649,14 +649,14 @@ class XprsCatchup {
             .toList(growable: false))
         : const <XprsStation>[];
 
-    // ── The always-on archivers (36.9.4) ────────────────────────────────────
+    // ── The always-on archivers (12.9.4) ────────────────────────────────────
     // A station in earshot holds what IT heard, which is the neighbourhood.
     // Global chat is not a neighbourhood: it is everything everybody said,
     // and the place that holds all of it is an always-on archiver on the internet
-    // (36.9.4's deep memory). It is asked whether or not any radio is up --
+    // (12.9.4's deep memory). It is asked whether or not any radio is up --
     // that is the whole point of it -- and it is asked the same metered
     // question, on the addressed lane, which is the one the public hubs
-    // actually carry (36.12.1).
+    // actually carry (12.12.1).
     //
     // Without this the sweep returned early on a phone with no short-range
     // bearer, and even with one it only ever asked stations it could HEAR --
@@ -678,7 +678,7 @@ class XprsCatchup {
       // anywhere.
       //
       // An announcement is one of only two things a shared transport is
-      // guaranteed to carry (36.12.1), and a directed ask is the other -- so
+      // guaranteed to carry (12.12.1), and a directed ask is the other -- so
       // between them there is always a way through. Measured on the bench:
       // tank2, installed minutes earlier on a different network, already
       // resolved X3ARK to an LXMF destination two hops away through a public
@@ -745,7 +745,7 @@ class XprsCatchup {
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
-    // ── The first-run backfill (36.10.1 rule 4's "fetched deliberately") ──
+    // ── The first-run backfill (12.10.1 rule 4's "fetched deliberately") ──
     // A device whose archive holds no conversation has nothing to show in
     // Global chat, and the seven-day poll would fill it a week at a time only
     // as new traffic arrived. Reach back a month instead, once, against one
@@ -1002,7 +1002,7 @@ class XprsCatchup {
       sinceMs = wins.removeAt(0).sinceMs;
     } else {
       // since: = THIS station's mark, or the edge of the newest window already
-      // open, floored at a week (36.10.1 rule 4). Windows are contiguous, so
+      // open, floored at a week (12.10.1 rule 4). Windows are contiguous, so
       // nothing between two of them goes unasked.
       sinceMs = _edgeMs[archiver] ?? _markFor(archiver, prefs) * 1000;
       if (sinceMs < floorMs) sinceMs = floorMs;
@@ -1034,7 +1034,7 @@ class XprsCatchup {
     // page is twelve identity announcements and the conversation is below the
     // fold — one metered replay spent on nothing.
     //
-    // NOT `only:`. That is a CALLSIGN (section 36.6), and an earlier version of
+    // NOT `only:`. That is a CALLSIGN (section 12.6), and an earlier version of
     // this line sent a type in it. Against a station that reads only: as a type
     // it happened to work; against one that reads the spec it matched a callsign
     // named MESSAGE, answered 404, and the watermark advanced as though the
@@ -1045,7 +1045,7 @@ class XprsCatchup {
     // scope:local packet by design (13.11.3), so the peer was never actually
     // asked and its Global chat never arrived. The ask is DIRECTED (d:), so
     // it costs one packet to one station whichever lane carries it, and the
-    // answer comes back on the directed lane too (36.12.1).
+    // answer comes back on the directed lane too (12.12.1).
     // An archiver asking another archiver also asks for the declarations
     // (12.9.5, `kind:mailbox`): who is cared for by whom is what lets it
     // read its own load, point a newcomer at a peer with room, and route
@@ -1394,7 +1394,7 @@ class XprsCatchup {
             : kind != null
                 ? XprsArchive.instance.newestPtsOfType(kind)
                 : XprsArchive.instance.newestPts(station, types: const ['observation']);
-    // Names reach back as far as [namesFirstWindow]: 36.10.1 rule 4's week is
+    // Names reach back as far as [namesFirstWindow]: 12.10.1 rule 4's week is
     // for conversation, and this is the deliberate fetch it leaves room for.
     final floorMs = now -
         (names ? namesFirstWindow : maxWindow).inMilliseconds;

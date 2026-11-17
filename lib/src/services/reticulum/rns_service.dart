@@ -2775,7 +2775,7 @@ class RnsService {
   /// Matching (1) alone is why two stations on different networks could see
   /// each other's announces all day and still not address each other: this
   /// returned '', every directed packet fell back to a broadcast announce, and
-  /// the public hubs throttle those (36.12.1) -- so a cmd:history ask, its
+  /// the public hubs throttle those (12.12.1) -- so a cmd:history ask, its
   /// replay, and Global chat with it, went nowhere. [lxmfPeerIdentity] above
   /// already reads all three for the REVERSE direction; this is the same
   /// lookup, the other way round.
@@ -2788,7 +2788,7 @@ class RnsService {
     // A callsign names ONE identity, and the LXMF dest is a pure function of
     // that identity's key (`_lxmfDestHexForPub`). But the observed table can
     // hold two entries wearing the same name -- an old identity (a recreated
-    // profile) or a stranger who set that display name (36.12.2) -- and the
+    // profile) or a stranger who set that display name (12.12.2) -- and the
     // old code returned whichever was inserted first, with no recency, no key
     // check and no path test. A peer that changed networks or reinstalled then
     // became unreachable: every send resolved a dead dest, held for relay,
@@ -2798,7 +2798,7 @@ class RnsService {
     //   1. a dest the station ITSELF paired to this callsign in its signed
     //      `lx:` beacon (`_lxmfCallsign`, section 10.6 -- "the one place that
     //      pairing is free and authoritative") beats a bare observed-name
-    //      match, which any announce can wear (36.12.2);
+    //      match, which any announce can wear (12.12.2);
     //   2. among equal trust, the FRESHEST sighting (lastSeenMs) -- the device
     //      currently on the air, not an old identity's ghost;
     //   3. among equally fresh, one we currently have a PATH to.
@@ -3041,7 +3041,7 @@ class RnsService {
       // away -- and a peer it never listed, because the name had arrived on
       // the other field. The spec warns about precisely this: a resolver must
       // read every name the transport offers, and the two directions grow
-      // apart when they are written separately (36.12.2).
+      // apart when they are written separately (12.12.2).
       for (final raw in [n.callsign ?? '', n.lxmfName ?? '']) {
         final call = _bareUpper(raw);
         if (call.isEmpty) continue;
@@ -3116,7 +3116,7 @@ class RnsService {
   }) {
     sweepObserved();
     final q = (search ?? '').trim().toLowerCase();
-    // What a node is FOR: 'super' (an always-on archiver, XPRS.md 36.9.4),
+    // What a node is FOR: 'super' (an always-on archiver, XPRS.md 12.9.4),
     // 'archive' (an archiver that is not a super -- the two buckets are
     // disjoint, or neither answers a question), 'normal' (neither), null for
     // any. Hubs are exempt: they are emitted before this filter runs, because
@@ -3198,7 +3198,7 @@ class RnsService {
       if (role != null) {
         // This lane has NO super concept to read. RelayCap.archive (bit 3,
         // _capNames) is a NOSTR relay capability and RelayAnnouncement.wide
-        // means something else again -- neither is section 36.9.4. So here a
+        // means something else again -- neither is section 12.9.4. So here a
         // node is a super only because the operator SAID so, and
         // `n.services.contains('super')` is deliberately absent: it can never
         // be true, and writing it would look like coverage this lane does not
@@ -3456,7 +3456,7 @@ class RnsService {
             if (s.sigHeadline != null) 'sig': s.sigHeadline!.name,
             if (s.sigForged > 0) 'sigForged': s.sigForged,
             if (s.sigVerified > 0) 'sigVerified': s.sigVerified,
-            // What it archives (§36.9) and who it says it hears (§10.6.3).
+            // What it archives (§12.9) and who it says it hears (§10.6.3).
             if (s.count != null) 'count': s.count,
             if (s.hears.isNotEmpty) 'hears': s.hears,
             if (s.peers != null) 'peers': s.peers,
@@ -5215,7 +5215,7 @@ class RnsService {
       {String via = ''}) {
     final bearer = rnsIfaceBearer(via);
     // Core tap for XPRS off the hub lane: archived under the mailbox-
-    // declaration rule (docs/XPRS.md sections 13.12 and 36.3), never shown
+    // declaration rule (docs/XPRS.md sections 13.12 and 12.3), never shown
     // as an air sighting. The wapp inbox below still gets its copy.
     if (tag == 'xprs') {
       try {

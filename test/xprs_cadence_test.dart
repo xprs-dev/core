@@ -55,7 +55,7 @@ void main() {
     expect(d, XprsCadence.ceilingQuarter);
   });
 
-  test('an ordinary archiver is never asked faster than section 36.10.1', () {
+  test('an ordinary archiver is never asked faster than section 12.10.1', () {
     var d = const Duration(minutes: 10);
     for (var i = 0; i < 10; i++) {
       d = _next(d, XprsAnswer.news, peer: XprsPeerClass.ordinary);
