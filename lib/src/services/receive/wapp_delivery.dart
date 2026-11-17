@@ -303,6 +303,10 @@ class WappDelivery {
         refusedGroupAuthor++;
         return 0;
       }
+    } else if (p.type == 'message' &&
+        (p['d'] ?? '').trim().toUpperCase().startsWith('X5')) {
+      XprsGroupRead.instance.noteSeen(p['d']!,
+          sealed: p.has('x'), tsMs: xprsParseTs(p['ts']));
     }
     // §9.1's verdict, computed here rather than left to the wapp. The archive
     // has always computed exactly this for its own rows; a wapp handed a packet

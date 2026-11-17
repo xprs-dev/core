@@ -25,6 +25,7 @@ import '../receive/core_state.dart';
 import 'xprs_id.dart';
 import 'xprs_packet.dart';
 import 'xprs_presence.dart';
+import 'xprs_group_act.dart' show xprsGroupNickShown;
 import 'xprs_profiles.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
@@ -850,6 +851,13 @@ class XprsMonitor {
   /// itself. A foreign node also names its network (`meshtastic`), which is
   /// what a screen says it came through, and the name that network gave it.
   static Map<String, String> _kind(String callsign, [XprsStation? st]) {
+    // A closed group (10.1) is named by its own signed t:identity, which
+    // reads `_` as a space -- so a search for its callsign says what it is.
+    final c = callsign.trim().toUpperCase();
+    if (c.startsWith('X5')) {
+      final n = xprsGroupNickShown(XprsProfiles.instance.nickFor(c) ?? '');
+      return {if (n.isNotEmpty) 'nick': n};
+    }
     final k = xprsKindOf(callsign);
     if (k == null) return const {};
     if (k != XprsKind.foreign) {

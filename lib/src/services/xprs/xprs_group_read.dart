@@ -176,6 +176,30 @@ class XprsGroupRead {
 
   bool isPublic(String group) => modeOf(group) == 'public';
 
+  /// What a station not running [group] learns from reading it: a member's
+  /// post in the clear says the group is public, a sealed one that it is
+  /// private. Its members are TOLD (`nsec:-` or a key); somebody outside is
+  /// not, and an invitation to a group they have been reading should not say
+  /// "join to read". The newest post decides, so an old one heard late does
+  /// not undo a switch.
+  void noteSeen(String group, {required bool sealed, int? tsMs}) {
+    final g = _g(group);
+    final db = _db;
+    if (db == null || XprsGroupKeys.instance.holdsKey(g)) return;
+    final ts = tsMs ?? DateTime.now().millisecondsSinceEpoch;
+    final want = sealed ? 'private' : 'public';
+    final rows = db.select(
+        'SELECT mode, ts FROM xprs_group_mode WHERE grp = ? LIMIT 1', [g]);
+    if (rows.isNotEmpty) {
+      if ('${rows.first['mode']}' == want) return;
+      final at = rows.first['ts'];
+      if (at is int && at >= ts) return;
+    }
+    db.execute(
+        'INSERT OR REPLACE INTO xprs_group_mode(grp, mode, ts) VALUES(?,?,?)',
+        [g, want, ts]);
+  }
+
   void _setMode(String g, String mode) {
     _db?.execute(
         'INSERT OR REPLACE INTO xprs_group_mode(grp, mode, ts) VALUES(?,?,?)',

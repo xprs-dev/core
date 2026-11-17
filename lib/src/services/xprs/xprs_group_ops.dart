@@ -80,13 +80,18 @@ class XprsGroupOps {
     // 26.3.1 requires (a grant confers nothing until the person signs for it).
     // Both go through the same grant/accept doors a person taps, and both are
     // one-time acts at creation.
+    //
+    // As a MODERATOR: holding the key is invisible to everybody else, so the
+    // record is the only thing their panel can show, and "Member" understated
+    // the one person running the group. A moderator on the record is what
+    // they can be seen to be (10.3).
     final me = XprsArchive.instance.selfCallsign.trim().toUpperCase();
     if (me.isNotEmpty) {
-      final gr = grant(g.callsign, [me], role: 'member');
+      final gr = grant(g.callsign, [me], role: 'mod');
       final wire = gr.wire;
       if (gr.ok && wire != null) {
         final gid = xprsIdentifierOf(wire);
-        if (gid != null) accept(g.callsign, me, gid, role: 'member');
+        if (gid != null) accept(g.callsign, me, gid, role: 'mod');
       }
     }
     return (callsign: g.callsign, npub: g.npub, nick: g.nick);
