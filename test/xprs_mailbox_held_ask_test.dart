@@ -56,6 +56,15 @@ void main() {
     expect(XprsMailboxCounters.asksSuperseded, 1);
   });
 
+  test('an answer is handed over once too', () async {
+    store = [
+      row('r', 't:result f:X3VGAZ d:X3APDH ts:2026-11-17_22:44:34 '
+          'r:b2e6a9 code:404'),
+    ];
+    expect(await XprsMailbox.instance.sweepHeld(), 1);
+    expect(dropped, ['r']);
+  });
+
   test('mail stays held until a receipt', () async {
     store = [
       row('m', 't:message f:X10FCG d:X3APDH ts:2026-11-17_22:26:45 m:hello'),

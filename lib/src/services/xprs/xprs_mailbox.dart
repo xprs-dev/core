@@ -370,6 +370,7 @@ class XprsMailbox {
     var done = 0;
     for (final m in rows) {
       final q = _askKey(m);
+      final once = q != null || _isAnswer(m);
       if (q != null && !asked.add(q)) {
         drop?.call(m.key);
         XprsMailboxCounters.asksSuperseded++;
@@ -406,10 +407,10 @@ class XprsMailbox {
       if (!ok) continue;
       done++;
       XprsMailboxCounters.sweepDelivered++;
-      // An ask is handed over once. Nothing will ever come back to end its
-      // custody, and an asker still waiting asks again (12.10.2), which
-      // deposits a fresh copy.
-      if (q != null) {
+      // An ask, or the answer to one, is handed over once. Nothing will ever
+      // come back to end its custody, and an asker still waiting asks again
+      // (12.10.2), which deposits a fresh copy.
+      if (once) {
         drop?.call(m.key);
         XprsMailboxCounters.asksHandedOver++;
       }
@@ -421,6 +422,9 @@ class XprsMailbox {
     }
     return done;
   }
+
+  /// A held `t:result`: the answer to an ask, which gets no receipt either.
+  static bool _isAnswer(HeldMail m) => m.wire.startsWith('t:result ');
 
   /// `asker>target|cmd|kind|only|file` for a held command, null for mail.
   static String? _askKey(HeldMail m) {
