@@ -44,6 +44,7 @@ import 'package:reticulum/reticulum.dart';
 
 import '../../storage/store_db.dart';
 import '../log_service.dart';
+import '../receive/core_state.dart';
 import 'xprs_body.dart';
 import 'xprs_group_act.dart';
 import 'xprs_group_keys.dart';
@@ -198,12 +199,15 @@ class XprsGroupRead {
     db.execute(
         'INSERT OR REPLACE INTO xprs_group_mode(grp, mode, ts) VALUES(?,?,?)',
         [g, want, ts]);
+    // What the group panels show changed: "public: anyone reads".
+    CoreState.instance.changed(CoreState.groups);
   }
 
   void _setMode(String g, String mode) {
     _db?.execute(
         'INSERT OR REPLACE INTO xprs_group_mode(grp, mode, ts) VALUES(?,?,?)',
         [g, mode, DateTime.now().millisecondsSinceEpoch]);
+    CoreState.instance.changed(CoreState.groups);
   }
 
   /// The admin turns [group] private (a reading key, handed to every member)
