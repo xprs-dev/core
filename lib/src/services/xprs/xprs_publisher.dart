@@ -1668,6 +1668,17 @@ class XprsPublisher {
         !p.has('sig')) {
       final d = xprsProfileScalar();
       if (d != null) p = xprsSign(p, d);
+    } else if (!verbatim &&
+        !datagram &&
+        !p.has('sig') &&
+        DeviceIdentity.instance.ready &&
+        DeviceIdentity.instance.isDevice(from)) {
+      // The device's X3 is the archiver (docs/architecture.md, "The device
+      // and its people"): its answers -- a `t:result` from the file server,
+      // an `s:mail` count -- are signed with the device key, in this one
+      // place, as the person's are above.
+      final d = DeviceIdentity.instance.scalar;
+      if (d != null) p = xprsSign(p, d);
     }
     final wire = p.encode();
     lastWire = wire;

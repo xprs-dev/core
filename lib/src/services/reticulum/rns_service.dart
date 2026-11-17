@@ -38,7 +38,8 @@ import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_self.dart';
-import '../xprs/xprs_sig.dart' show xprsProfilePubXonly;
+import '../xprs/xprs_sig.dart'
+    show xprsProfilePubXonly, xprsVerify, XprsSigState;
 import '../receive/packet_gateway.dart';
 import '../receive/core_state.dart';
 import '../receive/wapp_delivery.dart';
@@ -2639,12 +2640,32 @@ class RnsService {
   final Map<String, int> _lxmfCallsignAt = {};
   static const int _maxLxmfCallsigns = 256;
 
+  /// A station's second name on the same LXMF address: a phone's or a
+  /// desktop's own X3 (DeviceIdentity), which beacons the install's one `lx:`
+  /// beside the person's X1. Kept apart so the address still names the
+  /// PERSON (an inbound chat is theirs), while a sender looking for the X3
+  /// -- the archiver -- finds where to write. Callsign -> dest, bounded.
+  final Map<String, String> _lxmfAlias = {};
+
+  static bool _isStationCall(String c) =>
+      c.startsWith('X2') || c.startsWith('X3');
+
   void noteLxmfCallsign(String destHex, String callsign) {
     final d = destHex.trim().toLowerCase();
     final c = callsign.trim().toUpperCase();
     if (d.length != 32 || c.isEmpty) return;
     _lxmfCallsignAt[d] = DateTime.now().millisecondsSinceEpoch;
     if (_lxmfCallsign[d] == c) return;
+    final held = _lxmfCallsign[d] ?? '';
+    if (held.isNotEmpty && held != c) {
+      // Two names on one address: the person's and the device's. The
+      // station name is the alias, whichever was heard first.
+      if (_isStationCall(c) && !_isStationCall(held)) {
+        _noteLxmfAlias(c, d);
+        return;
+      }
+      if (!_isStationCall(c) && _isStationCall(held)) _noteLxmfAlias(held, d);
+    }
     // ONE TRUSTED DEST PER CALLSIGN. This map is the station's own `lx:`
     // statement of where to write to it, and the send resolver treats a dest
     // named here as authoritative for the callsign. A station that changed
@@ -2664,6 +2685,35 @@ class RnsService {
       _lxmfCallsignAt.remove(oldest);
     }
     _lxmfCallsign[d] = c;
+  }
+
+  void _noteLxmfAlias(String call, String dest) {
+    if (_lxmfAlias[call] == dest) return;
+    _lxmfAlias.remove(call);
+    if (_lxmfAlias.length >= _maxLxmfCallsigns) {
+      _lxmfAlias.remove(_lxmfAlias.keys.first);
+    }
+    _lxmfAlias[call] = dest;
+  }
+
+  /// A station's own signed wire that came over LXMF says where to write to
+  /// that station: the LXMF envelope authenticates the source address, the
+  /// signature the station name. This is how an internet-only asker learns
+  /// the address of a phone's X3, the archiver, which no announce names.
+  /// Only the originator's own packet (no `via:`), and the signature is
+  /// checked only when the pairing would change (docs/performance.md 8.15).
+  void _noteStationSender(String sourceHex, String wire) {
+    final src = sourceHex.trim().toLowerCase();
+    if (src.length != 32) return;
+    final p = XprsPacket.parse(wire);
+    if (p == null || p.has('via') || !p.has('sig')) return;
+    final f = _bareUpper(p['f'] ?? '');
+    if (!_isStationCall(f) || _lxmfAlias[f] == src) return;
+    // A station whose announce names it is found that way already.
+    if (_lxmfCallsign[src] == f) return;
+    final key = XprsArchive.instance.keyResolver?.call(f);
+    if (key == null || xprsVerify(p, key) != XprsSigState.verified) return;
+    _noteLxmfAlias(f, src);
   }
 
   /// The callsign known for an LXMF delivery destination, or '' if none.
@@ -2825,6 +2875,11 @@ class RnsService {
       }
     }
     if (best != null) return best;
+
+    // A station's second name on an address it shares with its person (a
+    // phone's X3, the archiver): no announce names it, its signed `lx:` does.
+    final alias = _lxmfAlias[want];
+    if (alias != null) return alias;
 
     // Off the air right now, or announced with no app-data we could parse.
     // The on-disk directory is the last resort and is NOT authoritative over a
@@ -4096,6 +4151,7 @@ class RnsService {
                 PacketGateway.instance.receiveInternet(
                     _hex(m.sourceHash),
                     Uint8List.fromList(utf8.encode(xprsWire)));
+                _noteStationSender(_hex(m.sourceHash), xprsWire);
               } catch (_) {}
               // A wire the funnel cannot parse is still not correspondence, so
               // it stops here either way. Count it and say so ONCE per run of
@@ -5747,8 +5803,16 @@ class RnsService {
     final tag = f[0];
     final payload = f[1];
     if (tag is! String || payload is! List) return false;
-    _deliverWappDatagram(
-        tag, _hex(m.sourceHash), Uint8List.fromList(List<int>.from(payload)));
+    final bytes = Uint8List.fromList(List<int>.from(payload));
+    _deliverWappDatagram(tag, _hex(m.sourceHash), bytes);
+    // The source here is an LXMF address (the envelope is signed by it), so
+    // a station's own wire says where to write to that station.
+    if (tag == 'xprs') {
+      try {
+        _noteStationSender(
+            _hex(m.sourceHash), utf8.decode(bytes, allowMalformed: true));
+      } catch (_) {}
+    }
     return true;
   }
 

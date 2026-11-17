@@ -48,6 +48,7 @@ import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
 import 'package:xprs_core/src/platform/core_host.dart';
 import '../../profile/device_identity.dart';
+import 'xprs_self.dart';
 import 'xprs_station_policy.dart';
 
 class XprsHistoryServer {
@@ -88,6 +89,10 @@ class XprsHistoryServer {
   Future<bool> Function(String key, Uint8List bytes, Duration ttl)? txOverride;
   BigInt? Function() signingKey = xprsProfileScalar;
 
+  /// What this station serves (`xprsServeClaim`), for the device's
+  /// `q:policy` answer. Set by the core (mesh_service); null claims nothing.
+  String? Function()? serveClaim;
+
   int answered = 0, refused429 = 0;
 
   /// The same answers split by what they were, so a caller refused and
@@ -98,6 +103,9 @@ class XprsHistoryServer {
       refusedBudget = 0;
 
   Map<String, dynamic> statusJson() => {
+        // Who answers as the archiver: the device's X3 where the install has
+        // one; asks to the person's X1 are still served for old choosers.
+        'archiver': XprsArchive.instance.archiverName,
         'answered': answered,
         'pages200': pages200,
         'pages206': pages206,
@@ -241,7 +249,14 @@ class XprsHistoryServer {
       _answeredIds.removeWhere((_, t) => now - t > answeredWindow.inMilliseconds);
       if (_answeredIds.containsKey(id)) return;
       _answeredIds[id] = now;
-      final directed = _base(p['d'] ?? '') == selfBase;
+      // To the person or to the device's X3, the archiver: both are us, and
+      // the answer goes out under the name that was asked.
+      final asked = _base(p['d'] ?? '');
+      final toDevice = asked != selfBase &&
+          DeviceIdentity.instance.ready &&
+          DeviceIdentity.instance.isDevice(asked);
+      final directed = asked == selfBase || toDevice;
+      if (toDevice) selfBase = DeviceIdentity.instance.callsign;
       // A directed ask is metered like any other command; a broadcast answer
       // only goes out when we actually hold it, so it needs no budget of its own.
       if (directed && from != selfBase && !_budgetAllows(from, now)) return;
@@ -249,15 +264,24 @@ class XprsHistoryServer {
           .onHave(p, selfBase: selfBase, from: from, directed: directed);
       return;
     }
-    // Addressed to this device's own X3 (DeviceIdentity): it answers what a
-    // station is asked about itself -- who owns it (11.9 `q:policy`) and its
-    // key binding (`q:identity`). Everything else is the person's.
+    // Addressed to this device's own X3 (DeviceIdentity). The X3 IS the
+    // archiver (docs/architecture.md, "The device and its people"): an ask
+    // for the archive -- `cmd:history`, `cmd:file`, `cmd:put`, `q:mail` --
+    // is served below exactly as one to the person was, answered as the X3
+    // and signed with its key. What a station is asked about itself -- who
+    // owns it (11.9 `q:policy`) and its key binding (`q:identity`) -- is
+    // [_onDeviceAsk]'s. An ask still naming the person's X1 is served as
+    // before, for the stations that chose it before the move.
     final dev = DeviceIdentity.instance;
+    final person = selfBase;
     if (dev.ready &&
         dev.callsign != selfBase &&
         dev.isDevice(p['d'] ?? '')) {
-      _onDeviceAsk(p);
-      return;
+      if (!_isArchiveAsk(p)) {
+        _onDeviceAsk(p);
+        return;
+      }
+      selfBase = dev.callsign;
     }
     if (_base(p['d'] ?? '') != selfBase) return;
     // `q:identity` (section 18.1) asks for the key binding directly instead of
@@ -341,7 +365,7 @@ class XprsHistoryServer {
     // Flush so a window ending "now" sees what was heard seconds ago.
     if (cmd == 'history') archive.flush(nowMs: now);
 
-    final selfIsAsking = from == selfBase;
+    final selfIsAsking = _isOwn(from, selfBase);
     // A file this station holds FOR everyone -- a firmware image its mirror
     // keeps (docs/plan-firmware-folders.md) -- is served to a stranger past
     // the 31.2 budget: the answer is one 202 and the bytes go over a link,
@@ -420,7 +444,7 @@ class XprsHistoryServer {
         only: p['only'],
         types: _kinds(p) ?? XprsArchive.kXprsTalk.toList(),
         ownOnly: !servingRoom &&
-            !_fellowMember(p['only'], from, selfBase) &&
+            !_fellowMember(p['only'], from, person) &&
             _ownOnlyFor(from, selfBase: selfBase),
         // XPRS.md 12.1: mail is held for its addressee and never offered to
         // a third party. Without this a public archiver's page was twelve of
@@ -602,7 +626,7 @@ class XprsHistoryServer {
   /// being "private, not findable", rather than mute. Ourselves and our own
   /// devices always see everything.
   static bool _ownOnlyFor(String from, {required String selfBase}) {
-    if (_base(from) == _base(selfBase)) return false;
+    if (_isOwn(from, selfBase)) return false;
     // A named mesh of record (xprs_mesh_policy.dart): a station not on the
     // list is a stranger, served this station's own publications only.
     if (trusted != null && !trusted!(_base(from))) return true;
@@ -665,9 +689,38 @@ class XprsHistoryServer {
     var p = XprsPacket.parse('t:result f:$self d:$to ts:$ts r:$cmdId '
         'code:$code${m == null ? '' : ' m:$m'}');
     if (p == null) return null;
-    final d = signingKey();
+    final d = _keyFor(self);
     if (d != null) p = xprsSign(p, d);
     return p;
+  }
+
+  /// The key a packet `f:` [self] is signed with: the device's own for its
+  /// X3, the person's ([signingKey]) for everything else.
+  BigInt? _keyFor(String self) {
+    final dev = DeviceIdentity.instance;
+    if (dev.ready && dev.isDevice(self)) return dev.scalar;
+    return signingKey();
+  }
+
+  /// One station, two names: the person's callsigns and the device's X3
+  /// are this station asking itself, served everything and never metered.
+  static bool _isOwn(String from, String selfBase) {
+    final b = _base(from);
+    if (b.isEmpty) return false;
+    if (b == _base(selfBase)) return true;
+    if (DeviceIdentity.instance.isDevice(b)) return true;
+    return XprsSelf.instance.isMine(b);
+  }
+
+  /// An ask for what the archiver keeps, as opposed to one about the
+  /// station itself (owner, key binding).
+  static bool _isArchiveAsk(XprsPacket p) {
+    if (p.type == 'command') {
+      final c = p['cmd'] ?? '';
+      return c == 'history' || c == 'file' || c == 'put';
+    }
+    return p.type == 'request' &&
+        (p['q'] ?? '').split(',').map((w) => w.trim()).contains('mail');
   }
 
   /// Serve a `cmd:history` INLINE — the TCP lane of section 24.4, where the
@@ -680,7 +733,15 @@ class XprsHistoryServer {
 
   List<String> serveInline(XprsPacket cmd, {required String selfBase}) {
     if (cmd.type != 'command' || (cmd['cmd'] ?? '') != 'history') return [];
-    if (_base(cmd['d'] ?? '') != selfBase) return [];
+    // The device's X3 is the archiver; the person's X1 is still served for
+    // the stations that chose it before the move (see [_onPacket]).
+    final person = selfBase;
+    final asked = _base(cmd['d'] ?? '');
+    if (asked != selfBase) {
+      final dev = DeviceIdentity.instance;
+      if (!dev.ready || !dev.isDevice(asked)) return [];
+      selfBase = dev.callsign;
+    }
     final archive = XprsArchive.instance;
     if (!archive.ready) return [];
     final from = _base(cmd['f'] ?? '');
@@ -708,7 +769,7 @@ class XprsHistoryServer {
         types: _kinds(cmd) ?? XprsArchive.kXprsTalk.toList(),
         limit: inlinePageSize + 1,
         ownOnly: !servingRoom &&
-            !_fellowMember(cmd['only'], from, selfBase) &&
+            !_fellowMember(cmd['only'], from, person) &&
             _ownOnlyFor(from, selfBase: selfBase),
         mailFor: from); // 12.1, as on every other lane
     if (hostedRoom != null) {
@@ -837,9 +898,9 @@ class XprsHistoryServer {
     if (_answeredIds.containsKey(id)) return;
     _answeredIds[id] = now;
     if (!_budgetAllows(from, now)) return;
-    // A command to the device (`cmd:history`, `cmd:file`, ...): the device
-    // keeps no archive of its own, the profile does, so it says so at once
-    // rather than leave the asker waiting out its timeout.
+    // Any other command to the device (the archive's are served by
+    // [_onPacket]): nothing here answers it, so say so at once rather than
+    // leave the asker waiting out its timeout.
     if (p.type == 'command') {
       final cmdId = xprsIdentifier(p);
       final key = dev.scalar;
@@ -856,10 +917,18 @@ class XprsHistoryServer {
       unawaited(XprsPublisher.instance.publishDeviceIdentity());
     }
     if (q.contains('policy')) {
-      // Owners only: the archive still answers as the person, so the
-      // device claims no `serve:` of its own (see the device observation).
-      final wire = xprsPolicyReportWire(dev.callsign, from,
-          XprsStationPolicy(owners: dev.owners(), serve: const []));
+      // The device is the archiver, so its policy says what it serves, the
+      // same claim its observation carries (11.9: `serve:` is the station's
+      // announcement made settable).
+      final claim = serveClaim?.call();
+      final wire = xprsPolicyReportWire(
+          dev.callsign,
+          from,
+          XprsStationPolicy(
+              owners: dev.owners(),
+              serve: claim == null
+                  ? const []
+                  : claim.split(',').map((w) => w.trim()).toList()));
       final parsed = wire == null ? null : XprsPacket.parse(wire);
       final key = dev.scalar;
       if (parsed == null || key == null) return;
@@ -892,7 +961,7 @@ class XprsHistoryServer {
   XprsPacket? _signed(String wire) {
     var p = XprsPacket.parse(wire);
     if (p == null || !p.fits) return null;
-    final d = signingKey();
+    final d = _keyFor(p['f'] ?? '');
     if (d == null) return null;
     return xprsSign(p, d);
   }

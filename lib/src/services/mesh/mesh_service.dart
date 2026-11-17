@@ -454,7 +454,9 @@ class MeshService {
         unawaited(_restoreFromDisk());
         // The admission snapshot the receive funnel reads (12's three tiers).
         XprsIngest.reloadPolicy();
-        XprsHistoryServer.instance.install();
+        XprsHistoryServer.instance
+          ..serveClaim = _serveClaim
+          ..install();
         XprsGossip.instance
             .init(wappsDataStorage(prefs).getAbsolutePath('xprs_gossip.zx'));
         if (prefs.xprsAlwaysOn) {
@@ -807,7 +809,14 @@ class MeshService {
                           wire: utf8.decode(row.wire, allowMalformed: true)),
               ])
           ..noteAttempt = ((key) => MeshStore.instance.noteReleased(key))
-          ..drop = ((key) => MeshStore.instance.purgeAm(key))
+          // Dropped for good: purged, and remembered like a receipt so a
+          // copy another holder hands back is not parked all over again
+          // (measured: a result bouncing between three archivers was
+          // re-aired every 20 s after this holder had already let it go).
+          ..drop = ((key) {
+            MeshStore.instance.purgeAm(key);
+            MeshStore.instance.recordReceivedAm(key);
+          })
           ..publish = ((wire) async {
             await XprsPublisher.instance.publishWire(wire, slot: 'mailbox');
           })
@@ -1418,11 +1427,9 @@ class MeshService {
     // a private phone announces nothing — and `files` only when it actually
     // hosts any. The claim is "ask me", never a depth (30.3). Before the
     // neighbour fit, so its bytes count against the advert budget.
-    final claim = xprsServeClaim(
-      public: PreferencesService.instanceSync?.xprsPublicArchiver ?? false,
-      spoolReady: XprsArchive.instance.ready,
-      files: (PreferencesService.instanceSync?.archiveQuotaGb ?? 0) > 0,
-    );
+    // On a phone or a desktop the archiver is the device's X3, so the claim
+    // rides its observation (every fourth airing below), not the person's.
+    final claim = _deviceIsSeparate ? null : _serveClaim();
     if (claim != null) {
       envelope = envelope.with_('serve', claim);
     }
@@ -1589,31 +1596,25 @@ class MeshService {
   XprsPacket? _observation(
       String self, String link, List<String> heard, int budget,
       {bool stamped = false}) {
-    final held = MeshStore.instance.ready ? MeshStore.instance.pendingCount() : 0;
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
-    final prefs = PreferencesService.instanceSync;
-    final public = prefs?.xprsPublicArchiver ?? false;
     final at = XprsSharedPosition.instance.current();
+    // The archiver's fields -- `serve:`, `dial:`, `room:` and the `mail:` it
+    // holds for others -- belong to the device's X3 when there is one
+    // ([_deviceObservation]); the person's beacon keeps them only on a
+    // station whose profile IS the device.
+    final arch = _deviceIsSeparate ? null : _archiverFields();
     return xprsComposeObservation(
       self: self,
       link: link,
       heard: heard,
       budget: budget,
-      mail: held,
+      mail: arch?.mail ?? 0,
       lx: ourLxmfDest?.call(),
       uptimeS: upSec,
       lifetimeS: _lifeBaseSec >= 0 ? _lifeBaseSec + upSec : null,
-      serve: xprsServeClaim(
-        public: public,
-        spoolReady: XprsArchive.instance.ready,
-        files: (prefs?.archiveQuotaGb ?? 0) > 0,
-      ),
-      // 13.0.2: an archiver says where it answers a connection, and whether
-      // it has room. A station that is not one says neither.
-      dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
-      // 12.9.5: the load is the declarations naming us; past the operator's
-      // ceiling, or on their word, newcomers are told to go elsewhere.
-      room: public && !_hasRoom() ? 'no' : null,
+      serve: arch?.serve,
+      dial: arch?.dial,
+      room: arch?.room,
       // The place is the device's (it is where the station stands), so it
       // goes on the device's own observation when there is one.
       pos: _deviceIsSeparate ? null : at?.pos,
@@ -1625,29 +1626,59 @@ class MeshService {
 
   /// The device's X3 observation about one radio: who it hears, what it
   /// serves, where it stands, how long it has run. Signed with the device
-  /// key. No `lx:` and no `mail:`: those say where to write to a person and
-  /// what is held for people, and they stay on the person's beacon. Null
-  /// when the device is the profile itself.
+  /// key. The X3 is the archiver, so it carries the archiver's fields
+  /// (`serve:`, `dial:`, `room:`, `mail:`) and the `lx:` that reaches it --
+  /// the install's one LXMF address, shared with the person. Null when the
+  /// device is the profile itself.
   XprsPacket? _deviceObservation(String link, List<String> heard, int budget,
       {bool stamped = false}) {
     if (!_deviceIsSeparate) return null;
     final dev = DeviceIdentity.instance;
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
     final at = XprsSharedPosition.instance.current();
+    final arch = _archiverFields();
     return xprsComposeObservation(
       self: dev.callsign,
       link: link,
       heard: heard.where((c) => !dev.isDevice(c)).toList(),
       budget: budget,
+      mail: arch.mail,
+      lx: ourLxmfDest?.call(),
       uptimeS: upSec,
       lifetimeS: _lifeBaseSec >= 0 ? _lifeBaseSec + upSec : null,
-      // No `serve:`/`dial:`/`room:` yet: the archive still answers as the
-      // person (architecture.md, "The device and its people"). Claiming it
-      // here made other stations poll the X3 for history it only refuses.
+      serve: arch.serve,
+      dial: arch.dial,
+      room: arch.room,
       pos: at?.pos,
       accM: at?.acc,
       signingKey: dev.scalar,
       ts: stamped ? xprsNowTs() : null,
+    );
+  }
+
+  /// `serve:` (section 13): what this station offers. `archive` only when
+  /// the operator made it a public archiver -- silence is not consent (12)
+  /// -- and `files` only when it hosts any.
+  String? _serveClaim() {
+    final prefs = PreferencesService.instanceSync;
+    return xprsServeClaim(
+      public: prefs?.xprsPublicArchiver ?? false,
+      spoolReady: XprsArchive.instance.ready,
+      files: (prefs?.archiveQuotaGb ?? 0) > 0,
+    );
+  }
+
+  /// The archiver's own fields, one place for both observations: what it
+  /// serves, where it answers a connection and whether it has room
+  /// (13.0.2, 12.9.5), and how much it holds for others (`mail:`).
+  ({String? serve, String? dial, String? room, int mail}) _archiverFields() {
+    final prefs = PreferencesService.instanceSync;
+    final public = prefs?.xprsPublicArchiver ?? false;
+    return (
+      serve: _serveClaim(),
+      dial: public && (prefs?.xprsDial ?? '').isNotEmpty ? prefs!.xprsDial : null,
+      room: public && !_hasRoom() ? 'no' : null,
+      mail: MeshStore.instance.ready ? MeshStore.instance.pendingCount() : 0,
     );
   }
 
@@ -1698,7 +1729,9 @@ class MeshService {
     final a = XprsArchive.instance;
     if (!a.servesVisitor(c) && !_hasRoom()) return null;
     a.noteServed(c);
-    return self;
+    // The visitor's page signs `hold:` with this name: the archiver's, which
+    // on a phone or a desktop is the device's X3.
+    return a.archiverName;
   }
 
   /// How many packets this station holds for [call] and would hand over
@@ -1717,8 +1750,14 @@ class MeshService {
           (() => PreferencesService.instanceSync?.xprsPublicArchiver ?? false)
       ..entries = (() => XprsArchive.instance.directoryEntries())
       ..count = (() => XprsArchive.instance.countOf())
-      ..selfCallsign = (() => NostrCrypto.bareCallsign(tableCallsign))
-      ..signingKey = xprsProfileScalar
+      // The directory is the archiver's, so it is announced as the device's
+      // X3 and signed with its key where the install has one.
+      ..selfCallsign = (() => _deviceIsSeparate
+          ? DeviceIdentity.instance.callsign
+          : NostrCrypto.bareCallsign(tableCallsign))
+      ..signingKey = (() => _deviceIsSeparate
+          ? DeviceIdentity.instance.scalar
+          : xprsProfileScalar())
       ..serve = (() =>
           xprsServeClaim(
               public: true,

@@ -59,7 +59,10 @@ void main() {
         XprsSigState.verified);
   });
 
-  test('a history ask to the device gets a signed 404 from the device', () async {
+  // A history ask to the X3 is served as the X3 now (the X3 is the
+  // archiver; app/test/xprs_device_archiver_test.dart). Any other command is
+  // still answered at once with the device's own signed 404.
+  test('a command the device does not serve gets a signed 404 from the device', () async {
     final dev = DeviceIdentity.instance;
     final srv = XprsHistoryServer.instance..install();
     final aired = <String>[];
@@ -69,7 +72,7 @@ void main() {
     };
     addTearDown(() => srv.txOverride = null);
     final ask = XprsPacket.parse('t:command f:X3ASKR d:${dev.callsign} '
-        'ts:2026-11-14_14:26:08 cmd:history kind:message')!;
+        'ts:2026-11-14_14:26:08 cmd:zdiag')!;
     XprsIngest.onCommand!(ask, selfBase: 'X1OWNR', bearer: 'lan');
     await Future<void>.delayed(Duration.zero);
     expect(aired, hasLength(1));

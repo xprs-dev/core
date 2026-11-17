@@ -37,6 +37,7 @@ import 'xprs_packet.dart';
 import 'xprs_presence.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
+import '../../profile/device_identity.dart';
 import '../../platform/fs.dart';
 
 /// Packet types that are never spooled.
@@ -870,6 +871,14 @@ class XprsArchive {
   String selfCallsign = '';
   String get _selfBase => _base(selfCallsign);
 
+  /// The name this station keeps mail and archives under: the device's X3
+  /// when the install has one beside the person (DeviceIdentity), the
+  /// profile otherwise (a headless server's profile IS its station).
+  String get archiverName {
+    final dev = DeviceIdentity.instance;
+    return dev.ready ? dev.callsign : _selfBase;
+  }
+
   /// Names this station still ANSWERS to, bare and uppercase.
   ///
   /// An operator who sets their licensed callsign starts airing `CT1ABC`, but
@@ -1172,7 +1181,13 @@ class XprsArchive {
         .map(_base)
         .where((c) => c.isNotEmpty)
         .toList();
-    final pos = hold.indexOf(_selfBase);
+    // Us under any name: the person, or the device's X3 -- the archiver a
+    // station that chose this one names (DeviceIdentity).
+    var pos = -1;
+    for (var i = 0; i < hold.length && pos < 0; i++) {
+      final h = hold[i].toUpperCase();
+      if (h == _selfBase.toUpperCase() || selfAlsoKnownAs.contains(h)) pos = i;
+    }
     // A declaration NOT naming us is still recorded (pos -1): section 12.8.1
     // routes held mail by "who holds for X", and an archiver that only
     // remembered its own appointments could never answer it. The return
@@ -1214,9 +1229,8 @@ class XprsArchive {
         'ORDER BY (until IS NULL) ASC, ts DESC LIMIT 1',
         [base, now, now]);
     if (rows.isEmpty) {
-      return _served.contains(base) && _selfBase.isNotEmpty
-          ? [_selfBase]
-          : const [];
+      final me = archiverName;
+      return _served.contains(base) && me.isNotEmpty ? [me] : const [];
     }
     final p = XprsPacket.parse(rows.first['wire'] as String);
     if (p == null) return const [];

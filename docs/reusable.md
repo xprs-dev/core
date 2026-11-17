@@ -602,3 +602,20 @@ marks), a year back the first time, every 30 min, or now on `askNames()`
 (XprsNames bounds that to once a minute). `CoreState.names` fires when an
 identity is stored. Anything that lists people, stations or groups reads
 this, never only the heard table.
+
+### The archiver's name: `XprsArchive.archiverName` and `DeviceIdentity`
+
+- `XprsArchive.instance.archiverName` is the callsign the archive answers,
+  announces and holds mail under: the device's X3 where the install has one,
+  the profile otherwise. Use it for anything the archiver says about itself
+  (`hold:` offers, holders, status) rather than `tableCallsign`.
+- `XprsHistoryServer._keyFor(self)` picks the signing key by the `f:` being
+  written: the device scalar for the X3, `signingKey` (the person) otherwise.
+  The publisher does the same for any non-verbatim wire `f:<X3>`, so a
+  caller writing as the X3 needs no key of its own.
+- `MeshService._archiverFields()` is the one source of `serve:`/`dial:`/
+  `room:`/`mail:` for both observations; only one of the two carries them.
+- `RnsService._lxmfAlias` holds a station's second name on an LXMF address
+  shared with its person; `lxmfDestForCallsign` consults it after the
+  observed table. `_noteStationSender` fills it from a station's own signed
+  wire that arrived over LXMF (signature checked only on a change).

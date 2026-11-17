@@ -23,6 +23,7 @@ import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/mesh_store.dart';
+import '../../profile/device_identity.dart';
 import 'xprs_archive.dart';
 import 'xprs_history_server.dart';
 import 'xprs_id.dart';
@@ -187,16 +188,26 @@ class XprsTcp {
       // A reachability test is answered on the socket that asked (section 7's
       // vocabulary; no rssi: — a TCP byte has no signal strength to report).
       final to = NostrCrypto.bareCallsign(p['d'] ?? '');
-      if (p.type == 'ping' && (to.isEmpty || to == selfBase)) {
+      // The device's X3 is the archiver (DeviceIdentity): what is asked of
+      // it is answered under its name and signed with its key; what is
+      // asked of the person, or of nobody in particular, as before.
+      final dev = DeviceIdentity.instance;
+      final toDevice = to.isNotEmpty &&
+          to != selfBase &&
+          dev.ready &&
+          dev.isDevice(to);
+      final me = toDevice ? dev.callsign : selfBase;
+      BigInt? key() => toDevice ? dev.scalar : xprsProfileScalar();
+      if (p.type == 'ping' && (to.isEmpty || to == selfBase || toDevice)) {
         final from = (p['f'] ?? '').trim().toUpperCase();
         final now = DateTime.now().toUtc();
         String two(int n) => n.toString().padLeft(2, '0');
-        var pong = XprsPacket.parse('t:pong f:$selfBase d:$from '
+        var pong = XprsPacket.parse('t:pong f:$me d:$from '
             'ts:${now.year}-${two(now.month)}-${two(now.day)}_'
             '${two(now.hour)}:${two(now.minute)}:${two(now.second)} '
             'r:${xprsIdentifier(p)}');
         if (pong != null) {
-          final d = xprsProfileScalar();
+          final d = key();
           if (d != null) pong = xprsSign(pong, d);
           reply(pong.encode());
         }
@@ -207,17 +218,17 @@ class XprsTcp {
       // the socket, zero included — "nothing for you" and "did not hear
       // you" are different facts.
       if (p.type == 'request' &&
-          (to.isEmpty || to == selfBase) &&
+          (to.isEmpty || to == selfBase || toDevice) &&
           (p['q'] ?? '').split(',').map((w) => w.trim()).contains('mail')) {
         final only = NostrCrypto.bareCallsign(p['only'] ?? from);
         if (only.isEmpty) return;
         final n = MeshStore.instance.ready
             ? MeshStore.instance.heldWiresFor(only).length
             : 0;
-        var obs = XprsPacket.parse('t:observation f:$selfBase d:$from '
+        var obs = XprsPacket.parse('t:observation f:$me d:$from '
             'ts:${xprsNowTs()} s:mail mail:$n only:$only');
         if (obs != null) {
-          final d = xprsProfileScalar();
+          final d = key();
           if (d != null) obs = xprsSign(obs, d);
           reply(obs.encode());
         }
@@ -228,12 +239,9 @@ class XprsTcp {
       // Served here, inline, and marked answered so the paced replay the
       // funnel would also start (the same ask reaches the history server
       // through the internet lane) does not send the page a second time.
-      // Only what this socket will answer: an ask addressed to the device's
-      // X3 is not served inline, and marking it answered here silenced the
-      // 404 the history server gives for it (DeviceIdentity).
-      if ((p['cmd'] ?? '') == 'history' &&
-          NostrCrypto.bareCallsign(p['d'] ?? '').toUpperCase() ==
-              selfBase.toUpperCase()) {
+      // Only what this socket will answer: an ask to the person or to the
+      // device's X3, the archiver; serveInline answers both.
+      if ((p['cmd'] ?? '') == 'history' && (to == selfBase || toDevice)) {
         XprsHistoryServer.instance.markAnswered(xprsIdentifier(p));
       }
       final page =
