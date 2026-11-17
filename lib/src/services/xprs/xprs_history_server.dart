@@ -384,16 +384,7 @@ class XprsHistoryServer {
     // A hosted room's rows go to whom it is shared with and to nobody else
     // (10.10.1), whatever else the ask matched.
     if (hostedRoom != null) {
-      rows.removeWhere((r) {
-        final toc = _base(r['to'] as String? ?? '');
-        if (toc.startsWith('X5') && hostedRoom!(toc, from) == false) return true;
-        // A room's identity in an untargeted answer (a neighbour's ask) is
-        // an invitation to mirror it: only a room this station hosts and
-        // shares with the asker goes out that way.
-        final fromc = _base(r['from'] as String? ?? '');
-        return onlyBase.isEmpty && fromc.startsWith('X5') &&
-            (r['type'] == 'identity') && hostedRoom!(fromc, from) != true;
-      });
+      rows.removeWhere((r) => _withheldRoomRow(r, onlyBase, from));
     }
     answered++;
 
@@ -628,16 +619,7 @@ class XprsHistoryServer {
             _ownOnlyFor(from, selfBase: selfBase),
         mailFor: from); // 12.1, as on every other lane
     if (hostedRoom != null) {
-      rows.removeWhere((r) {
-        final toc = _base(r['to'] as String? ?? '');
-        if (toc.startsWith('X5') && hostedRoom!(toc, from) == false) return true;
-        // A room's identity in an untargeted answer (a neighbour's ask) is
-        // an invitation to mirror it: only a room this station hosts and
-        // shares with the asker goes out that way.
-        final fromc = _base(r['from'] as String? ?? '');
-        return onlyBase.isEmpty && fromc.startsWith('X5') &&
-            (r['type'] == 'identity') && hostedRoom!(fromc, from) != true;
-      });
+      rows.removeWhere((r) => _withheldRoomRow(r, onlyBase, from));
     }
     answered++;
     if (rows.isEmpty) {
@@ -792,6 +774,26 @@ class XprsHistoryServer {
       unawaited(_air('xprs-policy:$from', ans.encode(),
           const Duration(seconds: 30), to: from));
     }
+  }
+
+  /// A row a hosted room keeps from [asker] (10.10.1): its traffic, unless
+  /// shared with them; and, in an untargeted answer (no `only:`), its
+  /// identity, which is an invitation to mirror it. Any other group's identity
+  /// (hostedRoom null: not a room here) is served like any group's traffic --
+  /// it is how a station that never heard a group finds it by name (10.9,
+  /// 12.9.4). Both answer paths, on the air and inline on a socket, ask this;
+  /// each used to carry its own copy, and both copies stripped every group's
+  /// name from every bulk answer of a station with a web API.
+  bool _withheldRoomRow(Map<String, dynamic> r, String onlyBase, String asker) {
+    final room = hostedRoom;
+    if (room == null) return false;
+    final toc = _base(r['to'] as String? ?? '');
+    if (toc.startsWith('X5') && room(toc, asker) == false) return true;
+    final fromc = _base(r['from'] as String? ?? '');
+    return onlyBase.isEmpty &&
+        fromc.startsWith('X5') &&
+        r['type'] == 'identity' &&
+        room(fromc, asker) == false;
   }
 
   XprsPacket? _signed(String wire) {

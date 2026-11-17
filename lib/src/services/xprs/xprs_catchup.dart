@@ -293,6 +293,15 @@ class XprsCatchup {
     if (_selfCallsign.isNotEmpty) unawaited(tick(_selfCallsign));
   }
 
+  /// Somebody is searching: ask the archivers for the names they hold now
+  /// rather than at the next period (12.10.2: a fast tier exists to put words
+  /// on a screen somebody is looking at). A refusal still stands.
+  void askNames() {
+    _urgent.add(namesTarget);
+    _followAskedAtMs.removeWhere((k, _) => k.startsWith('$namesTarget@'));
+    if (_selfCallsign.isNotEmpty) unawaited(tick(_selfCallsign));
+  }
+
   void pokeFor(String archiver) {
     final base = _base(archiver);
     if (base.isEmpty) return;
@@ -510,6 +519,7 @@ class XprsCatchup {
     _followOldest.clear();
     _followLastResume.clear();
     _groupMark.clear();
+    _namesAnswered.clear();
     _urgent.clear();
     followAsks = followRows = followRefused = 0;
   }
@@ -715,6 +725,23 @@ class XprsCatchup {
         now,
         prefs,
         groups: true);
+    // Who exists, by name: the identities the archivers hold (12.9.4, "bulk
+    // gossip is the history replay"). The archivers this station leans on
+    // are where people and groups it never heard announced themselves, and
+    // where the federation's identities meet (12.9.1); a station in earshot
+    // holds only the neighbourhood the air already brought.
+    // One ask is out at a time, so the order is who gets asked first: the
+    // ones the operator named, then those that look always-on (deep, awake:
+    // 12.9.4), then the rest -- a board that announced on Reticulum holds
+    // little and may not answer, and must not keep Search waiting.
+    final alwaysOn = [
+      for (final c in knownAlwaysOn)
+        if (_classOf(c, selfCallsign) == XprsPeerClass.fast) c
+    ];
+    await _pullFollowed(
+        selfCallsign, {...named, ...alwaysOn, ...knownAlwaysOn}.toList(), now,
+        prefs,
+        names: true);
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
@@ -1164,6 +1191,18 @@ class XprsCatchup {
       return;
     }
     final station = f.followStation;
+    // What counts as the page is what the archiver replayed: an original
+    // (no via:) inside the window asked for. Anything else heard meanwhile
+    // -- a neighbour's relayed identity, a clockless board's announcement
+    // stamped years ago -- is not part of it, and taking its time for "the
+    // oldest row" sent the continuation asking for an empty window: the
+    // names pull stopped after one page and the groups below it never came.
+    if (station != null &&
+        (p.has('via') ||
+            ts < (f.followSinceMs ?? 0) - 1000 ||
+            ts >= (f.followUntilMs ?? now + 1000))) {
+      return;
+    }
     if (station != null &&
         (_isKind(station)
             ? p.type == station.substring(_kindTarget.length)
@@ -1210,8 +1249,14 @@ class XprsCatchup {
   /// Counters on /api/status: asks sent, rows they brought, refusals.
   int followAsks = 0, followRows = 0, followRefused = 0;
 
+  /// Is an ask for [key] still out? One past the in-flight grace is not: it
+  /// was lost on the way, and treating it as outstanding held that target
+  /// back until the pending table happened to overflow -- hours, for a
+  /// station that asks little. Its late answer is still taken if it comes.
   bool _followAsking(String key) {
+    final now = nowMs();
     for (final a in _followPending.values) {
+      if (now - a.atMs > _inFlightGrace.inMilliseconds) continue;
       if (_fk(a.station, a.archiver) == key) return true;
     }
     return false;
@@ -1223,7 +1268,35 @@ class XprsCatchup {
   /// keepers who heard it, and one station's answer says nothing about what
   /// another holds -- the window one closed is still open at the next.
   static String _fk(String target, String archiver) =>
-      _isGroup(target) && !_isKind(target) ? '$target@$archiver' : target;
+      (_isGroup(target) && !_isKind(target)) || target == namesTarget
+          ? '$target@$archiver'
+          : target;
+
+  // ── Names: every identity an archiver holds, asked of each archiver from
+  // where its last answer ended (a mark per archiver, persisted: a restart
+  // must not ask a big archiver for every name it holds again). What Search
+  // shows of people, stations and groups this station never heard.
+  static const String namesTarget = 'kind:identity';
+
+  /// A names pull is a background refresh: identities are re-announced every
+  /// half hour (29.1) and a group's once a day, so a faster ask finds nothing.
+  static const Duration namesEvery = Duration(minutes: 30);
+
+  /// How far back the first names ask of an archiver reaches. A station's
+  /// identity is re-announced and a group's is announced when it is made, so
+  /// a group made last spring is only found by reaching back to it; the
+  /// archive keeps at most four identity rows per callsign, so the answer is
+  /// bounded by how many callsigns the archiver knows, not by time.
+  static const Duration namesFirstWindow = Duration(days: 365);
+
+  static String _namesMarkKey(String archiver) => 'names@$archiver';
+
+  /// Names asks the archiver answered (200/206/404), by [_fk]. Only an
+  /// answered ask earns the half-hour period: one lost on the way is asked
+  /// again at the followed pace, or a person who opened Search waits half an
+  /// hour for a packet that never arrived (12.10.2: silence is evidence about
+  /// the path, not the room).
+  final Set<String> _namesAnswered = {};
 
   // ── Followed types (hal_xprs_follow_kind): the same fetch, for a packet
   // TYPE rather than a station. A target is a callsign or `kind:<type>`; a
@@ -1234,8 +1307,10 @@ class XprsCatchup {
   static bool _isKind(String target) => target.startsWith(_kindTarget);
 
   Future<void> _pullFollowed(String self, List<String> archivers, int now,
-      PreferencesService prefs, {bool groups = false}) async {
-    final followed = groups
+      PreferencesService prefs, {bool groups = false, bool names = false}) async {
+    final followed = names
+        ? const <String>[namesTarget]
+        : groups
         ? <String>[
             // The closed groups we are in: what was said while we were away,
             // or before we joined, is held by the other members (26.4).
@@ -1249,7 +1324,7 @@ class XprsCatchup {
             for (final k in XprsIngest.policy.followedKinds) '$_kindTarget$k',
           ];
     if (followed.isEmpty || archivers.isEmpty || _busy(now)) return;
-    final every =
+    final followEvery =
         (_visible ? followEveryVisible : followEveryHidden).inMilliseconds;
     final asked = <String>[];
     for (final a in archivers) {
@@ -1269,7 +1344,10 @@ class XprsCatchup {
                   !XprsMonitor.instance.heardDirectly(c, nowMs: now)) &&
               !_followAsking(_fk(c, a)) &&
               (_followResume.containsKey(_fk(c, a)) ||
-                  now - (_followAskedAtMs[_fk(c, a)] ?? 0) >= every))
+                  now - (_followAskedAtMs[_fk(c, a)] ?? 0) >=
+                      (names && _namesAnswered.contains(_fk(c, a))
+                          ? namesEvery.inMilliseconds
+                          : followEvery)))
             c
       ]..sort((x, y) => (_followAskedAtMs[_fk(x, a)] ?? 0)
           .compareTo(_followAskedAtMs[_fk(y, a)] ?? 0));
@@ -1287,7 +1365,7 @@ class XprsCatchup {
         asked.add('$station@$a');
         // A group is urgent until every station in the list was asked once:
         // the first to answer may hold only part of what was said.
-        if (!_isGroup(station) ||
+        if ((!_isGroup(station) && station != namesTarget) ||
             archivers.every((b) => _followAskedAtMs.containsKey(_fk(station, b)))) {
           _urgent.remove(station);
         }
@@ -1303,17 +1381,33 @@ class XprsCatchup {
       String self, String archiver, String station, int now) async {
     final kind = _isKind(station) ? station.substring(_kindTarget.length) : null;
     final group = kind == null && _isGroup(station);
+    final names = station == namesTarget;
     final k = _fk(station, archiver);
-    final held = group
-        ? _groupMark[k]
-        : kind != null
-            ? XprsArchive.instance.newestPtsOfType(kind)
-            : XprsArchive.instance.newestPts(station, types: const ['observation']);
-    final floorMs = now - maxWindow.inMilliseconds;
+    final namesMark = names
+        ? PreferencesService.instanceSync?.xprsCatchupMarks[
+            _namesMarkKey(archiver)]
+        : null;
+    final held = names
+        ? (namesMark == null ? null : namesMark * 1000)
+        : group
+            ? _groupMark[k]
+            : kind != null
+                ? XprsArchive.instance.newestPtsOfType(kind)
+                : XprsArchive.instance.newestPts(station, types: const ['observation']);
+    // Names reach back as far as [namesFirstWindow]: 36.10.1 rule 4's week is
+    // for conversation, and this is the deliberate fetch it leaves room for.
+    final floorMs = now -
+        (names ? namesFirstWindow : maxWindow).inMilliseconds;
     // A type never fetched reaches back the whole background window: what
     // was announced this week is what a person opening the wapp wants.
     var sinceMs = held ??
-        now - (kind != null || group ? maxWindow : followFirstWindow).inMilliseconds;
+        now -
+            (names
+                    ? namesFirstWindow
+                    : kind != null || group
+                        ? maxWindow
+                        : followFirstWindow)
+                .inMilliseconds;
     if (sinceMs < floorMs) sinceMs = floorMs;
     final untilMs = _followResume[k];
     // A station: identity first, since the observations verify against a key
@@ -1329,9 +1423,11 @@ class XprsCatchup {
       _followPending.remove(_followPending.keys.first);
     }
     _followPending[id] = _FollowAsk(archiver, station, now);
+    if (names) _namesAnswered.remove(k);
     _followAskedAtMs[k] = now;
     _followArchiverAtMs[archiver] = now;
-    _flight = _Flight(archiver, now, followStation: station);
+    _flight = _Flight(archiver, now,
+        followStation: station, followSinceMs: sinceMs, followUntilMs: untilMs);
     _followOldest.remove(k);
     followAsks++;
     final send = sendOverride ?? XprsPublisher.instance.publishWire;
@@ -1353,6 +1449,7 @@ class XprsCatchup {
     _followPending.remove(r);
     _land(ask.archiver);
     final k = _fk(ask.station, ask.archiver);
+    if (ask.station == namesTarget) _namesAnswered.add(k);
     if (code == 206) {
       // More held than served: ask for what came before the oldest row this
       // page brought. A continuation that reaches back no further than the
@@ -1373,6 +1470,10 @@ class XprsCatchup {
     // where this one did. Another archiver's window stays its own.
     if (_isGroup(ask.station) && ask.atMs > 0) {
       _groupMark[k] = ask.atMs;
+    }
+    final prefs = PreferencesService.instanceSync;
+    if (ask.station == namesTarget && ask.atMs > 0 && prefs != null) {
+      _setMark(_namesMarkKey(ask.archiver), ask.atMs ~/ 1000, prefs);
     }
   }
 
@@ -1430,11 +1531,16 @@ class _Window {
 /// The ask that is out: to whom, since when, and what it asked for, a
 /// window of messages or one followed station.
 class _Flight {
-  _Flight(this.archiver, this.atMs, {this.window, this.followStation});
+  _Flight(this.archiver, this.atMs,
+      {this.window, this.followStation, this.followSinceMs, this.followUntilMs});
   final String archiver;
   final int atMs;
   final _Window? window;
   final String? followStation;
+
+  /// The window a followed ask named: a row outside it is not on its page.
+  final int? followSinceMs;
+  final int? followUntilMs;
 }
 
 /// One outstanding fetch of a followed station: which archiver, for whom.

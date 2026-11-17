@@ -235,6 +235,24 @@ class XprsArchive {
           fromc TEXT PRIMARY KEY,
           pts   INTEGER NOT NULL
         )''');
+      // Who has a name here: one row per callsign with a VERIFIED t:identity,
+      // its newest nick and when it last announced itself. What Search asks
+      // (names); kept at flush beside the identities themselves, so finding a
+      // person or a group by name never scans the spool. `k` is the callsign
+      // and the nick folded for matching (see [nameKey]).
+      final namesNew = db
+          .select("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+              "AND name = 'names'")
+          .isEmpty;
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS names(
+          call TEXT PRIMARY KEY,
+          nick TEXT NOT NULL DEFAULT '',
+          ts   INTEGER NOT NULL,
+          k    TEXT NOT NULL
+        )''');
+      db.execute('CREATE INDEX IF NOT EXISTS idx_names_ts ON names(ts)');
+      if (namesNew) _backfillNames(db);
       db.execute('''
         CREATE TABLE IF NOT EXISTS withdrawn(
           id    TEXT NOT NULL,
@@ -511,6 +529,7 @@ class XprsArchive {
       }
       for (final c in identities) {
         _collapseIdentities(db, c);
+        _refreshName(db, c);
       }
       for (final c in capped) {
         _capFollowedPresence(db, c);
@@ -521,6 +540,7 @@ class XprsArchive {
           [c, t]));
       _saveCounts(db);
       db.execute('COMMIT');
+      if (identities.isNotEmpty) CoreState.instance.changed(CoreState.names);
     } catch (e) {
       try {
         db.execute('ROLLBACK');
@@ -714,6 +734,106 @@ class XprsArchive {
       coveredAny.addAll(fields);
       if (verified) coveredVerified.addAll(fields);
     }
+  }
+
+  // ── names: who is known here by name (Search) ─────────────────────────────
+
+  /// The most callsigns the names table keeps; the longest silent go first.
+  static const int namesMax = 20000;
+
+  /// A callsign and a nick folded for matching: lower case, and `_` (a space
+  /// on the wire, 10.1) and `-` read as spaces, so "book club" finds
+  /// `Book-club` and `Book_club`.
+  static String nameKey(String s) =>
+      s.toLowerCase().replaceAll(RegExp(r'[_\-]+'), ' ').trim();
+
+  /// Rebuild [fromc]'s names row from its stored identities: the newest
+  /// verified one decides the time, the newest verified one carrying `nick:`
+  /// the name (`-` clears it). No verified identity, no row: a name nobody
+  /// can check is not offered to a search.
+  void _refreshName(ZxSqlDb db, String fromc) {
+    if (fromc.isEmpty) return;
+    final rows = db.select(
+        "SELECT pts, wire FROM packets WHERE type = 'identity' AND fromc = ? "
+        'AND sig = ? ORDER BY pts DESC LIMIT 8',
+        [fromc, XprsSigState.verified.index]);
+    if (rows.isEmpty) return;
+    String? nick;
+    for (final r in rows) {
+      final p = XprsPacket.parse(r['wire'] as String? ?? '');
+      if (p == null || !p.has('nick')) continue;
+      final n = (p['nick'] ?? '').trim();
+      nick = n == '-' ? '' : n;
+      break;
+    }
+    final ts = (rows.first['pts'] as num).toInt();
+    final n = nick ?? '';
+    db.execute(
+        'INSERT INTO names(call, nick, ts, k) VALUES(?, ?, ?, ?) '
+        'ON CONFLICT(call) DO UPDATE SET nick = excluded.nick, '
+        'ts = MAX(ts, excluded.ts), k = excluded.k',
+        [fromc, n, ts, nameKey('$fromc $n')]);
+    if (++_namesSinceTrim >= 256) {
+      _namesSinceTrim = 0;
+      final over = (db.select('SELECT COUNT(*) c FROM names').first['c'] as num)
+              .toInt() -
+          namesMax;
+      if (over > 0) {
+        db.execute(
+            'DELETE FROM names WHERE call IN '
+            '(SELECT call FROM names ORDER BY ts ASC LIMIT ?)',
+            [over]);
+      }
+    }
+  }
+
+  int _namesSinceTrim = 0;
+
+  /// Once, when the table is new: the identities already stored. One pass
+  /// over the spool at the first start that has the table, never again.
+  void _backfillNames(ZxSqlDb db) {
+    final calls = [
+      for (final r in db.select(
+          "SELECT DISTINCT fromc FROM packets WHERE type = 'identity'"))
+        r['fromc'] as String? ?? '',
+    ];
+    for (final c in calls) {
+      _refreshName(db, c);
+    }
+  }
+
+  /// Callsigns known here by a verified identity whose callsign or name
+  /// contains [query] (folded as [nameKey]; empty matches all), most recently
+  /// announced first. [prefix] keeps one callsign prefix (`X5`: the groups).
+  /// What Search shows; what fills it is the identities this station heard
+  /// and those its archivers replayed (XprsCatchup's names pull).
+  List<({String call, String nick, int tsMs})> names(
+      {String query = '', String? prefix, int limit = 60}) {
+    final db = _db;
+    if (db == null) return const [];
+    final where = StringBuffer('1=1');
+    final args = <Object?>[];
+    final q = nameKey(query);
+    if (q.isNotEmpty) {
+      where.write(' AND instr(k, ?) > 0');
+      args.add(q);
+    }
+    if (prefix != null && prefix.isNotEmpty) {
+      where.write(' AND substr(call, 1, ?) = ?');
+      args..add(prefix.length)..add(prefix.toUpperCase());
+    }
+    args.add(limit.clamp(1, 500));
+    return [
+      for (final r in db.select(
+          'SELECT call, nick, ts FROM names WHERE $where '
+          'ORDER BY ts DESC LIMIT ?',
+          args))
+        (
+          call: r['call'] as String,
+          nick: r['nick'] as String? ?? '',
+          tsMs: (r['ts'] as num).toInt(),
+        ),
+    ];
   }
 
   /// Have [a] and [b] exchanged a DIRECT message before, in either direction?

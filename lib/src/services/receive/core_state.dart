@@ -72,6 +72,11 @@ class CoreState {
   /// so it is announced like any other core state.
   static const groups = 'core.groups';
 
+  /// Somebody became findable by name, or changed their name: a verified
+  /// `t:identity` was stored, heard or replayed by an archiver (XPRS.md
+  /// 12.9.4). Search reads `XprsArchive.names` again on it.
+  static const names = 'core.names';
+
   /// A datagram arrived on a wapp's own Reticulum tag. Per tag, because two
   /// wapps' private protocols are not each other's business:
   /// `core.datagram.<tag>`.
@@ -96,6 +101,7 @@ class CoreState {
     media,
     tasks,
     groups,
+    names,
     station,
   ];
 

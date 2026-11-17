@@ -575,3 +575,18 @@ callsign" means minting several keys and keeping the picked one.
 the next call, spent by `create`) and returns their callsigns;
 `create(nick:, callsign:)` / `XprsGroupOps.create(callsign:)` keeps the one
 picked and mints fresh for anything else. About 45 ms per key on the Pi.
+
+### Who is there by name — `XprsArchive.names`, `XprsNames.find`, `XprsCatchup.askNames`
+
+The archive keeps a `names` table (callsign, newest nick, last announced,
+a folded match key) beside the identities themselves, refreshed where
+`_collapseIdentities` runs and only from VERIFIED rows, so a name search
+never scans the spool. `XprsNames.find(query:, kind:, self:, ask:)` reads it
+sorted into `user` / `station` / `group` and is what `hal_xprs_names` returns.
+It is filled by what this station hears AND by `XprsCatchup`'s names pull:
+`cmd:history kind:identity since:<mark>` to the named and always-on
+archivers, a persisted mark per archiver (`names@<call>` in the catch-up
+marks), a year back the first time, every 30 min, or now on `askNames()`
+(XprsNames bounds that to once a minute). `CoreState.names` fires when an
+identity is stored. Anything that lists people, stations or groups reads
+this, never only the heard table.
