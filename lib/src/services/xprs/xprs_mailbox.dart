@@ -58,6 +58,8 @@ class XprsMailboxCounters {
   static int receiptsToHolders = 0;
   static int sweepDelivered = 0;
   static int sweepSkipped = 0;
+  static int asksHandedOver = 0;
+  static int asksSuperseded = 0;
 
   static Map<String, int> get json => {
         'deposited': deposited,
@@ -68,11 +70,14 @@ class XprsMailboxCounters {
         'receiptsToHolders': receiptsToHolders,
         'sweepDelivered': sweepDelivered,
         'sweepSkipped': sweepSkipped,
+        'asksHandedOver': asksHandedOver,
+        'asksSuperseded': asksSuperseded,
       };
 
   static void debugReset() {
     deposited = depositFailed = depositSkipped = depositNoArchiver = 0;
     declared = receiptsToHolders = sweepDelivered = sweepSkipped = 0;
+    asksHandedOver = asksSuperseded = 0;
   }
 }
 
@@ -121,6 +126,15 @@ class XprsMailbox {
   List<HeldMail> Function()? held;
   bool Function(String target)? reachable;
   void Function(String key)? noteAttempt;
+
+  /// Drop a held packet for good (MeshStore.purgeAm on the device).
+  ///
+  /// Only for a held ASK: mail ends on a receipt, but a `cmd:history` or a
+  /// `cmd:file` never gets one -- its answer is a `t:result` to the asker,
+  /// which the holder does not see. Without this a deposited ask was re-aired
+  /// every ten minutes for the store's whole seven days: measured on the live
+  /// archiver as 3,500 re-airs an hour, most of them the same few asks.
+  void Function(String key)? drop;
 
   /// How long a directed packet gets to be acknowledged before we assume the
   /// far side is not there and hand a copy to an archiver.
@@ -348,8 +362,19 @@ class XprsMailbox {
     final rows = held?.call() ?? const <HeldMail>[];
     if (rows.isEmpty) return 0;
     final me = (selfCallsign?.call() ?? '').trim().toUpperCase();
+    // One asker, one question (12.9.4, 12.10.2): of several held asks from
+    // the same station to the same station about the same thing, only the
+    // newest is still a question; the rest are the ones it already gave up
+    // on. Rows arrive newest first per target.
+    final asked = <String>{};
     var done = 0;
     for (final m in rows) {
+      final q = _askKey(m);
+      if (q != null && !asked.add(q)) {
+        drop?.call(m.key);
+        XprsMailboxCounters.asksSuperseded++;
+        continue;
+      }
       if (done >= max) break;
       // Never "deliver" to ourselves. A copy of our OWN mail sits in this same
       // store — the courier parks one so a carrier can pick it up — and
@@ -381,6 +406,13 @@ class XprsMailbox {
       if (!ok) continue;
       done++;
       XprsMailboxCounters.sweepDelivered++;
+      // An ask is handed over once. Nothing will ever come back to end its
+      // custody, and an asker still waiting asks again (12.10.2), which
+      // deposits a fresh copy.
+      if (q != null) {
+        drop?.call(m.key);
+        XprsMailboxCounters.asksHandedOver++;
+      }
     }
     if (done > 0) {
       LogService.instance
@@ -388,6 +420,15 @@ class XprsMailbox {
               'recipients (12.8.1)');
     }
     return done;
+  }
+
+  /// `asker>target|cmd|kind|only|file` for a held command, null for mail.
+  static String? _askKey(HeldMail m) {
+    final p = XprsPacket.parse(m.wire);
+    if (p == null || p.type != 'command') return null;
+    final f = (p['f'] ?? '').trim().toUpperCase();
+    return '$f>${m.target.trim().toUpperCase()}|${p['cmd'] ?? ''}'
+        '|${p['kind'] ?? ''}|${p['only'] ?? ''}|${p['file'] ?? ''}';
   }
 
   void debugReset() {

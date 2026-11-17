@@ -807,6 +807,7 @@ class MeshService {
                           wire: utf8.decode(row.wire, allowMalformed: true)),
               ])
           ..noteAttempt = ((key) => MeshStore.instance.noteReleased(key))
+          ..drop = ((key) => MeshStore.instance.purgeAm(key))
           ..publish = ((wire) async {
             await XprsPublisher.instance.publishWire(wire, slot: 'mailbox');
           })
