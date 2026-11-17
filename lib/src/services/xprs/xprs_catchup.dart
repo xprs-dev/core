@@ -702,13 +702,16 @@ class XprsCatchup {
     // by archivers the person named: those in earshot are asked too, and the
     // always-on ones known to this station. A person who names no archiver
     // (most) otherwise never asked anybody, and joined to an empty room.
+    // Somebody looking at an empty room is waiting: the stations in earshot
+    // answer in a second, a named archiver across the internet may take the
+    // whole in-flight grace, so for them the near ones go first.
+    final near = [for (final s in fresh) _base(s.callsign)];
     await _pullFollowed(
         selfCallsign,
-        {
-          ...named,
-          for (final s in fresh) _base(s.callsign),
-          ...deep,
-        }.toList(),
+        (_urgent.isEmpty
+                ? {...named, ...near, ...deep}
+                : {...near, ...named, ...deep})
+            .toList(),
         now,
         prefs,
         groups: true);
