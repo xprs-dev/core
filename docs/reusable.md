@@ -325,6 +325,16 @@ topic to the wapp that shows it (`routeCoreNotification`,
   non-member's request to join; `WappDelivery.mayAcceptFor(group)` says
   whether this station (admin or moderator) sees and answers requests;
   `XprsGroupOps.grant/revoke` sign as a moderator when this station is one.
+- `XprsGroupOps.grant(g, [c], role: 'mod')` appoints (an offer answered
+  with `accept:mod`; the member keeps posting meanwhile), a plain grant to a
+  moderator takes the role back; `XprsRoster.offerRoles` says which offer
+  waits. Wapps: `hal_xprs_group_appoint`.
+- `xprsGroupNickShown(wire)` (`xprs_group_act.dart`) — a group's `nick:` as
+  people read it (`_` is a space, 10.1). Use it wherever a group's name is shown.
+- `xprsCommandExpired(p)` (`xprs_vocab.dart`) — 11.4's 300 s window; nothing
+  relays or holds a command past it.
+- `WappDelivery.groupAuthorMayPost(dest, author, tsMs:)` — a group post judged
+  by its author's role when it was written (10.4).
 - `RnsService.followGroup(name, on)` / `XprsArchive.followedGroups` — an open
   group (7.3) followed by name: its talk is kept as a room's
   (`XprsIngest._isRoomTalk`), fetched by `XprsCatchup` (`only:<NAME>`) and
