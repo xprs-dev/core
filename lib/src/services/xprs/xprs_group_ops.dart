@@ -47,10 +47,13 @@ class XprsGroupOps {
 
   /// Mint a group and announce it (26.1). The callsign derives from the key,
   /// so there is nothing to choose and nothing to collide with.
+  ///
+  /// [callsign] is one [XprsGroupKeys.candidates] offered, when the person
+  /// picked the group's callsign before creating it.
   static ({String callsign, String npub, String nick})? create(
-      {String nick = ''}) {
+      {String nick = '', String? callsign}) {
     if (!XprsGroupKeys.instance.ready) return null;
-    final g = XprsGroupKeys.instance.create(nick: nick);
+    final g = XprsGroupKeys.instance.create(nick: nick, callsign: callsign);
     if (g == null) return null;
     // Teach our own callsign→key map the group before we sign anything with
     // it: a station does not hear itself, so without this the admin could not

@@ -566,3 +566,12 @@ for "anyone may have it" (unbound, public, or a group the host says is open
 through `openGroup`); the mesh's `cmd:file` gate in `MeshService` uses it.
 Anything that serves bytes by hash should ask `_mayFetch`/`isOpen`, never
 `scopeOf` alone.
+
+### Choosing a key by its callsign — `XprsGroupKeys.candidates` / `create(callsign:)`
+
+A callsign derives from its key (XPRS.md 26.1), so "let the person pick the
+callsign" means minting several keys and keeping the picked one.
+`candidates(n)` mints n keys held in memory only (never stored, replaced by
+the next call, spent by `create`) and returns their callsigns;
+`create(nick:, callsign:)` / `XprsGroupOps.create(callsign:)` keeps the one
+picked and mints fresh for anything else. About 45 ms per key on the Pi.

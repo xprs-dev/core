@@ -85,10 +85,17 @@ class XprsGroupKeys {
   /// There is no registry and no creation ceremony (26.1) -- a group "exists
   /// once somebody generates a key and says so", and saying so is the
   /// `t:identity` the caller airs next.
-  XprsOwnGroup? create({String nick = ''}) {
+  ///
+  /// [callsign] picks one of the keys [candidates] offered, so the person
+  /// creates the group whose callsign they chose; one not in the pool (or
+  /// none) mints a fresh key as before. Either way the pool is spent.
+  XprsOwnGroup? create({String nick = '', String? callsign}) {
     final db = _db;
     if (db == null) return null;
-    final kp = NostrCrypto.generateKeyPair();
+    final want = callsign?.trim().replaceFirst('#', '').toUpperCase();
+    final kp = (want == null ? null : _candidates[want]) ??
+        NostrCrypto.generateKeyPair();
+    _candidates.clear();
     final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
     final now = DateTime.now().millisecondsSinceEpoch;
     // A collision means somebody already holds a group whose key produced
@@ -104,6 +111,34 @@ class XprsGroupKeys {
         'VALUES(?,?,?,?,?)',
         [call, kp.npub, kp.nsec, nick.trim(), now]);
     return XprsOwnGroup(call, kp.npub, nick.trim(), now);
+  }
+
+  /// Keys minted for a group not created yet, by their callsign: what
+  /// [candidates] offered. Memory only and bounded, never written to the
+  /// store, so a callsign nobody picked leaves nothing behind (26.6: a group
+  /// key is exactly as sensitive as a profile's).
+  final Map<String, NostrKeyPair> _candidates = {};
+
+  /// [count] callsigns a new group could have, each from a key minted now and
+  /// held until [create] picks one or the next call replaces the pool. The
+  /// callsign derives from the key (26.1), so choosing a callsign means
+  /// choosing among keys; none collides with a group already held here.
+  List<String> candidates(int count) {
+    _candidates.clear();
+    final db = _db;
+    if (db == null) return const [];
+    final n = count.clamp(1, 64);
+    for (var tries = 0; _candidates.length < n && tries < n * 4; tries++) {
+      final kp = NostrCrypto.generateKeyPair();
+      final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
+      if (_candidates.containsKey(call)) continue;
+      if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ?', [call])
+          .isNotEmpty) {
+        continue;
+      }
+      _candidates[call] = kp;
+    }
+    return _candidates.keys.toList(growable: false);
   }
 
   /// The private scalar this group signs with, or null when we do not hold it
