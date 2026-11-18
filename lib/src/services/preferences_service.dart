@@ -562,6 +562,11 @@ class PreferencesService {
     _prefs.setString(key, jsonEncode(m));
   }
 
+  /// The archiver's daily log (app ArchiverStats): a JSON list of at most
+  /// 60 small rows, one per day, written at most once an hour.
+  String get xprsArchiverStats => _prefs.getString('xprs.archiverStats') ?? '';
+  set xprsArchiverStats(String v) => _prefs.setString('xprs.archiverStats', v);
+
   Future<void> setXprsServeHistory(bool v) async {
     await _prefs.setBool('xprs.serveHistory', v);
   }
