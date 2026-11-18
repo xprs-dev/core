@@ -133,6 +133,7 @@ class ActivityArchive {
         );
       ''');
       _db = db;
+      _mergeXprsCopies(db);
       return db;
     } catch (e) {
       _failed = true;
@@ -169,6 +170,64 @@ class ActivityArchive {
       );
     } catch (e) {
       LogService.instance.add('ActivityArchive: revise failed: $e');
+    }
+  }
+
+  static final RegExp _xprsId = RegExp(r'^[0-9a-f]{6}$');
+
+  /// Whether [mid] is an XPRS packet identifier (section 5: six hex), as
+  /// opposed to a NOSTR event id (64 hex) or none.
+  static bool isXprsMid(String mid) => _xprsId.hasMatch(mid);
+
+  /// One XPRS post is one (author, ts) (XPRS.md 7.6 keys a set on `(f, ts)`),
+  /// but it can reach the feed under several identifiers: the packet as sent,
+  /// the same packet rebuilt from its parts, a copy heard again. Builds of the
+  /// Status wapp before 0.5.7 drew each one, and they were kept here, so the
+  /// post showed two or three times for good. Collapse each such group to one
+  /// row: the withdrawn one when any copy was withdrawn (the author deleted
+  /// the post), else the longest text (the parts joined with their spaces).
+  /// Runs when the archive opens; a group is a handful of rows.
+  void _mergeXprsCopies(ZxSqlDb db) {
+    try {
+      final groups = db.select(
+        "SELECT from_call, t FROM activity WHERE length(mid) = 6 "
+        "GROUP BY from_call, t HAVING COUNT(*) > 1 LIMIT 500",
+      );
+      if (groups.isEmpty) return;
+      var dropped = 0;
+      db.transaction(() {
+        for (final g in groups) {
+          final rows = db
+              .select(
+                "SELECT id, mid, kind, text FROM activity "
+                "WHERE from_call = ? AND t = ? AND length(mid) = 6",
+                [g['from_call'], g['t']],
+              )
+              .where((r) => isXprsMid((r['mid'] ?? '').toString()))
+              .toList();
+          if (rows.length < 2) continue;
+          Map<String, Object?>? keep;
+          for (final r in rows) {
+            if ((r['kind'] ?? '') == 'msg:deleted') keep = r;
+          }
+          keep ??= rows.reduce((a, b) =>
+              (b['text'] ?? '').toString().length >
+                      (a['text'] ?? '').toString().length
+                  ? b
+                  : a);
+          for (final r in rows) {
+            if (r['id'] == keep['id']) continue;
+            db.execute('DELETE FROM activity WHERE id = ?', [r['id']]);
+            dropped++;
+          }
+        }
+      });
+      if (dropped > 0) {
+        LogService.instance.add(
+            'ActivityArchive: merged $dropped extra copies of XPRS posts');
+      }
+    } catch (e) {
+      LogService.instance.add('ActivityArchive: merging copies failed: $e');
     }
   }
 
@@ -218,6 +277,21 @@ class ActivityArchive {
         );
       }
     } catch (_) {}
+
+    // The same XPRS post under another identifier (see _mergeXprsCopies):
+    // the one already held stands.
+    final t = (raw['t'] as num?)?.toInt();
+    if (t != null && isXprsMid(mid)) {
+      try {
+        if (db.select(
+          "SELECT 1 FROM activity WHERE from_call = ? AND t = ? "
+          "AND length(mid) = 6 AND mid != ? LIMIT 1",
+          [from, t, mid],
+        ).isNotEmpty) {
+          return;
+        }
+      } catch (_) {}
+    }
 
     try {
       db.execute(
