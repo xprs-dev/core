@@ -51,7 +51,6 @@ export 'src/services/social/note_text.dart';
 // ── util ──────────────────────────────────────────────────────────────────
 export 'src/util/geohash.dart';
 export 'src/util/nostr_imeta.dart';
-export 'src/util/xprs_md.dart';
 
 // ── xprs ──────────────────────────────────────────────────────────────────
 export 'src/services/xprs/xprs_airtime.dart';
