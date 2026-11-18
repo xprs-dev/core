@@ -127,7 +127,8 @@ class XprsGroupKeys {
   /// With [more], the pool is kept and [count] new ones are added (only those
   /// are returned): a person turning through callsigns gets fresh ones for as
   /// long as they like, and can still go back to and create any shown before.
-  /// The pool is bounded ([maxCandidates]); the oldest go first.
+  /// No limit: the pool lives in memory only, a few hundred bytes a key, and
+  /// a new dialog (a call without [more]) starts it afresh.
   List<String> candidates(int count, {bool more = false}) {
     if (!more) _candidates.clear();
     final db = _db;
@@ -145,15 +146,8 @@ class XprsGroupKeys {
       _candidates[call] = kp;
       fresh.add(call);
     }
-    while (_candidates.length > maxCandidates) {
-      _candidates.remove(_candidates.keys.first);
-    }
     return fresh;
   }
-
-  /// How many offered keys are held at once (memory only, a few hundred bytes
-  /// each).
-  static const int maxCandidates = 512;
 
   /// The private scalar this group signs with, or null when we do not hold it
   /// -- i.e. we are a member or a bystander rather than the admin.
