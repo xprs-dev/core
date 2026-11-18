@@ -83,6 +83,14 @@ class WappLoadedEvent extends AppEvent {
   WappLoadedEvent({required this.wappId, required this.wappName});
 }
 
+/// A wapp was installed or updated on disk (the installer, every source).
+/// Not fired when a page opens: that is [WappLoadedEvent], which fires on
+/// every open and is the wrong signal for "rescan what is installed".
+class WappInstalledEvent extends AppEvent {
+  final String wappId;
+  WappInstalledEvent({required this.wappId});
+}
+
 /// A wapp was unloaded (page closed, dispose called).
 class WappUnloadedEvent extends AppEvent {
   final String wappId;
