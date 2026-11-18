@@ -628,3 +628,12 @@ this, never only the heard table.
   on the minute tick. `XprsLineLane.nudge()` makes clients in a backoff dial
   at once (at most once a minute each); `RnsService.onUplinkUp` fires it when
   an internet uplink rises, i.e. the network is back.
+
+## Formatted text (`lib/src/util/xprs_md.dart`, XPRS.md 4.11)
+
+The ONE Markdown reader for the server and the app: `xprsMdToHtml` (HTML, as
+the web chat page draws it), `parseXprsMd` / `parseXprsMdInline` (styled spans
+for a widget), `xprsMdBlocks`, `xprsMdRefs`, `xprsMdHasMarkup`,
+`xprsMdToWire` / `xprsMdFromWire`. A port of portal `page/xprs_md.js` (same
+regexes, same order); both pass `test/xprs_md_vectors.json`. Any surface that
+shows a post or a message body uses this, never its own regex.
