@@ -34,6 +34,7 @@ import 'xprs_id.dart';
 import 'xprs_archive_policy.dart';
 import 'xprs_directory.dart' show XprsDirectoryEntry;
 import 'xprs_packet.dart';
+import 'xprs_parts.dart';
 import 'xprs_presence.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
@@ -592,15 +593,55 @@ class XprsArchive {
         'SELECT id FROM packets WHERE fromc = ? '
         "AND (wire LIKE '% edit:' || ? || ' %' OR wire LIKE '% edit:' || ?)",
         [fromc, target, target]);
-    for (final r in edits) {
-      tomb.execute([r['id'] as String, fromc, nowMs]);
+    // A long post is held as its parts (7.6), each with an identifier of its
+    // own, and maybe as the joined packet too. Deleting only the row named
+    // left the parts behind: the words survived on every archive holding
+    // them, and a reader rebuilt the withdrawn post from them.
+    final pieces = _piecesOf(db, fromc, target);
+    for (final id in [for (final r in edits) r['id'] as String, ...pieces]) {
+      tomb.execute([id, fromc, nowMs]);
     }
     _delete(db, 'DELETE FROM packets WHERE fromc = ? AND id = ?',
         [fromc, target]);
-    for (final r in edits) {
+    for (final id in [for (final r in edits) r['id'] as String, ...pieces]) {
       _delete(db, 'DELETE FROM packets WHERE fromc = ? AND id = ?',
-          [fromc, r['id']]);
+          [fromc, id]);
     }
+  }
+
+  /// Every other row that is the same post as [target] from [fromc]: the
+  /// parts of a split post and the joined packet. One (author, ts) is one
+  /// post (7.6 keys a set on `(f, ts)`), so when [target]'s own row is held
+  /// (the joined packet, or one part a reader showed) its timestamp finds the
+  /// rest. When only parts are held, [target] is the identifier of the packet
+  /// they join into: the author's split rows are joined and the set whose
+  /// identifier it is goes. A withdrawal is rare, and the walk is bounded.
+  List<String> _piecesOf(ZxSqlDb db, String fromc, String target) {
+    final own = db.select(
+        'SELECT pts FROM packets WHERE fromc = ? AND id = ? LIMIT 1',
+        [fromc, target]);
+    if (own.isNotEmpty) {
+      return [
+        for (final r in db.select(
+            'SELECT id FROM packets WHERE fromc = ? AND pts = ? AND id != ? '
+            "AND wire NOT LIKE '% remove:%' AND wire NOT LIKE '% edit:%'",
+            [fromc, own.first['pts'], target]))
+          r['id'] as String,
+      ];
+    }
+    final table = XprsPartTable();
+    for (final r in db.select(
+        'SELECT id, wire FROM packets WHERE fromc = ? '
+        "AND wire LIKE '% n:%' ORDER BY pts DESC LIMIT 900",
+        [fromc])) {
+      final part = XprsPacket.parse(r['wire'] as String);
+      if (part == null) continue;
+      final whole = table.offer(part, clear: part['m'] ?? '');
+      if (whole != null && xprsIdentifier(whole.packet) == target) {
+        return whole.partIds;
+      }
+    }
+    return const [];
   }
 
   /// A moderator's removal of [target] in [group] (10.4.1), already checked
