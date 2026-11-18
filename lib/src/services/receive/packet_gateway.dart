@@ -50,6 +50,7 @@ import '../mesh/mesh_session.dart' show mspIsFrame;
 import '../mesh/xblob_service.dart';
 import '../xprs/xprs_gateway_dedup.dart';
 import '../xprs/xprs_archive.dart';
+import '../reticulum/rns_service.dart';
 import '../xprs/xprs_ingest.dart';
 import 'wapp_delivery.dart';
 import '../xprs/xprs_packet.dart';
@@ -256,6 +257,8 @@ class PacketGateway {
     }
     xprsFrames++;
     XprsIngest.reticulum(from, payload, bearer: bearer);
+    // Where to write to the sender, from its own signed word (lx:).
+    if (p != null) RnsService.instance.noteSignedLx(p);
 
     // AND HAND IT TO THE WAPPS. Reticulum is how two of our stations talk
     // over the internet -- `_ReticulumBearer` puts an XPRS wire in an LXMF

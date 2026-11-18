@@ -166,6 +166,9 @@ class XprsForwarder {
       if (_sent.containsKey(key)) continue;
       _remember(key);
       final ok = await _send(gateway, wire2, id: id);
+      // A gateway with no directed lane got a broadcast, and a broadcast
+      // reaches every gateway in earshot at once: one is enough. Measured on
+      // a phone: one held ask aired five times in 100 ms, once per gateway.
       if (ok) {
         forwarded++;
         went.add(gateway);
@@ -270,6 +273,10 @@ class XprsForwarder {
       return RnsService.instance
           .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)));
     }
+    // One broadcast per packet, whichever gateway asked for it first.
+    final aired = '$id|*';
+    if (_sent.containsKey(aired)) return true;
+    _remember(aired);
     // via: already carries us, so the broadcast cannot come back through.
     final report = await XprsPublisher.instance
         .publishWire(wire, verbatim: true, slot: 'fwd:$id');

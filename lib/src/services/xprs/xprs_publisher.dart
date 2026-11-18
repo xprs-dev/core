@@ -1011,6 +1011,17 @@ class XprsPublisher {
           continue;
         }
         final hex = RnsService.instance.lxmfDestForCallsign(call);
+        // A station archiver (a server, an ESP32) is often known only on the
+        // station lane: its xprs/wapp destination, bound from its announce
+        // or its `lx:`, with no LXMF address under its callsign. That lane
+        // carries a wire to it in one packet, so the deposit goes there.
+        if (hex.isEmpty && RnsService.instance.isWappStation(call)) {
+          deposited++;
+          unawaited(RnsService.instance
+              .wireToStation(call, Uint8List.fromList(utf8.encode(w)))
+              .catchError((_) => false));
+          continue;
+        }
         if (hex.isEmpty) {
           // The archiver is named but this station has never learned where it
           // is. Worth saying — quietly, and at most once a minute — because

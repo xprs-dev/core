@@ -2716,6 +2716,23 @@ class RnsService {
     _noteLxmfAlias(f, src);
   }
 
+  /// A signed observation names where to write to its sender (`lx:`), and
+  /// the signature binds the two, so the pairing holds however the packet
+  /// came: a station lane (anonymous), a hub, or an archiver's replay. This
+  /// is how an asker that never heard a phone's beacon learns where its X3,
+  /// the archiver, is. Verified only when the pairing would change.
+  void noteSignedLx(XprsPacket p) {
+    if (p.type != 'observation' || !p.has('sig')) return;
+    final lx = (p['lx'] ?? '').trim().toLowerCase();
+    if (lx.length != 32) return;
+    final f = _bareUpper(p['f'] ?? '');
+    if (f.isEmpty) return;
+    if (_lxmfCallsign[lx] == f || _lxmfAlias[f] == lx) return;
+    final key = XprsArchive.instance.keyResolver?.call(f);
+    if (key == null || xprsVerify(p, key) != XprsSigState.verified) return;
+    noteLxmfCallsign(lx, f);
+  }
+
   /// The callsign known for an LXMF delivery destination, or '' if none.
   ///
   /// The beacon pairing (`lx:` beside `f:`) is the first source, but it only
