@@ -72,4 +72,16 @@ void main() {
     expect(await XprsMailbox.instance.sweepHeld(), 1);
     expect(dropped, isEmpty);
   });
+
+  test('a sweep started while one runs does not deliver the same rows',
+      () async {
+    store = [
+      row('a1', 't:command f:X10FCG d:X3APDH ts:2026-11-17_22:26:45 '
+          'cmd:history kind:message since:2026-11-11_09:02:55'),
+    ];
+    final first = XprsMailbox.instance.sweepHeld();
+    final second = XprsMailbox.instance.sweepHeld();
+    expect(await first + await second, 1);
+    expect(sent, hasLength(1));
+  });
 }

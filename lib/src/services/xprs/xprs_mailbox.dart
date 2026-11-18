@@ -358,7 +358,23 @@ class XprsMailbox {
   ///
   /// [max] bounds one round: a release is a page (12.8.2), and a backlog of
   /// two hundred must not become two hundred sends in one second.
+  /// One sweep at a time. A sweep awaits each send, and a second one started
+  /// meanwhile (a socket registering, the minute tick) read the same rows
+  /// before the first had dropped them: measured as the same eight packets
+  /// delivered twice within a second.
+  bool _sweeping = false;
+
   Future<int> sweepHeld({int max = 8}) async {
+    if (_sweeping) return 0;
+    _sweeping = true;
+    try {
+      return await _sweepHeld(max: max);
+    } finally {
+      _sweeping = false;
+    }
+  }
+
+  Future<int> _sweepHeld({required int max}) async {
     final rows = held?.call() ?? const <HeldMail>[];
     if (rows.isEmpty) return 0;
     final me = (selfCallsign?.call() ?? '').trim().toUpperCase();
@@ -426,6 +442,12 @@ class XprsMailbox {
   /// A held `t:result`: the answer to an ask, which gets no receipt either.
   static bool _isAnswer(HeldMail m) => m.wire.startsWith('t:result ');
 
+  /// Is [p] handed over once and then let go (12.8.2)? An ask or the answer
+  /// to one: nothing ever comes back to end its custody. Every path that
+  /// releases held packets asks this, the sweep and the release on hearing.
+  static bool handOverOnce(XprsPacket p) =>
+      p.type == 'command' || p.type == 'result';
+
   /// `asker>target|cmd|kind|only|file` for a held command, null for mail.
   static String? _askKey(HeldMail m) {
     final p = XprsPacket.parse(m.wire);
@@ -441,5 +463,6 @@ class XprsMailbox {
     }
     _armed.clear();
     _deposited.clear();
+    _sweeping = false;
   }
 }

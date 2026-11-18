@@ -813,10 +813,7 @@ class MeshService {
           // copy another holder hands back is not parked all over again
           // (measured: a result bouncing between three archivers was
           // re-aired every 20 s after this holder had already let it go).
-          ..drop = ((key) {
-            MeshStore.instance.purgeAm(key);
-            MeshStore.instance.recordReceivedAm(key);
-          })
+          ..drop = _dropHeld
           ..publish = ((wire) async {
             await XprsPublisher.instance.publishWire(wire, slot: 'mailbox');
           })
@@ -2248,9 +2245,22 @@ class MeshService {
         MeshStore.instance.noteReleased(m.key);
         await XprsPublisher.instance.publishWire(out,
             verbatim: true, slot: 'release:${m.key}', prefer: bearer);
+        // An ask or its answer is handed over once (12.8.2), here as in the
+        // mailbox sweep: measured, one held ask re-aired 15 times in a second
+        // as its target's beacons kept arriving.
+        if (XprsMailbox.handOverOnce(held)) _dropHeld(m.key);
         await Future<void>.delayed(const Duration(milliseconds: 1500));
       }
     }());
+  }
+
+  /// A held packet let go for good: purged, and remembered like a receipt
+  /// so a copy another holder hands back is not parked all over again
+  /// (measured: a result bouncing between three archivers was re-aired every
+  /// 20 s after this holder had already let it go).
+  static void _dropHeld(String key) {
+    MeshStore.instance.purgeAm(key);
+    MeshStore.instance.recordReceivedAm(key);
   }
 
   // ── facade for the wapp layer ─────────────────────────────────────────────
