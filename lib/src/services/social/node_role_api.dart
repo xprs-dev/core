@@ -342,6 +342,8 @@ class NodeRoleApi {
     final quotaGb = p?.archiveQuotaGb ?? 0;
     final quotaBytes = quotaGb * 1024 * 1024 * 1024;
     final used = st?.totalBytes ?? 0;
+    // One preview, read twice below: it walks the hosted store.
+    final freeable = archive?.previewSweep(const HostedSweep.all()).bytes ?? 0;
 
     return jsonEncode({
       'quotaGb': quotaGb,
@@ -374,9 +376,8 @@ class NodeRoleApi {
       // What the Free-space button would ACTUALLY give back — everything held
       // for other people. Previewing a different sweep than the button runs is
       // how a UI ends up lying to the person about to press it.
-      'freeableBytes': archive?.previewSweep(const HostedSweep.all()).bytes ?? 0,
-      'freeableText':
-          _size(archive?.previewSweep(const HostedSweep.all()).bytes ?? 0),
+      'freeableBytes': freeable,
+      'freeableText': _size(freeable),
       'followed': p?.archiveFollowed ?? true,
       'topics': p?.archiveTopics ?? const <String>[],
       'fromLan': p?.archiveFromLan ?? true,
