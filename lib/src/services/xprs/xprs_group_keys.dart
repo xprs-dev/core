@@ -123,12 +123,18 @@ class XprsGroupKeys {
   /// held until [create] picks one or the next call replaces the pool. The
   /// callsign derives from the key (26.1), so choosing a callsign means
   /// choosing among keys; none collides with a group already held here.
-  List<String> candidates(int count) {
-    _candidates.clear();
+  ///
+  /// With [more], the pool is kept and [count] new ones are added (only those
+  /// are returned): a person turning through callsigns gets fresh ones for as
+  /// long as they like, and can still go back to and create any shown before.
+  /// The pool is bounded ([maxCandidates]); the oldest go first.
+  List<String> candidates(int count, {bool more = false}) {
+    if (!more) _candidates.clear();
     final db = _db;
     if (db == null) return const [];
     final n = count.clamp(1, 64);
-    for (var tries = 0; _candidates.length < n && tries < n * 4; tries++) {
+    final fresh = <String>[];
+    for (var tries = 0; fresh.length < n && tries < n * 4; tries++) {
       final kp = NostrCrypto.generateKeyPair();
       final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
       if (_candidates.containsKey(call)) continue;
@@ -137,9 +143,17 @@ class XprsGroupKeys {
         continue;
       }
       _candidates[call] = kp;
+      fresh.add(call);
     }
-    return _candidates.keys.toList(growable: false);
+    while (_candidates.length > maxCandidates) {
+      _candidates.remove(_candidates.keys.first);
+    }
+    return fresh;
   }
+
+  /// How many offered keys are held at once (memory only, a few hundred bytes
+  /// each).
+  static const int maxCandidates = 512;
 
   /// The private scalar this group signs with, or null when we do not hold it
   /// -- i.e. we are a member or a bystander rather than the admin.
