@@ -63,4 +63,25 @@ class HttpTransport {
     final res = await future;
     return HttpResult(res.statusCode, res.bodyBytes);
   }
+
+  /// Any method, raw body bytes, the caller's headers. The one general
+  /// request: a wapp's `hal_http_request2` (an API that wants a key in a
+  /// header, a PUT or a DELETE) goes through here. Throws on network
+  /// failure or timeout, like [get] and [post].
+  Future<HttpResult> request(
+    String method,
+    Uri url, {
+    Map<String, String>? headers,
+    List<int>? body,
+    Duration? timeout,
+  }) async {
+    final req = http.Request(method.toUpperCase(), url);
+    if (headers != null) req.headers.addAll(headers);
+    if (body != null) req.bodyBytes = body;
+    // The deadline covers connecting as well as reading the answer.
+    var future = req.send().then(http.Response.fromStream);
+    if (timeout != null) future = future.timeout(timeout);
+    final res = await future;
+    return HttpResult(res.statusCode, res.bodyBytes);
+  }
 }
