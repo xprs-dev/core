@@ -96,6 +96,7 @@ class DeviceIdentity {
         active.callsign.startsWith('X3') &&
         active.nsec.isNotEmpty) {
       _adopt(active.callsign, active.npub, active.nsec);
+      _isProfile = true;
       return;
     }
     final root = xprsRootStorage();
@@ -125,30 +126,67 @@ class DeviceIdentity {
   }
 
   Future<void> _create() async {
+    final c = candidate();
+    await _store(c.callsign, c.npub, c.nsec);
+    LogService.instance.add('device: new station identity ${c.callsign}');
+  }
+
+  /// Whether the station key is the active profile's own (a headless server
+  /// whose profile IS the X3): then it is changed with the profile, never here.
+  bool get isProfileKey => _isProfile;
+  bool _isProfile = false;
+
+  /// A fresh station key and the callsign it derives, for a person choosing
+  /// one they like (XPRS.md 3: the callsign comes from the key, so a new
+  /// callsign IS a new key). Nothing is stored; [replace] keeps the one picked.
+  static ({String callsign, String npub, String nsec}) candidate() {
     final keys = NostrKeyGenerator.generateKeyPair(
         callsignLength: reticulum.NostrCrypto.kDefaultCallsignLength);
-    final npub = keys.npub;
-    final call = NostrKeyGenerator.deriveStationCallsign(npub,
+    final call = NostrKeyGenerator.deriveStationCallsign(keys.npub,
         length: reticulum.NostrCrypto.kDefaultCallsignLength);
-    // The keychain where there is one; the file where there is not (a write
-    // to NoSecureStore is dropped, which the read-back catches).
+    return (callsign: call.trim().toUpperCase(), npub: keys.npub, nsec: keys.nsec);
+  }
+
+  /// Wear the station key [nsec] from now on, in place of the one made on the
+  /// first start: kept where that one was (the keychain, else the file) and
+  /// used at once by everything that reads [callsign]. Peers learn the new
+  /// callsign from the station's next announcements; whoever saved the old
+  /// one by hand has to be told. Returns the new callsign.
+  Future<String> replace(String nsec) async {
+    if (_isProfile) {
+      throw StateError('the station key is the active profile; change it there');
+    }
+    final npub = NostrKeyGenerator.derivePublicKey(nsec) ?? '';
+    if (npub.isEmpty) throw ArgumentError('not a station key');
+    final call = NostrKeyGenerator.deriveStationCallsign(npub,
+            length: reticulum.NostrCrypto.kDefaultCallsignLength)
+        .trim()
+        .toUpperCase();
+    final old = _callsign;
+    await _store(call, npub, nsec);
+    LogService.instance.add('device: station identity $old is now $call');
+    return call;
+  }
+
+  /// Keep a station key: the private half in the keychain where there is one,
+  /// the file where there is not (a write to NoSecureStore is dropped, which
+  /// the read-back catches); the public half in the file. Then wear it.
+  Future<void> _store(String call, String npub, String nsec) async {
     var inKeychain = false;
     try {
-      await CoreHost.secureStore.write(_secureKey, keys.nsec);
-      inKeychain = await CoreHost.secureStore.read(_secureKey) == keys.nsec;
+      await CoreHost.secureStore.write(_secureKey, nsec);
+      inKeychain = await CoreHost.secureStore.read(_secureKey) == nsec;
     } catch (_) {
       inKeychain = false;
     }
     final doc = <String, dynamic>{
       'callsign': call,
       'npub': npub,
-      if (!inKeychain) 'nsec': keys.nsec,
+      if (!inKeychain) 'nsec': nsec,
       'createdAt': DateTime.now().millisecondsSinceEpoch,
     };
     await xprsRootStorage().writeString(_file, jsonEncode(doc));
-    _adopt(call, npub, keys.nsec);
-    LogService.instance.add('device: new station identity $call'
-        '${inKeychain ? ' (key in the keychain)' : ''}');
+    _adopt(call, npub, nsec);
   }
 
   void _adopt(String call, String npub, String nsec) {
@@ -168,6 +206,7 @@ class DeviceIdentity {
 
   /// For tests: forget the loaded key.
   void resetForTest() {
+    _isProfile = false;
     _callsign = '';
     _npub = '';
     _nsec = '';

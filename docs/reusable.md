@@ -628,3 +628,12 @@ this, never only the heard table.
   on the minute tick. `XprsLineLane.nudge()` makes clients in a backoff dial
   at once (at most once a minute each); `RnsService.onUplinkUp` fires it when
   an internet uplink rises, i.e. the network is back.
+
+## Choosing the station's callsign (`DeviceIdentity.candidate` / `replace`)
+
+The X3 comes from its key (XPRS.md 3), so a new callsign is a new key:
+`DeviceIdentity.candidate()` makes one (nothing stored), `replace(nsec)` keeps
+it where the first key was (keychain, else `station/device.json`) and wears it
+at once. Refused when the station key is the active profile (`isProfileKey`, a
+headless server). Tests point storage at a temp folder with
+`setStorageRootForTest(dir)` (storage_paths.dart) instead of the real data dir.

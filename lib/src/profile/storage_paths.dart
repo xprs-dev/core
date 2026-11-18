@@ -73,6 +73,9 @@ Future<void> initStorageRoot() async {
   _resolvedBase = '$home/.local/share/xprs';
 }
 
+/// For tests: keep everything under [dir] instead of the real data folder.
+void setStorageRootForTest(String dir) => _resolvedBase = dir;
+
 String _xprsBaseDir() {
   if (_resolvedBase != null) return _resolvedBase!;
   // Fallback if initStorageRoot() hasn't run yet (desktop layout).

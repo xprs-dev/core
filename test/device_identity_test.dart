@@ -5,6 +5,9 @@ import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/profile/device_identity.dart';
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:xprs_core/src/profile/storage_paths.dart';
 
 import 'package:xprs_core/src/services/xprs/xprs_history_server.dart';
 import 'package:xprs_core/src/services/xprs/xprs_ingest.dart';
@@ -27,6 +30,27 @@ void main() {
     expect(dev.callsign.startsWith('X3'), isTrue);
     expect(dev.isDevice('${dev.callsign}-2'), isTrue);
     expect(dev.isDevice(keys.callsign), isFalse); // the X1 of the same key
+  });
+
+  test('a new callsign is a new key, kept and worn at once', () async {
+    final dir = Directory.systemTemp.createTempSync('devid');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    setStorageRootForTest(dir.path);
+    final dev = DeviceIdentity.instance;
+    final before = dev.callsign;
+    final c = DeviceIdentity.candidate();
+    expect(c.callsign.startsWith('X3'), isTrue);
+    expect(c.callsign, NostrKeyGenerator.deriveStationCallsign(c.npub));
+    final now = await dev.replace(c.nsec);
+    expect(now, c.callsign);
+    expect(dev.callsign, c.callsign);
+    expect(dev.callsign, isNot(before));
+    expect(XprsCrypto.publicKeyXOnly(dev.scalar!), isNotEmpty);
+    // A restart reads the same key back.
+    dev.resetForTest();
+    await dev.ensure();
+    expect(dev.callsign, c.callsign);
+    expect(() => dev.replace('not a key'), throwsA(anything));
   });
 
   test('the policy answer is signed by the device and names its owners', () {
