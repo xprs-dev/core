@@ -141,6 +141,25 @@ class XprsLineClient {
     }
   }
 
+  DateTime? _nudgedAt;
+
+  /// The network just came back (an internet uplink rose): a client sitting
+  /// out a long backoff dials now instead of up to ten minutes later. At
+  /// most once a minute, and a no-op while connected or dialling.
+  void nudge() {
+    if (!_wanted || _sock != null || _connecting || _retry == null) return;
+    final now = DateTime.now();
+    final last = _nudgedAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 1)) {
+      return;
+    }
+    _nudgedAt = now;
+    _retry?.cancel();
+    _retry = null;
+    _failures = 0;
+    unawaited(_connect());
+  }
+
   Duration _retryIn() {
     final n = _failures.clamp(0, 6);
     final d = _retryFloor * (1 << n);
@@ -283,6 +302,14 @@ class XprsLineLane {
     for (final call in List.of(_clients.keys)) {
       if (keep.contains(call)) continue;
       _clients.remove(call)?.close('no longer chosen');
+    }
+  }
+
+  /// The network came back: clients in a backoff dial now (see
+  /// [XprsLineClient.nudge]).
+  void nudge() {
+    for (final c in _clients.values) {
+      c.nudge();
     }
   }
 

@@ -507,11 +507,25 @@ class PreferencesService {
   int get xprsRoomStations => _prefs.getInt('xprs.roomStations') ?? 500;
   set xprsRoomStations(int v) => _prefs.setInt('xprs.roomStations', v);
 
-  /// The `dial:` each archiver announced, by callsign, remembered across
-  /// restarts: the station table is in memory, and a pocket device hears an
-  /// archiver's announcement only while attached to a transport (13.0.2).
-  Map<String, String> get xprsArchiverDials {
-    final raw = _prefs.getString('xprs.archiverDials') ?? '';
+  /// Where each archiver answers, by callsign: what it announced, with any
+  /// dial the person typed by hand taking precedence (performance.md 8.21: a
+  /// setting the operator made outranks one learned from the air). Remembered
+  /// across restarts: the station table is in memory, and a pocket device
+  /// hears an archiver's announcement only while attached to a transport
+  /// (13.0.2).
+  Map<String, String> get xprsArchiverDials =>
+      {...xprsArchiverDialsHeard, ..._dialMap('xprs.archiverDialsHand')};
+
+  /// Only the dials heard in announcements.
+  Map<String, String> get xprsArchiverDialsHeard =>
+      _dialMap('xprs.archiverDials');
+
+  /// Only the dials the person set by hand.
+  Map<String, String> get xprsArchiverDialsByHand =>
+      _dialMap('xprs.archiverDialsHand');
+
+  Map<String, String> _dialMap(String key) {
+    final raw = _prefs.getString(key) ?? '';
     if (raw.isEmpty) return const {};
     try {
       final m = jsonDecode(raw);
@@ -526,18 +540,26 @@ class PreferencesService {
     return const {};
   }
 
-  /// Remember (or, with null, forget) where [callsign] answers.
-  void rememberArchiverDial(String callsign, String? dial) {
+  /// Remember (or, with null, forget) where [callsign] said it answers.
+  void rememberArchiverDial(String callsign, String? dial) =>
+      _setDial('xprs.archiverDials', callsign, dial);
+
+  /// Set (or, with null, clear) the dial the person typed for [callsign]; a
+  /// cleared one falls back to what the archiver announces.
+  void setArchiverDialByHand(String callsign, String? dial) =>
+      _setDial('xprs.archiverDialsHand', callsign, dial);
+
+  void _setDial(String key, String callsign, String? dial) {
     final c = callsign.trim().toUpperCase();
     if (c.isEmpty) return;
-    final m = Map<String, String>.of(xprsArchiverDials);
+    final m = Map<String, String>.of(_dialMap(key));
     if (dial == null || dial.trim().isEmpty) {
       if (m.remove(c) == null) return;
     } else {
       if (m[c] == dial.trim()) return;
       m[c] = dial.trim();
     }
-    _prefs.setString('xprs.archiverDials', jsonEncode(m));
+    _prefs.setString(key, jsonEncode(m));
   }
 
   Future<void> setXprsServeHistory(bool v) async {

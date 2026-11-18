@@ -101,6 +101,33 @@ void main() {
       c.close();
       expect(c.wanted, isFalse);
     });
+
+    test('a nudge (the network came back) dials now, not after the backoff',
+        () async {
+      // Reserve a port, leave it closed: the first dial is refused.
+      final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final c = XprsLineClient(
+        callsign: 'X3BACK',
+        dial: XprsDial('127.0.0.1', port),
+      );
+      await c.open();
+      expect(c.connected, isFalse);
+      expect(c.status['failures'], 1, reason: 'a retry is now 30 s away');
+      // The archiver (or the network to it) is back.
+      final back = await ServerSocket.bind(InternetAddress.loopbackIPv4, port);
+      final up = Completer<void>();
+      back.listen((_) {});
+      c.onUp = up.complete;
+      c.nudge();
+      await up.future.timeout(const Duration(seconds: 5));
+      expect(c.connected, isTrue);
+      expect(c.status['failures'], 0);
+      c.nudge(); // connected: nothing happens
+      c.close();
+      await back.close();
+    });
   });
 
   group('XprsLineLane', () {

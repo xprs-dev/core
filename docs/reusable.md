@@ -619,3 +619,12 @@ this, never only the heard table.
   shared with its person; `lxmfDestForCallsign` consults it after the
   observed table. `_noteStationSender` fills it from a station's own signed
   wire that arrived over LXMF (signature checked only on a change).
+- Archiver dials: `PreferencesService.xprsArchiverDials` is the effective
+  map (heard, overlaid by hand); `rememberArchiverDial` writes only what was
+  heard, `setArchiverDialByHand` only what the person typed (null clears).
+  A setting the operator made must outrank one learned from the air; reuse
+  this two-map pattern for any other learned-but-overridable value.
+- `MeshService.redialArchivers()` applies a list/dial change now instead of
+  on the minute tick. `XprsLineLane.nudge()` makes clients in a backoff dial
+  at once (at most once a minute each); `RnsService.onUplinkUp` fires it when
+  an internet uplink rises, i.e. the network is back.

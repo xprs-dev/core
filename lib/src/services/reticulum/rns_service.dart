@@ -220,6 +220,10 @@ class RnsService {
   /// went silent (e.g. the device's network changed). The owner (rns_autostart)
   /// wires this to kick an immediate reconnect across the bootstrap hub list.
   void Function()? onLinkDown;
+
+  /// An internet uplink came up: the network is (back) here. The line lane
+  /// uses it to stop waiting out a backoff (MeshService wires it).
+  void Function()? onUplinkUp;
   // Per-uplink last-inbound wall-clock, keyed by the uplink's via tag
   // ('tcp:host:port'). The global _lastInboundMs above masks a single wedged hub
   // when another hub is still trickling packets; this lets the watchdog spot and
@@ -1652,6 +1656,7 @@ class RnsService {
     _connectedHubs.add(key);
     _transport!.addInterface(c);
     _ifaces.add(c);
+    onUplinkUp?.call();
     return c;
   }
 

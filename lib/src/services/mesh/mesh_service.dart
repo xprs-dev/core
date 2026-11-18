@@ -851,6 +851,7 @@ class MeshService {
             (call) => MeshStore.instance.heldWiresFor(call);
         _wireDirectory(mediaArchive);
         XprsLineLane.instance.onClientUp = _onLineUp;
+        RnsService.instance.onUplinkUp = XprsLineLane.instance.nudge;
         XprsGossip.instance.onSighting = (call, gateway) {
           final me = NostrCrypto.bareCallsign(tableCallsign);
           if (me.isEmpty || gateway == me) return;
@@ -2032,19 +2033,23 @@ class MeshService {
   /// announced is remembered in the preferences, because the station table
   /// is in memory and a pocket device hears the announcement only while it
   /// is attached to a transport.
+  ///
+  /// Public as [redialArchivers] so a settings change takes effect now rather
+  /// than on the next minute tick.
+  void redialArchivers() => _dialArchivers();
+
   void _dialArchivers() {
     final prefs = PreferencesService.instanceSync;
     if (prefs == null || platform.isWeb) return;
-    final dials = Map<String, String>.of(prefs.xprsArchiverDials);
+    final heard = prefs.xprsArchiverDialsHeard;
     for (final st in XprsMonitor.instance.stations.values) {
       final d = st.dial;
       if (d == null) continue;
       final c = NostrCrypto.bareCallsign(st.callsign);
-      if (dials[c] != d) {
-        dials[c] = d;
-        prefs.rememberArchiverDial(c, d);
-      }
+      if (heard[c] != d) prefs.rememberArchiverDial(c, d);
     }
+    // Heard, overlaid by what the person typed: a hand-set dial wins.
+    final dials = prefs.xprsArchiverDials;
     final self = NostrCrypto.bareCallsign(tableCallsign);
     final want = <String, XprsDial>{};
     for (final a in prefs.xprsArchivers) {

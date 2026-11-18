@@ -23,6 +23,7 @@ class XprsLineClient {
   void Function(String why)? onDown;
   Future<void> open() async {}
   void close([String why = 'closed']) {}
+  void nudge() {}
   bool send(String wire) => false;
   Map<String, Object?> get status =>
       {'callsign': callsign, 'dial': dial.toString(), 'connected': false};
@@ -37,6 +38,7 @@ class XprsLineLane {
   bool connectedTo(String callsign) => false;
   bool get anyConnected => false;
   Future<void> wantAll(Map<String, XprsDial> want) async {}
+  void nudge() {}
   bool sendTo(String callsign, String wire) => false;
   void closeAll([String why = 'closed']) {}
   List<Map<String, Object?>> get status => const [];
