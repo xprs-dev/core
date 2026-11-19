@@ -294,6 +294,11 @@ class WebChatApi {
       required List<String> types,
       required int limit})? roomRows;
 
+  /// Public groups ranked across this station's archivers (XPRS.md 12.9.7):
+  /// `GET /api/xprs/groups?by=`. Null where the host keeps no ranking.
+  final ({int sources, List<Map<String, Object?>> rows}) Function(String by)?
+      groupRank;
+
   WebChatApi({
     required this.publicRows,
     required this.held,
@@ -313,6 +318,7 @@ class WebChatApi {
     this.roomKeys,
     this.keep,
     this.roomRows,
+    this.groupRank,
     this.fileStore,
     this.fileMax = defaultFileMax,
     this.staffFileMax = defaultStaffFileMax,
@@ -463,6 +469,14 @@ class WebChatApi {
       return _history(query, peer);
     }
     if (method == 'GET' && path == '/api/xprs/mail') return _mail(query);
+    if (method == 'GET' && path == '/api/xprs/groups' && groupRank != null) {
+      final by = query['by'] ?? 'active';
+      if (!const {'active', 'members', 'growing'}.contains(by)) {
+        return const WebChatReply(400, {'ok': false, 'error': 'by: active, members or growing'});
+      }
+      final r = groupRank!(by);
+      return WebChatReply(200, {'ok': true, 'by': by, 'sources': r.sources, 'rows': r.rows});
+    }
     if (method == 'GET' && path == '/api/xprs/devices' && devices != null) {
       final rows = devices!();
       return WebChatReply(200, {'ok': true, 'count': rows.length, 'devices': rows});
@@ -555,6 +569,8 @@ class WebChatApi {
         'admin': true,
         // And moderators (XPRS.md 10.10).
         if (groups != null) 'moderation': true,
+        // And ranks public groups (GET /api/xprs/groups, XPRS.md 12.9.7).
+        if (groupRank != null) 'groups': true,
         if (app != null) 'app': app,
       },
     });

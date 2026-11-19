@@ -26,6 +26,7 @@ import '../receive/packet_gateway.dart';
 import '../reticulum/rns_service.dart';
 import '../web_chat_api.dart';
 import '../web_chat_rns.dart';
+import '../xprs/xprs_group_rank_rows.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_groups.dart';
@@ -133,6 +134,7 @@ WebChatApi stationWebChatApi({
             to: [room],
             limit: limit,
           ),
+      groupRank: (by) => xprsGroupRankRows(by),
     )..ownIdentity = XprsPublisher.instance.ownIdentityWire;
 
 class StationHost {
