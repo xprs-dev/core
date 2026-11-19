@@ -275,14 +275,18 @@ class XprsGroupIndex {
         sealed INTEGER NOT NULL,
         ts     INTEGER NOT NULL
       )''');
-    for (final row in db.select('SELECT grp, week, kind, regs FROM gi_week')) {
+    // Bounded by what the index keeps: groups x weeks x three kinds.
+    for (final row in db.select(
+        'SELECT grp, week, kind, regs FROM gi_week LIMIT ?',
+        [maxGroups * weeksKept * 3])) {
       final sk = XprsSketch.decode('${row['regs']}');
       if (sk == null) continue;
       _counts
           .putIfAbsent('${row['grp']}', () => {})
           .putIfAbsent(row['week'] as int, () => {})['${row['kind']}'] = sk;
     }
-    for (final row in db.select('SELECT grp, sealed, ts FROM gi_mode')) {
+    for (final row in db.select(
+        'SELECT grp, sealed, ts FROM gi_mode LIMIT ?', [maxGroups])) {
       _mode['${row['grp']}'] =
           (sealed: row['sealed'] == 1, ts: row['ts'] as int);
     }
@@ -412,9 +416,9 @@ class XprsGroupIndex {
     final db = _db;
     if (db == null) return 0;
     db.execute('CREATE TABLE IF NOT EXISTS gi_meta(k TEXT PRIMARY KEY, v TEXT)');
-    if (db.select("SELECT 1 FROM gi_meta WHERE k = 'backfilled'").isNotEmpty) {
-      return 0;
-    }
+    final done = db.select(
+        "SELECT COUNT(*) AS n FROM gi_meta WHERE k = 'backfilled'");
+    if ((done.first['n'] as int? ?? 0) > 0) return 0;
     var n = 0;
     int? until;
     for (var pages = 0; pages < 400; pages++) {
