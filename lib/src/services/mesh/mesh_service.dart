@@ -1807,8 +1807,8 @@ class MeshService {
 
   /// A listing (a directory, a groups index) fetched from [archiver] by its
   /// digest over the cheap lane, bounded to [maxBytes] and streamed in.
-  Future<String?> _fetchListing(
-      String archiver, String sha, String ext, int maxBytes) async {
+  Future<String?> _fetchListing(String archiver, String sha, String ext,
+      int maxBytes, MediaArchive archive) async {
     final self = NostrCrypto.bareCallsign(tableCallsign);
     if (self.isEmpty) return null;
     final path = await XprsFileFetch.instance.fetch(
@@ -1818,6 +1818,16 @@ class MeshService {
         ext: ext,
         timeout: const Duration(minutes: 10));
     if (path == null) return null;
+    // Over the internet the bytes land in the media archive and the "path"
+    // is their `file:` token (internetFetch); only the bulk lane writes a
+    // file. Reading the token as a path failed every time, silently, so a
+    // listing fetched over the internet was never read.
+    if (path.startsWith('file:')) {
+      final size = archive.sizeOf(path);
+      if (size == null || size > maxBytes) return null;
+      final bytes = archive.get(path);
+      return bytes == null ? null : utf8.decode(bytes, allowMalformed: true);
+    }
     try {
       final f = fs.file(path);
       if (await f.length() > maxBytes) return null;
@@ -1887,15 +1897,14 @@ class MeshService {
     XprsGroupRanking.instance
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
-      ..fetchText = ((archiver, sha) =>
-          _fetchListing(archiver, sha, XprsGroupIndexFile.ext,
-              XprsGroupIndexFile.maxBytes));
+      ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
+          XprsGroupIndexFile.ext, XprsGroupIndexFile.maxBytes, mediaArchive));
     XprsDirectoryConsumer.instance
       ..onIndex = XprsGroupRanking.instance.noteIndex
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
-      ..fetchText = ((archiver, sha) => _fetchListing(
-          archiver, sha, XprsDirectory.ext, XprsDirectory.maxBytes));
+      ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
+          XprsDirectory.ext, XprsDirectory.maxBytes, mediaArchive));
   }
 
   // ── Who we hear, told to our archivers (12.1) ─────────────────────────────
