@@ -69,6 +69,19 @@ class XprsDirectory {
   static const String magic = 'XDIR1';
   static const String ext = 'xdir';
 
+  /// The line that names the archiver's groups index (12.9.7).
+  static const String indexLine = 'XGRP1';
+
+  /// The digest of the groups index a listing names, or null.
+  static String? indexShaIn(String text) {
+    for (final raw in const LineSplitter().convert(text)) {
+      final line = raw.trim();
+      if (!line.startsWith('$indexLine file:')) continue;
+      return shaOfRef(line.substring(indexLine.length + 6).trim());
+    }
+    return null;
+  }
+
   /// The largest listing a consumer reads: ten thousand callsigns are about
   /// 280 kB (12.9), so a megabyte is a bound nobody honest reaches, and a
   /// file past it is not a directory.
@@ -76,7 +89,10 @@ class XprsDirectory {
 
   /// The listing: header, then one line per callsign, sorted by callsign;
   /// a callsign named twice keeps its freshest time. Lines end in `\n`.
-  static String compose(Iterable<XprsDirectoryEntry> entries) {
+  /// [indexRef]: the `file:` value of this archiver's groups index
+  /// (12.9.7), named on a line an older reader skips.
+  static String compose(Iterable<XprsDirectoryEntry> entries,
+      {String? indexRef}) {
     final best = <String, int>{};
     for (final e in entries) {
       final c = e.call.trim().toUpperCase();
@@ -86,6 +102,9 @@ class XprsDirectory {
     }
     final calls = best.keys.toList()..sort();
     final b = StringBuffer('$magic\n');
+    if (indexRef != null && indexRef.isNotEmpty) {
+      b.write('$indexLine file:$indexRef\n');
+    }
     for (final c in calls) {
       b.write('$c ${xprsNowTs(best[c]!)}\n');
     }
@@ -183,6 +202,10 @@ class XprsDirectoryAnnouncer {
   /// digest is given so the host can stop offering it.
   void Function(Uint8List bytes, String shaHex, String? previousSha)? store;
 
+  /// The `file:` value of this archiver's groups index (12.9.7), or null.
+  /// Asked when the listing is composed; the host keeps the file.
+  String? Function()? indexRef;
+
   /// Air a signed wire on the bearers, and leave a copy with the archivers.
   Future<void> Function(String wire)? air;
   void Function(String wire)? deposit;
@@ -206,7 +229,8 @@ class XprsDirectoryAnnouncer {
     _lastMs = now;
     final self = (selfCallsign?.call() ?? '').trim().toUpperCase();
     if (self.isEmpty) return null;
-    final text = XprsDirectory.compose(entries?.call() ?? const []);
+    final text = XprsDirectory.compose(entries?.call() ?? const [],
+        indexRef: indexRef?.call());
     final sha = XprsDirectory.shaOf(text);
     if (sha == _lastSha) {
       unchanged++;
@@ -250,6 +274,7 @@ class XprsDirectoryAnnouncer {
     count = null;
     selfCallsign = null;
     signingKey = null;
+    indexRef = null;
     serve = null;
     dial = null;
     room = null;
@@ -276,6 +301,9 @@ class XprsDirectoryConsumer {
 
   /// Where the pointers go. Default: the gossip table.
   void Function(String archiver, List<XprsDirectoryEntry> entries)? store;
+
+  /// The listing named the archiver's groups index (12.9.7).
+  void Function(String archiver, String shaHex)? onIndex;
 
   /// (archiver, digest) pairs already fetched. Bounded; a restart forgets,
   /// which costs one re-fetch of an unchanged file per archiver.
@@ -324,6 +352,8 @@ class XprsDirectoryConsumer {
         }
         fetched++;
         (store ?? _defaultStore)(from, entries);
+        final idx = XprsDirectory.indexShaIn(text);
+        if (idx != null) onIndex?.call(from, idx);
         LogService.instance.add(
             'XPRS: directory of $from read (${entries.length} callsign(s)) — 12.9');
       } catch (e) {
@@ -343,5 +373,6 @@ class XprsDirectoryConsumer {
     named = null;
     fetchText = null;
     store = null;
+    onIndex = null;
   }
 }

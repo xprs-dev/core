@@ -401,6 +401,11 @@ class XprsArchive {
   /// and stopped asking for it.
   void Function(String fromBase, int? tsMs)? onStored;
 
+  /// A packet filed for the first time (not a copy heard again), with its
+  /// section 5 identifier and signature verdict, after the transaction that
+  /// wrote it. What a groups index counts (12.9.7).
+  void Function(XprsPacket p, String id, XprsSigState sig)? onFiled;
+
   void flush({int? nowMs}) {
     final db = _db;
     if (db == null || _pending.isEmpty) {
@@ -411,6 +416,7 @@ class XprsArchive {
     // Collected during the write and fired after the transaction, so a hook
     // that throws cannot leave the batch half-committed.
     final stored = <MapEntry<String, int?>>[];
+    final filed = <(XprsPacket, String, XprsSigState)>[];
     /// Senders whose identity rows need collapsing after this batch.
     final identities = <String>{};
     /// Stations followed by callsign whose presence rows need capping.
@@ -508,6 +514,7 @@ class XprsArchive {
           final bytes = (res['b'] as num).toInt();
           if (res['heard'] == 1) {
             _bump(p.type, toWire, tierNow, 1, bytes);
+            if (onFiled != null) filed.add((p, id, sig));
           } else if (before != null && before != tierNow) {
             _bump(p.type, toWire, before, -1, -bytes);
             _bump(p.type, toWire, tierNow, 1, bytes);
@@ -558,6 +565,16 @@ class XprsArchive {
     if (stored.isNotEmpty) CoreState.instance.changed(CoreState.archive);
 
     // Only now, and only for rows the transaction actually wrote.
+    final hook = onFiled;
+    if (hook != null) {
+      for (final f in filed) {
+        try {
+          hook(f.$1, f.$2, f.$3);
+        } catch (_) {
+          // A count that throws must not cost the spool its flush.
+        }
+      }
+    }
     final notify = onStored;
     if (notify != null) {
       for (final e in stored) {

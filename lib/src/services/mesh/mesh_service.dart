@@ -31,6 +31,7 @@ import '../preferences_service.dart';
 import '../xprs/xprs_airtime.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_profiles.dart';
+import '../xprs/xprs_group_index.dart';
 import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_catchup.dart';
@@ -384,6 +385,11 @@ class MeshService {
         // tap can try them before prompting. Same profile-encrypted store.
         XprsPassphrases.instance.init(
             wappsDataStorage(prefs).getAbsolutePath('xprs_passphrases.zx'));
+        // The groups index this station counts as an archiver (12.9.7): per
+        // public group, the weeks of posts, posters and joins it filed.
+        XprsGroupIndex.instance.init(
+            wappsDataStorage(prefs).getAbsolutePath('xprs_group_index.zx'));
+        XprsArchive.instance.onFiled = XprsGroupIndex.instance.offer;
         // A closed group's reading keys (xprs_group_read): what keeps its words
         // private without handing out its authority. Same profile store kind.
         XprsGroupRead.instance
@@ -1020,6 +1026,20 @@ class MeshService {
       if (n > 0) LogService.instance.add('XPRS: replayed $n group act(s)');
     } catch (e) {
       LogService.instance.add('XPRS: could not replay stored groups: $e');
+    }
+    // The groups index starts from what the archive already holds (12.9.7),
+    // once, after the rosters it judges posts against are back.
+    try {
+      await XprsGroupIndex.instance.backfill(
+          ({int? untilMs}) => XprsArchive.instance.query(
+              types: const ['message', 'moderate'],
+              sinceMs: DateTime.now()
+                  .subtract(const Duration(days: 28))
+                  .millisecondsSinceEpoch,
+              untilMs: untilMs,
+              limit: 500));
+    } catch (e) {
+      LogService.instance.add('XPRS: groups index backfill failed: $e');
     }
     // The key bindings are back: what waited for one we now hold goes, and
     // the rest are looked for again.
@@ -1740,6 +1760,72 @@ class MeshService {
       ? MeshStore.instance.heldWiresFor(call, max: 1000).length
       : 0;
 
+  int _indexAtMs = 0;
+  String? _indexRef, _indexSha;
+
+  /// This archiver's groups index (12.9.7): recomposed at most every thirty
+  /// minutes, held in the file store like the directory, its `file:` value
+  /// named on the directory. Null while there is nothing to list.
+  String? _groupIndexRef(MediaArchive mediaArchive) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_indexRef != null && now - _indexAtMs < 30 * 60 * 1000) {
+      return _indexRef;
+    }
+    _indexAtMs = now;
+    XprsGroupIndex.instance.touch(); // rosters move without a post
+    final cur = XprsGroupIndex.instance.current();
+    if (cur == null) return _indexRef = null;
+    if (cur.sha == _indexSha) return _indexRef;
+    final bytes = Uint8List.fromList(utf8.encode(cur.text));
+    final token = mediaArchive.putBytes(bytes, XprsGroupIndexFile.ext,
+        name: 'groups');
+    XprsFileServer.instance.hold(XprsHeldFile(
+      archiveToken: token,
+      shaHex: cur.sha,
+      size: bytes.length,
+      name: 'groups.${XprsGroupIndexFile.ext}',
+      ext: XprsGroupIndexFile.ext,
+    ));
+    final previous = _indexSha;
+    if (previous != null) XprsFileServer.instance.drop(previous);
+    _indexSha = cur.sha;
+    // Our own counts are part of what we rank.
+    final groups = XprsGroupIndexFile.parse(cur.text);
+    if (groups != null) {
+      XprsGroupRanking.instance.put(
+          NostrCrypto.bareCallsign(tableCallsign), cur.sha, groups);
+    }
+    final b64 = MediaRef.hexToB64u(cur.sha);
+    return _indexRef = b64 == null ? null : '$b64.${XprsGroupIndexFile.ext}';
+  }
+
+  /// A listing (a directory, a groups index) fetched from [archiver] by its
+  /// digest over the cheap lane, bounded to [maxBytes] and streamed in.
+  Future<String?> _fetchListing(
+      String archiver, String sha, String ext, int maxBytes) async {
+    final self = NostrCrypto.bareCallsign(tableCallsign);
+    if (self.isEmpty) return null;
+    final path = await XprsFileFetch.instance.fetch(
+        archiver: archiver,
+        shaHex: sha,
+        selfCallsign: self,
+        ext: ext,
+        timeout: const Duration(minutes: 10));
+    if (path == null) return null;
+    try {
+      final f = fs.file(path);
+      if (await f.length() > maxBytes) return null;
+      final chunks = BytesBuilder(copy: false);
+      await for (final c in f.openRead()) {
+        chunks.add(c);
+        if (chunks.length > maxBytes) return null;
+      }
+      return utf8.decode(chunks.takeBytes(), allowMalformed: true);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// The directory this public archiver publishes and the ones it reads
   /// (12.9), wired to this device's file store, lanes and preferences.
   void _wireDirectory(MediaArchive mediaArchive) {
@@ -1768,6 +1854,9 @@ class MeshService {
         return d.isEmpty ? null : d;
       })
       ..room = (() => _hasRoom() ? null : 'no')
+      // The groups index (12.9.7), recomposed at most every thirty minutes
+      // and named on a line of the directory.
+      ..indexRef = (() => _groupIndexRef(mediaArchive))
       ..store = ((bytes, sha, previous) {
         // Into the one content store every file lane ends in, offered by
         // its digest like any held file; the previous listing is no longer
@@ -1789,37 +1878,18 @@ class MeshService {
       })
       ..deposit = ((wire) =>
           XprsPublisher.instance.depositArchivers([wire], what: 'service'));
-    XprsDirectoryConsumer.instance
+    XprsGroupRanking.instance
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
-      ..fetchText = ((archiver, sha) async {
-        final self = NostrCrypto.bareCallsign(tableCallsign);
-        if (self.isEmpty) return null;
-        // The cheap lane: XprsFileFetch races the internet middle against
-        // the radio bulk lane and verifies the bytes against the digest.
-        final path = await XprsFileFetch.instance.fetch(
-            archiver: archiver,
-            shaHex: sha,
-            selfCallsign: self,
-            ext: XprsDirectory.ext,
-            timeout: const Duration(minutes: 10));
-        if (path == null) return null;
-        try {
-          // Bounded before it is read, and streamed in: a listing is a
-          // few hundred kilobytes at most (XprsDirectory.maxBytes), and a
-          // file past that is not one.
-          final f = fs.file(path);
-          if (await f.length() > XprsDirectory.maxBytes) return null;
-          final chunks = BytesBuilder(copy: false);
-          await for (final c in f.openRead()) {
-            chunks.add(c);
-            if (chunks.length > XprsDirectory.maxBytes) return null;
-          }
-          return utf8.decode(chunks.takeBytes(), allowMalformed: true);
-        } catch (_) {
-          return null;
-        }
-      });
+      ..fetchText = ((archiver, sha) =>
+          _fetchListing(archiver, sha, XprsGroupIndexFile.ext,
+              XprsGroupIndexFile.maxBytes));
+    XprsDirectoryConsumer.instance
+      ..onIndex = XprsGroupRanking.instance.noteIndex
+      ..named =
+          (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
+      ..fetchText = ((archiver, sha) => _fetchListing(
+          archiver, sha, XprsDirectory.ext, XprsDirectory.maxBytes));
   }
 
   // ── Who we hear, told to our archivers (12.1) ─────────────────────────────

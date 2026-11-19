@@ -514,6 +514,21 @@ class XprsGroups {
         role == XprsRole.admin;
   }
 
+  /// The newest act on [group]'s record: its `ts:` (epoch ms) and section 5
+  /// identifier, what a groups index names beside the member count it
+  /// counted (12.9.7). Null when the record is empty.
+  ({int ts, String id})? newestAct(String group) {
+    final acts = _acts[group.trim().toUpperCase()];
+    if (acts == null || acts.isEmpty) return null;
+    var best = acts.first;
+    for (final a in acts) {
+      if (a.ts > best.ts || (a.ts == best.ts && a.id.compareTo(best.id) < 0)) {
+        best = a;
+      }
+    }
+    return (ts: best.ts, id: best.id);
+  }
+
   /// Whether [callsign] may post to [group] NOW: a member of it, and, while
   /// the group is closed to new posts (XPRS.md 10.4.2), one of its
   /// moderators or its admin. What a station asks before it writes there.
