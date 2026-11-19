@@ -1129,6 +1129,10 @@ class WebChatApi {
     );
   }
 
+  /// Asking to join, at most once an hour per person and room (10.3).
+  final Map<String, int> _asked = {};
+  static const int _askEveryMs = 3600 * 1000;
+
   WebChatReply _roomHistory(String room, Map<String, String> q) {
     if (!_mayRead(room, q['session'])) {
       return const WebChatReply(404, {'ok': false, 'error': 'no such room'});
@@ -1143,17 +1147,59 @@ class WebChatApi {
     // A thread (7.4, 18.5): the post itself and what names it, oldest first.
     final root = _rootRe.hasMatch(q['root'] ?? '') ? q['root'] : null;
     final mod = _roomModeration(room);
-    var rows = [
-      for (final row in roomRows!(
-          room: room,
-          sinceMs: _when(q['since']),
-          untilMs: _when(q['until']),
-          types: types,
-          limit: root == null ? limit : maxLimit))
-        if (!mod.removed.contains('${row['id']}') &&
-            !mod.away.contains(_base('${row['from'] ?? ''}')))
-          row,
-    ];
+    // A members-only room: a post by somebody who was no member at its
+    // moment is a request to join (10.3), shown to the staff and marked so,
+    // and to nobody else (10.7).
+    final meta = _rooms[room]!;
+    final membersOnly = meta['posting'] != 'anyone' &&
+        !collectionKinds.contains(meta['kind']);
+    final asker = sessionCall(q['session']);
+    final staff = _adminOf(q['session']) != null ||
+        (asker != null &&
+            (_isStaff(asker) ||
+                ['mod', 'admin'].contains(roleOf(asker, group: room))));
+    final roster = groups!.rosterOf(room);
+    final newest = groups!.newestAct(room);
+    // Posts that see the same record are judged once (actsUpTo).
+    final judged = <String, bool>{};
+    bool isRequest(Map<String, dynamic> row) {
+      if (!membersOnly) return false;
+      final from = _base('${row['from'] ?? ''}');
+      if (from == room || _isStaff(from)) return false;
+      final ts = xprsParseTs(XprsPacket.parse('${row['wire'] ?? ''}')?['ts']);
+      if (ts == null) return true;
+      if (newest == null || ts >= newest.ts) {
+        // The record has not changed since: the roster now is the one then.
+        final role = roster.roles[from];
+        return role != XprsRole.member &&
+            role != XprsRole.mod &&
+            role != XprsRole.admin;
+      }
+      final key = '$from|${groups!.actsUpTo(room, ts)}';
+      return !(judged[key] ??= groups!.postStands(room, from, ts));
+    }
+
+    var rows = <Map<String, dynamic>>[];
+    for (final row in roomRows!(
+        room: room,
+        sinceMs: _when(q['since']),
+        untilMs: _when(q['until']),
+        types: types,
+        limit: root == null ? limit : maxLimit)) {
+      if (mod.removed.contains('${row['id']}') ||
+          mod.away.contains(_base('${row['from'] ?? ''}'))) {
+        continue;
+      }
+      if (isRequest(row)) {
+        // The staff, and the person who asked, see it.
+        final mine = asker != null && _base('${row['from'] ?? ''}') == _base(asker);
+        if ((staff || mine) && row['type'] == 'message') {
+          rows.add({...row, 'request': true});
+        }
+        continue;
+      }
+      rows.add(row);
+    }
     if (root != null) {
       // The opening post's own rows: one, or the parts of a split one, whose
       // identifier is the whole's and so not on any row (7.6).
@@ -1275,7 +1321,23 @@ class WebChatApi {
       final membersOnly =
           meta['visibility'] == 'private' || meta['posting'] != 'anyone';
       if (membersOnly && !_isMember(room, from)) {
-        return no(403, 'only members post in this room');
+        // 10.3: asking to join is an ordinary message to the group. It is
+        // filed and shown to the room's staff as a request, never to its
+        // members. Only in a public room: a private one is not even listed.
+        if (meta['visibility'] == 'private' || p.type != 'message' || split) {
+          return no(403, 'only members post in this room');
+        }
+        final key = '$room|${_base(from)}';
+        final t = now().millisecondsSinceEpoch;
+        if (t - (_asked[key] ?? 0) < _askEveryMs) {
+          return no(429, 'you asked already: the moderators will answer');
+        }
+        _asked[key] = t;
+        if (_asked.length > maxSessions) _asked.remove(_asked.keys.first);
+        final w = p.encode();
+        keep!(w);
+        return WebChatReply(
+            200, {'ok': true, 'id': _idOf(p), 'wire': w, 'request': true});
       }
     }
     if (split) return _postPart(p, from, room);

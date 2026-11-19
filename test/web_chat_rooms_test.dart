@@ -158,7 +158,19 @@ void main() {
     final b = await session(a, 'X1BOBB', _bob);
     expect((await rooms(a, b)).single['can_post'], false);
     final msg = _signed('t:message f:X1BOBB d:$call ts:${ts()} m:hi', _bob);
-    expect((await send(a, msg)).status, 403);
+    // Not a member: the message is a request to join (10.3), not a post.
+    final ask = _signed('t:message f:X1BOBB d:$call ts:${ts(-2)} m:may I join', _bob);
+    final asked = await send(a, ask);
+    expect([asked.status, asked.json['request']], [200, true]);
+    expect((await send(a, _signed('t:message f:X1BOBB d:$call ts:${ts(1)} m:again?', _bob))).status, 429,
+        reason: 'once an hour');
+    final c0 = await session(a, 'X1CARO', _carol);
+    expect((await history(a, call, c0)).json['rows'], isEmpty,
+        reason: 'nobody but the staff sees a request');
+    expect(((await history(a, call, b)).json['rows'] as List).map((r) => r['request']).toList(), [true],
+        reason: 'the person who asked sees their own request');
+    final staffRows = (await history(a, call, s)).json['rows'] as List;
+    expect(staffRows.map((r) => [r['wire'], r['request']]).toList(), [[ask, true]]);
     // The administrator adds Bob; Bob accepts with his own signature.
     await post(a, '/api/rooms', {'action': 'add', 'session': s, 'call': call, 'member': 'X1BOBB'});
     final mine = (await rooms(a, b)).single;
@@ -171,7 +183,8 @@ void main() {
     final c = await session(a, 'X1CARO', _carol);
     final h = await history(a, call, c);
     expect((h.json['rows'] as List).map((r) => r['wire']), [msg],
-        reason: 'a public room is read by anybody');
+        reason: 'a public room is read by anybody; the request before he '
+            'joined is still not shown');
   });
 
   test('a private room is listed and served only to its members', () async {

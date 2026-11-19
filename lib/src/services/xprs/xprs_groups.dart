@@ -536,6 +536,19 @@ class XprsGroups {
     return (ts: best.ts, id: best.id);
   }
 
+  /// How many of [group]'s acts are dated at or before [ts]: two moments
+  /// with the same count see the same record, so a caller judging many
+  /// posts (postStands) replays once per count, not once per post.
+  int actsUpTo(String group, int ts) {
+    final acts = _acts[group.trim().toUpperCase()];
+    if (acts == null) return 0;
+    var n = 0;
+    for (final a in acts) {
+      if (a.ts <= ts) n++;
+    }
+    return n;
+  }
+
   /// Whether [callsign] may post to [group] NOW: a member of it, and, while
   /// the group is closed to new posts (XPRS.md 10.4.2), one of its
   /// moderators or its admin. What a station asks before it writes there.
