@@ -661,6 +661,83 @@ class WebChatApi {
     });
   }
 
+  /// `room=<GROUP>`: an open group's name (XPRS.md 7.3) or a closed group
+  /// this station does not host (10), whose traffic it heard and filed.
+  String? _groupOf(String? v) {
+    if (v == null || v != v.toUpperCase()) return null; // `local` & co.
+    final g = v.trim();
+    if (g.startsWith('X5')) return _callRe.hasMatch(g) && !g.contains('-') ? g : null;
+    return xprsIsOpenGroupName(g) ? g : null;
+  }
+
+  /// A group's conversation as this station holds it. An open group is
+  /// anybody's (7.3); a closed one is shown as 10.7 displays it: what its
+  /// members wrote at the moment they wrote it, less what its moderators
+  /// took down. A private group's posts stay sealed (10.7.1): the page that
+  /// holds the reading key opens them, nobody else.
+  WebChatReply _groupHistory(String group, Map<String, String> q) {
+    final rowsOf = roomRows;
+    if (rowsOf == null) {
+      return const WebChatReply(404, {'ok': false, 'error': 'no groups here'});
+    }
+    final limit =
+        (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
+    var types = <String>[
+      for (final t in (q['kind'] ?? q['only'] ?? '').split(','))
+        if (readable.contains(t.trim())) t.trim(),
+    ];
+    if (types.isEmpty) types = const ['message', 'reaction'];
+    final closed = group.startsWith('X5');
+    final g = groups;
+    final roster = closed && g != null ? g.rosterOf(group) : null;
+    final removed = <String>{
+      ...?roster?.hidden,
+      for (final m in roster?.moderation ?? const <XprsModeration>[])
+        if (m.kind == 'remove') m.target,
+    };
+    final newest = closed && g != null ? g.newestAct(group) : null;
+    final judged = <String, bool>{};
+    bool stands(Map<String, dynamic> row) {
+      if (roster == null || !roster.verified) return true; // fail open (10.7)
+      if (_safety.contains('${row['type']}')) return true;
+      final from = _base('${row['from'] ?? ''}');
+      final ts = xprsParseTs(XprsPacket.parse('${row['wire'] ?? ''}')?['ts']);
+      if (ts == null) return false;
+      if (newest == null || ts >= newest.ts) {
+        final role = roster.roles[from];
+        return role == XprsRole.admin ||
+            role == XprsRole.mod ||
+            (role == XprsRole.member && !roster.closed);
+      }
+      final key = '$from|${g!.actsUpTo(group, ts)}';
+      return judged[key] ??= g.postStands(group, from, ts);
+    }
+
+    final rows = [
+      for (final row in rowsOf(
+          room: group,
+          sinceMs: _when(q['since']),
+          untilMs: _when(q['until']),
+          types: types,
+          limit: limit))
+        if (!removed.contains('${row['id']}') && stands(row)) row,
+    ];
+    return WebChatReply(200, {
+      'ok': true,
+      'count': rows.length,
+      'held': rows.length,
+      'time': 'synced',
+      'rows': rows,
+      if (closed) ...{
+        'group': {
+          'state': roster != null && roster.closed ? 'closed' : 'open',
+          'verified': roster?.verified ?? false,
+        },
+        'moderation': {'removed': removed.take(200).toList(), 'away': const []},
+      },
+    });
+  }
+
   /// `room=` (spec/API-HTTP.md): one of the three chat rooms, else none.
   static String? _room(String? v) =>
       const {'local', 'regional', 'global'}.contains(v) ? v : null;
@@ -674,6 +751,8 @@ class WebChatApi {
   WebChatReply _history(Map<String, String> q, String peer) {
     final hosted = _hostedRoom(q['room']);
     if (hosted != null) return _roomHistory(hosted, q);
+    final group = _groupOf(q['room']);
+    if (group != null) return _groupHistory(group, q);
     // A page polling with a proven session is the visitor still here: the
     // hearing 12.8.1 waits for, kept fresh while they read (a session proved
     // once and a page left open for an hour would otherwise fall out of

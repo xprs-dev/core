@@ -256,6 +256,38 @@ void main() {
     expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} grant:X1CARO role:mod', _alice))).status, 403);
   });
 
+  test('an open group (7.3) is read and written by name', () async {
+    final a = make();
+    final b = await session(a, 'X1BOBB', _bob);
+    final msg = _signed('t:message f:X1BOBB d:LISBOA ts:${ts()} m:ola', _bob);
+    expect((await send(a, msg)).status, 200);
+    expect(received, contains(msg), reason: 'aired like any group post');
+    kept.add(msg); // what the station's archive files when it hears it
+    final h = await a.handle('GET', '/api/xprs/history',
+        {'room': 'LISBOA', 'session': b}, '', peer: lan);
+    expect((h.json['rows'] as List).map((r) => r['wire']).toList(), [msg]);
+    expect((await a.handle('GET', '/api/xprs/history', {'room': 'lisboa'}, '', peer: lan))
+        .json['rows'], isEmpty, reason: 'room names in lower case are the three rooms');
+  });
+
+  test('a closed group this station does not host shows what members said (10.7)',
+      () async {
+    final a = make();
+    // X5REMO is somebody else's group: Alice is its member, Carol is not.
+    final d = BigInt.parse('777777777');
+    keys['X5REMO'] = XprsCrypto.publicKeyXOnly(d);
+    final gr = xprsSign(XprsPacket.parse('t:moderate f:X5REMO d:X5REMO ts:${ts(-10)} grant:X1ALIC')!, d);
+    groups.offer(gr);
+    groups.offer(XprsPacket.parse(_signed(
+        't:moderate f:X1ALIC d:X5REMO ts:${ts(-9)} r:${xprsIdentifier(gr)} accept:member', _alice))!);
+    final member = _signed('t:message f:X1ALIC d:X5REMO ts:${ts(-5)} m:hello', _alice);
+    final stranger = _signed('t:message f:X1CARO d:X5REMO ts:${ts(-4)} m:spam', _carol);
+    kept..add(member)..add(stranger);
+    final h = await a.handle('GET', '/api/xprs/history', {'room': 'X5REMO'}, '', peer: lan);
+    expect((h.json['rows'] as List).map((r) => r['wire']).toList(), [member]);
+    expect(h.json['group'], {'state': 'open', 'verified': true});
+  });
+
   test('update and close', () async {
     final a = make();
     final s = await claim(a);
