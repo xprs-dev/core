@@ -268,6 +268,14 @@ void main() {
           ['X5MIDL', 'X5CALM']);
     });
 
+    test('a station counts its own index with the archivers\'', () {
+      r.own = () => [posts('PORTO', 0, 20)];
+      r.put('X3ARC1', 'a', {'LISBOA': posts('LISBOA', 0, 50)});
+      expect(r.ranked('active', nowMs: now).map((g) => g.group).toList(),
+          ['LISBOA', 'PORTO']);
+      expect(r.sources, 2);
+    });
+
     test('weeks after the reader\'s own and long past are not counted', () {
       r.put('X3ARC1', 'a', {
         'LISBOA': posts('LISBOA', 0, 50, week: 2975), // the future

@@ -731,19 +731,35 @@ class XprsGroupRanking {
   }
 
   /// How many archivers' indexes the ranking is built from.
-  int get sources => _have.length;
+  /// This station's own index, when it is an archiver: counted with the
+  /// others, so an archiver ranks what it holds itself.
+  List<XprsGroupStats> Function()? own;
+  int _mergedAt = 0;
+
+  int get sources => _have.length + (own == null ? 0 : 1);
 
   /// Every group, combined across archivers (12.9.7), for weeks counted
   /// from [nowMs].
   List<XprsGroupRank> merged({int? nowMs}) {
     final w = xprsWeekOf(nowMs ?? DateTime.now().millisecondsSinceEpoch);
     final cached = _merged;
-    if (cached != null && _mergedWeek == w) return cached;
+    final t = DateTime.now().millisecondsSinceEpoch;
+    // Its own index moves with every post filed: at most once a minute.
+    if (cached != null &&
+        _mergedWeek == w &&
+        (own == null || t - _mergedAt < 60000)) {
+      return cached;
+    }
     _mergedWeek = w;
+    _mergedAt = t;
     final members = <String, ({int n, int ts})>{};
     final sketches = <String, Map<String, XprsSketch>>{}; // group -> key
-    for (final idx in _have.values) {
-      idx.groups.forEach((g, s) {
+    final mine = own?.call();
+    for (final idx in [
+      for (final h in _have.values) h.groups,
+      if (mine != null) {for (final s in mine) s.group: s},
+    ]) {
+      idx.forEach((g, s) {
         final m = s.members;
         if (m != null) {
           final was = members[g];
@@ -807,6 +823,8 @@ class XprsGroupRanking {
     _lastRefreshMs = 0;
     _busy = false;
     fetched = failed = 0;
+    own = null;
+    _mergedAt = 0;
     fetchText = null;
     named = null;
     onNoted = null;

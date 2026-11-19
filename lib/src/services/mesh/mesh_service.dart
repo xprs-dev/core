@@ -1915,6 +1915,9 @@ class MeshService {
     XprsGroupRanking.instance
       ..onNoted = XprsGroupIndex.instance.noteSource
       ..self = NostrCrypto.bareCallsign(tableCallsign)
+      // What this station filed itself counts too (12.9.7: the station that
+      // reads is one more archiver of what it heard).
+      ..own = XprsGroupIndex.instance.stats
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
