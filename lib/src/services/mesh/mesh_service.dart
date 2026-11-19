@@ -855,6 +855,12 @@ class MeshService {
         // a report -- release-on-hearing above delivers it ourselves.
         XprsForwarder.instance.heldFor =
             (call) => MeshStore.instance.heldWiresFor(call);
+        // What this station holds is served over Reticulum's file lane too,
+        // on every host: the app set it in its own autostart and the server
+        // never did, so the server answered every fetch of its directory (and
+        // groups index) "provider does not have the file". Kept if the host
+        // already chose a source.
+        RnsService.instance.fileServeSource ??= MediaFileSource(mediaArchive);
         _wireDirectory(mediaArchive);
         XprsLineLane.instance.onClientUp = _onLineUp;
         RnsService.instance.onUplinkUp = XprsLineLane.instance.nudge;
