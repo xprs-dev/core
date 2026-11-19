@@ -1895,10 +1895,16 @@ class MeshService {
       ..deposit = ((wire) =>
           XprsPublisher.instance.depositArchivers([wire], what: 'service'));
     XprsGroupRanking.instance
+      ..onNoted = XprsGroupIndex.instance.noteSource
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
           XprsGroupIndexFile.ext, XprsGroupIndexFile.maxBytes, mediaArchive));
+    // What the archivers named before this start: read again when a screen
+    // asks, from the bytes already held, without waiting for a directory.
+    for (final src in XprsGroupIndex.instance.sources()) {
+      XprsGroupRanking.instance.noteIndex(src.archiver, src.sha);
+    }
     XprsDirectoryConsumer.instance
       ..onIndex = XprsGroupRanking.instance.noteIndex
       ..named =

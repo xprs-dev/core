@@ -269,6 +269,13 @@ class XprsGroupIndex {
         regs TEXT NOT NULL,
         PRIMARY KEY(grp, week, kind)
       )''');
+    // Which index each archiver last named (12.9.7), so a reader that
+    // restarts reads it again at once rather than after the next directory.
+    db.execute('''
+      CREATE TABLE IF NOT EXISTS gi_source(
+        archiver TEXT PRIMARY KEY,
+        sha      TEXT NOT NULL
+      )''');
     db.execute('''
       CREATE TABLE IF NOT EXISTS gi_mode(
         grp    TEXT PRIMARY KEY,
@@ -456,6 +463,21 @@ class XprsGroupIndex {
     return n;
   }
 
+  /// The index [archiver] named, remembered for the next start.
+  void noteSource(String archiver, String sha) => _db?.execute(
+      'INSERT INTO gi_source(archiver, sha) VALUES(?, ?) '
+      'ON CONFLICT(archiver) DO UPDATE SET sha = excluded.sha',
+      [archiver, sha]);
+
+  /// Every archiver's index named before this start (bounded: one row per
+  /// archiver this station chose).
+  List<({String archiver, String sha})> sources() => [
+        for (final r in _db?.select(
+                'SELECT archiver, sha FROM gi_source LIMIT 256') ??
+            const <Map<String, Object?>>[])
+          (archiver: '${r['archiver']}', sha: '${r['sha']}')
+      ];
+
   /// Whether [g] is listed: an open group, or a closed one whose newest
   /// post here is in the clear (10.7.1).
   bool isPublic(String g) {
@@ -543,6 +565,9 @@ class XprsGroupRanking {
   /// The archivers this station chose (12.3): only their indexes are read.
   List<String> Function()? named;
 
+  /// An index an archiver named, to remember across a restart.
+  void Function(String archiver, String sha)? onNoted;
+
   final Map<String, String> _wanted = {}; // archiver -> sha named
   final Map<String, ({String sha, Map<String, XprsGroupStats> groups})>
       _have = {};
@@ -557,6 +582,7 @@ class XprsGroupRanking {
     final a = archiver.trim().toUpperCase().split('-').first;
     if (a.isEmpty || _wanted[a] == sha) return;
     _wanted[a] = sha;
+    onNoted?.call(a, sha);
   }
 
   /// When the index named now has not been read yet, read it, at most once
@@ -694,5 +720,6 @@ class XprsGroupRanking {
     fetched = failed = 0;
     fetchText = null;
     named = null;
+    onNoted = null;
   }
 }
