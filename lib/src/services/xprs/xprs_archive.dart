@@ -406,6 +406,9 @@ class XprsArchive {
   /// wrote it. What a groups index counts (12.9.7).
   void Function(XprsPacket p, String id, XprsSigState sig)? onFiled;
 
+  /// After the [onFiled] calls of one flush: a listener batches its writes.
+  void Function()? onFiledDone;
+
   void flush({int? nowMs}) {
     final db = _db;
     if (db == null || _pending.isEmpty) {
@@ -573,6 +576,11 @@ class XprsArchive {
         } catch (_) {
           // A count that throws must not cost the spool its flush.
         }
+      }
+      if (filed.isNotEmpty) {
+        try {
+          onFiledDone?.call();
+        } catch (_) {}
       }
     }
     final notify = onStored;

@@ -55,6 +55,7 @@ import 'package:reticulum/reticulum.dart' show HostedWriter, MediaArchive, Nostr
 
 import '../platform/key_value_store.dart';
 
+import 'xprs/xprs_group_index.dart';
 import 'xprs/xprs_archive.dart' show XprsArchive;
 import 'xprs/xprs_file_acl.dart' show XprsFileAcl, XprsFileScope;
 import 'xprs/xprs_files.dart' show XprsFileServer, xprsFileSha, xprsFileExt;
@@ -328,6 +329,10 @@ class WebChatApi {
     // A public room's files are anybody's, over the mesh too (11.2).
     XprsFileAcl.instance.openGroup =
         (g) => _hostedRoom(g) != null && _rooms[_base(g)]?['visibility'] != 'private';
+    // A private room this station hosts is never in its groups index
+    // (12.9.7): its posts are in the clear here, served to members only.
+    XprsGroupIndex.instance.hostedPrivate =
+        (g) => _hostedRoom(g) != null && _rooms[_base(g)]?['visibility'] == 'private';
     final at = stationPosition();
     if (at != null) XprsPublisher.instance.setPlace(at.pos, at.acc);
   }

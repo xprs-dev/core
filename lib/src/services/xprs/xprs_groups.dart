@@ -310,7 +310,14 @@ class XprsGroups {
     if (list.length > _maxActs) {
       // Section 26.5: "losing a grant is safe and losing a revocation is not",
       // so shed a grant before a revocation when the record has to be cut.
-      final i = list.indexWhere((a) => a.revoke.isEmpty);
+      // Only a plain grant: shedding a `leave:` would readmit somebody, and
+      // a `state:` or an acceptance is not a grant either (10.5).
+      final i = list.indexWhere((a) =>
+          a.grant.isNotEmpty &&
+          a.revoke.isEmpty &&
+          a.accept.isEmpty &&
+          a.leave.isEmpty &&
+          a.state.isEmpty);
       list.removeAt(i >= 0 ? i : 0);
     }
     accepted++;
@@ -579,7 +586,9 @@ class XprsGroups {
   /// implementations reach the same answer from the same packets (26.4).
   XprsRoster _replay(String group, int now, bool haveKey, {int? upTo}) {
     final acts = _acts[group] ?? const <_Act>[];
-    if (acts.isEmpty) return XprsRoster({}, {}, haveKey);
+    // No act held at all is a record this station knows to be incomplete:
+    // 10.7 fails open and says so, rather than showing the group empty.
+    if (acts.isEmpty) return XprsRoster({}, {}, false);
 
     // PASS A -- what the admin voided. "The admin can void a moderator's
     // record": `revoke:X since:T` withdraws X and everything they did from T.
@@ -621,7 +630,9 @@ class XprsGroups {
       // ESP32's qsort.) The id rule still decides every other tie.
       final xa = x.accept.isNotEmpty ? 1 : 0, ya = y.accept.isNotEmpty ? 1 : 0;
       if (xa != ya) return xa - ya;
-      return x.id.compareTo(y.id);
+      // 10.4: "the smaller identifier stands". The walk lets the act walked
+      // LAST stand, so a tie walks the larger identifier first.
+      return y.id.compareTo(x.id);
     });
 
     // PASS C -- walk in order. Authority is judged AT THE MOMENT OF THE ACT,
@@ -641,7 +652,10 @@ class XprsGroups {
     for (final a in live) {
       final isAdmin = a.signer == group;
       final signerRole = roles[a.signer] ?? XprsRole.none;
-      final isMod = isAdmin || signerRole == XprsRole.mod;
+      // A moderator suspended at this moment holds no authority in it (10.4).
+      final away0 = suspended[a.signer];
+      final isMod = isAdmin ||
+          (signerRole == XprsRole.mod && (away0 == null || away0 <= a.ts));
       // A member's own accept/leave needs no authority -- it is about
       // themselves and nobody else. Everything below the authority gate is an
       // act upon OTHERS, which is what authority is for.
@@ -654,7 +668,16 @@ class XprsGroups {
       // already holds a place, so it cannot demote a moderator to invited.
       final modGrant =
           !isAdmin && isMod && a.role != 'mod' && a.role != 'sub';
-      if (a.grant.isNotEmpty && (isAdmin || modGrant)) {
+      // 10.5: a grant with `until:` stands until then; one already past it
+      // grants nothing, and the roster is recomputed when it lapses.
+      final lapsed = a.until != null && a.until! <= now;
+      if (a.grant.isNotEmpty &&
+          a.until != null &&
+          !lapsed &&
+          (nextChange == 0 || a.until! < nextChange)) {
+        nextChange = a.until!;
+      }
+      if (a.grant.isNotEmpty && !lapsed && (isAdmin || modGrant)) {
         final sub = a.role == 'sub';
         final role = a.role == 'mod' ? XprsRole.mod : XprsRole.member;
         for (final c in a.grant) {
@@ -688,9 +711,10 @@ class XprsGroups {
           offered[c] = (id: a.id, role: role, ts: a.ts);
           roles[c] = XprsRole.invited;
           suspended.remove(c);
-          // 10.10: in an open room the admin's grant makes somebody an
-          // ordinary visitor again, so it also lifts a revocation.
-          away.remove(c);
+          // 10.10: in an open room the ADMIN's grant makes somebody an
+          // ordinary visitor again, so it also lifts a revocation; a
+          // moderator's does not.
+          if (isAdmin) away.remove(c);
         }
       }
 
@@ -720,6 +744,10 @@ class XprsGroups {
         offered.remove(a.signer);
         suspended.remove(a.signer);
       }
+      // Everything below acts upon OTHERS. A member's acceptance or leaving
+      // got past the gate above for its own sake only: whatever else the
+      // same packet says is not theirs to say (10.3, 10.4.1).
+      if (!isMod) continue;
       for (final c in a.revoke) {
         if (a.until != null) {
           // A suspension is a revocation with an end. Past its moment it
@@ -734,6 +762,8 @@ class XprsGroups {
         } else {
           roles.remove(c);
           suspended.remove(c);
+          // A grant already revoked cannot be accepted afterwards (10.4).
+          offered.remove(c);
           away[c] = 0;
         }
       }

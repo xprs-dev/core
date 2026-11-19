@@ -389,7 +389,25 @@ class MeshService {
         // public group, the weeks of posts, posters and joins it filed.
         XprsGroupIndex.instance.init(
             wappsDataStorage(prefs).getAbsolutePath('xprs_group_index.zx'));
-        XprsArchive.instance.onFiled = XprsGroupIndex.instance.offer;
+        XprsArchive.instance
+          ..onFiled = XprsGroupIndex.instance.offer
+          ..onFiledDone = XprsGroupIndex.instance.commit;
+        // perf: groups -- what the index counted and what the ranking read,
+        // since the last line (performance.md 8.5).
+        var last = (0, 0, 0, 0, 0);
+        CoreHost.perfSources['groups'] = () {
+          final i = XprsGroupIndex.instance, r = XprsGroupRanking.instance;
+          final now = (i.counted, i.replays, i.refusedAhead, r.fetched, r.failed);
+          final d = {
+            'counted': now.$1 - last.$1,
+            'replays': now.$2 - last.$2,
+            'ahead': now.$3 - last.$3,
+            'fetched': now.$4 - last.$4,
+            'failed': now.$5 - last.$5,
+          };
+          last = now;
+          return d;
+        };
         // A closed group's reading keys (xprs_group_read): what keeps its words
         // private without handing out its authority. Same profile store kind.
         XprsGroupRead.instance
@@ -1043,7 +1061,7 @@ class MeshService {
                   .subtract(const Duration(days: 28))
                   .millisecondsSinceEpoch,
               untilMs: untilMs,
-              limit: 500));
+              limit: 100));
     } catch (e) {
       LogService.instance.add('XPRS: groups index backfill failed: $e');
     }
@@ -1896,6 +1914,7 @@ class MeshService {
           XprsPublisher.instance.depositArchivers([wire], what: 'service'));
     XprsGroupRanking.instance
       ..onNoted = XprsGroupIndex.instance.noteSource
+      ..self = NostrCrypto.bareCallsign(tableCallsign)
       ..named =
           (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,

@@ -253,6 +253,21 @@ class XprsGroupIndex {
   /// The clock, for the post-dated refusal. Null: no clock, no refusal.
   int Function()? now = () => DateTime.now().millisecondsSinceEpoch;
 
+  /// A room this station hosts and keeps private (10.10.1): its posts are
+  /// in the clear on this station, and it is still never listed. Set by the
+  /// host's web chat API, which owns the rooms.
+  bool Function(String group)? hostedPrivate;
+
+  /// Writes waiting for [commit]: one transaction per archive flush, not
+  /// one per post (architecture.md, zx stores: frequent writers batch).
+  final Map<String, ({String g, int w, String k, String regs})> _dirtyWeeks = {};
+  final Map<String, ({bool sealed, int ts})> _dirtyModes = {};
+  final List<(String, List<Object?>)> _deletes = [];
+
+  /// A replay of a closed group's record is asked per post only when the
+  /// post is older than the newest act: the cached roster answers the rest.
+  int replays = 0, cheap = 0;
+
   int counted = 0, refusedAhead = 0, dirty = 0;
   String? _text, _sha;
 
@@ -301,6 +316,7 @@ class XprsGroupIndex {
   }
 
   void close() {
+    commit();
     try {
       _db?.dispose();
     } catch (_) {}
@@ -322,29 +338,37 @@ class XprsGroupIndex {
       if (ts == null) return;
       final author = (p['f'] ?? '').trim().toUpperCase().split('-').first;
       if (author.isEmpty) return;
+      if (!_okAt(ts)) return;
       if (closed) {
-        // Public or private by the newest post (10.7.1), whoever wrote it.
+        // A member's post, at its moment, while the group took posts (10.4,
+        // 10.4.2). A record this station cannot verify decides nothing (10.7).
+        final r = XprsGroups.instance.rosterOf(g);
+        if (r.verified) {
+          final newest = XprsGroups.instance.newestAct(g);
+          final bool stands;
+          if (newest == null || ts >= newest.ts) {
+            // Nothing in the record has changed since this post was written:
+            // the current roster is the one at its moment, and it is cached.
+            cheap++;
+            final role = r.roles[author] ?? XprsRole.none;
+            stands = role == XprsRole.mod ||
+                role == XprsRole.admin ||
+                (role == XprsRole.member && !r.closed);
+          } else {
+            replays++;
+            stands = XprsGroups.instance.postStands(g, author, ts);
+          }
+          if (!stands) return;
+        }
+        // Public or private by its newest post that COUNTS (10.7.1): a
+        // stranger's post, or one dated ahead, decides nothing.
         final was = _mode[g];
         if (was == null || ts >= was.ts) {
           final sealed = p.has('x');
           _mode[g] = (sealed: sealed, ts: ts);
-          _db?.execute(
-              'INSERT INTO gi_mode(grp, sealed, ts) VALUES(?,?,?) '
-              'ON CONFLICT(grp) DO UPDATE SET sealed = excluded.sealed, '
-              'ts = excluded.ts',
-              [g, sealed ? 1 : 0, ts]);
-        }
-        // A member's post, at its moment, while the group took posts (10.4,
-        // 10.4.2). A record this station cannot verify decides nothing.
-        // No record held at all is the same: unjudged, so counted (10.7).
-        final r = XprsGroups.instance.rosterOf(g);
-        if (r.verified &&
-            XprsGroups.instance.newestAct(g) != null &&
-            !XprsGroups.instance.postStands(g, author, ts)) {
-          return;
+          _dirtyModes[g] = (sealed: sealed, ts: ts);
         }
       }
-      if (!_okAt(ts)) return;
       final w = xprsWeekOf(ts);
       _add(g, w, 'p', id);
       _add(g, w, 's', author);
@@ -383,17 +407,54 @@ class XprsGroupIndex {
       while (ws.length > weeksKept) {
         final oldest = (ws.keys.toList()..sort()).first;
         ws.remove(oldest);
-        _db?.execute(
-            'DELETE FROM gi_week WHERE grp = ? AND week = ?', [g, oldest]);
+        _dirtyWeeks.removeWhere((k, v) => v.g == g && v.w == oldest);
+        _deletes.add(
+            ('DELETE FROM gi_week WHERE grp = ? AND week = ?', [g, oldest]));
       }
     }
     final sk = ws[w]!.putIfAbsent(kind, () => XprsSketch());
     if (!sk.add(item)) return; // most adds move no register: nothing to write
     dirty++;
-    _db?.execute(
-        'INSERT INTO gi_week(grp, week, kind, regs) VALUES(?,?,?,?) '
-        'ON CONFLICT(grp, week, kind) DO UPDATE SET regs = excluded.regs',
-        [g, w, kind, sk.encode()]);
+    _dirtyWeeks['$g|$w|$kind'] = (g: g, w: w, k: kind, regs: sk.encode());
+  }
+
+  /// Write what the last packets moved, in one transaction. Called after
+  /// each archive flush (XprsArchive.onFiledDone) and after a backfill page.
+  void commit() {
+    final db = _db;
+    if (db == null) {
+      _dirtyWeeks.clear();
+      _dirtyModes.clear();
+      _deletes.clear();
+      return;
+    }
+    if (_dirtyWeeks.isEmpty && _dirtyModes.isEmpty && _deletes.isEmpty) return;
+    try {
+      db.execute('BEGIN');
+      for (final d in _deletes) {
+        db.execute(d.$1, d.$2);
+      }
+      for (final v in _dirtyWeeks.values) {
+        db.execute(
+            'INSERT INTO gi_week(grp, week, kind, regs) VALUES(?,?,?,?) '
+            'ON CONFLICT(grp, week, kind) DO UPDATE SET regs = excluded.regs',
+            [v.g, v.w, v.k, v.regs]);
+      }
+      _dirtyModes.forEach((g, m) => db.execute(
+          'INSERT INTO gi_mode(grp, sealed, ts) VALUES(?,?,?) '
+          'ON CONFLICT(grp) DO UPDATE SET sealed = excluded.sealed, '
+          'ts = excluded.ts',
+          [g, m.sealed ? 1 : 0, m.ts]));
+      db.execute('COMMIT');
+    } catch (e) {
+      try {
+        db.execute('ROLLBACK');
+      } catch (_) {}
+      LogService.instance.add('XPRS: groups index write failed: $e');
+    }
+    _dirtyWeeks.clear();
+    _dirtyModes.clear();
+    _deletes.clear();
   }
 
   void _evictGroup() {
@@ -410,8 +471,11 @@ class XprsGroupIndex {
     if (g == null) return;
     _counts.remove(g);
     _mode.remove(g);
-    _db?.execute('DELETE FROM gi_week WHERE grp = ?', [g]);
-    _db?.execute('DELETE FROM gi_mode WHERE grp = ?', [g]);
+    _dirtyWeeks.removeWhere((k, v) => v.g == g);
+    _dirtyModes.remove(g);
+    _deletes
+      ..add(('DELETE FROM gi_week WHERE grp = ?', [g]))
+      ..add(('DELETE FROM gi_mode WHERE grp = ?', [g]));
   }
 
   /// Count, once, what the archive already holds from the last four weeks
@@ -449,6 +513,7 @@ class XprsGroupIndex {
       // next page starts at the end of the oldest second seen. Counting is
       // idempotent (a sketch keeps the largest), so the overlap costs
       // nothing; a page that did not move the window ends the walk.
+      commit();
       final next = oldest + 1000;
       if (rows.length < 2 || (until != null && next >= until)) break;
       until = next;
@@ -481,6 +546,7 @@ class XprsGroupIndex {
   /// Whether [g] is listed: an open group, or a closed one whose newest
   /// post here is in the clear (10.7.1).
   bool isPublic(String g) {
+    if (hostedPrivate?.call(g) ?? false) return false;
     if (!g.startsWith('X5')) return true;
     final m = _mode[g];
     return m != null && !m.sealed;
@@ -501,11 +567,13 @@ class XprsGroupIndex {
         final r = XprsGroups.instance.rosterOf(g);
         final newest = XprsGroups.instance.newestAct(g);
         if (r.verified && newest != null) {
-          s.members = r.roles.values
-              .where((v) =>
-                  v == XprsRole.member ||
-                  v == XprsRole.mod ||
-                  v == XprsRole.admin)
+          // People: the group's own callsign is its key, not a member.
+          s.members = r.roles.entries
+              .where((e) =>
+                  e.key != g &&
+                  (e.value == XprsRole.member ||
+                      e.value == XprsRole.mod ||
+                      e.value == XprsRole.admin))
               .length;
           s.membersTs = newest.ts;
           s.membersId = newest.id;
@@ -537,7 +605,11 @@ class XprsGroupIndex {
     _counts.clear();
     _mode.clear();
     _text = _sha = null;
-    counted = refusedAhead = dirty = 0;
+    counted = refusedAhead = dirty = replays = cheap = 0;
+    _dirtyWeeks.clear();
+    _dirtyModes.clear();
+    _deletes.clear();
+    hostedPrivate = null;
     now = () => DateTime.now().millisecondsSinceEpoch;
   }
 }
@@ -571,6 +643,10 @@ class XprsGroupRanking {
   final Map<String, String> _wanted = {}; // archiver -> sha named
   final Map<String, ({String sha, Map<String, XprsGroupStats> groups})>
       _have = {};
+  int _mergedWeek = -1;
+
+  /// This station's own archiver name: its own index is always counted.
+  String self = '';
   int _lastRefreshMs = 0;
   bool _busy = false;
   List<XprsGroupRank>? _merged;
@@ -597,6 +673,18 @@ class XprsGroupRanking {
       for (final c in named?.call() ?? const <String>[])
         c.trim().toUpperCase().split('-').first
     };
+    // An archiver no longer chosen no longer counts (and is not kept).
+    final gone = [
+      for (final a in _have.keys)
+        if (!mine.contains(a) && a != self) a
+    ];
+    if (gone.isNotEmpty) {
+      for (final a in gone) {
+        _have.remove(a);
+        _wanted.remove(a);
+      }
+      _merged = null;
+    }
     final todo = [
       for (final e in _wanted.entries)
         if (mine.contains(e.key) && _have[e.key]?.sha != e.value) e
@@ -648,9 +736,10 @@ class XprsGroupRanking {
   /// Every group, combined across archivers (12.9.7), for weeks counted
   /// from [nowMs].
   List<XprsGroupRank> merged({int? nowMs}) {
-    final cached = _merged;
-    if (cached != null) return cached;
     final w = xprsWeekOf(nowMs ?? DateTime.now().millisecondsSinceEpoch);
+    final cached = _merged;
+    if (cached != null && _mergedWeek == w) return cached;
+    _mergedWeek = w;
     final members = <String, ({int n, int ts})>{};
     final sketches = <String, Map<String, XprsSketch>>{}; // group -> key
     for (final idx in _have.values) {

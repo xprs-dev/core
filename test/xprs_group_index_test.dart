@@ -2,6 +2,10 @@
 // The sketch, the file, what an archiver counts and lists, and how a reader
 // puts several archivers together.
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:hex/hex.dart';
+import 'package:reticulum/reticulum.dart' show NostrCrypto;
 
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_directory.dart';
@@ -10,6 +14,29 @@ import 'package:xprs_core/src/services/xprs/xprs_groups.dart';
 import 'package:xprs_core/src/services/xprs/xprs_id.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
+
+final _keys = <String, ({BigInt d, Uint8List pub})>{};
+({BigInt d, Uint8List pub}) _keyFor(String c) => _keys.putIfAbsent(c, () {
+      final kp = NostrCrypto.generateKeyPair();
+      var d = BigInt.zero;
+      for (final b in HEX.decode(kp.privateKeyHex)) {
+        d = (d << 8) | BigInt.from(b);
+      }
+      return (d: d, pub: Uint8List.fromList(HEX.decode(kp.publicKeyHex)));
+    });
+
+/// [member] joins [g]: the group's grant and the member's acceptance.
+void _join(String g, String member) {
+  final gr = xprsSign(
+      XprsPacket.parse('t:moderate f:$g d:$g ts:2026-11-01_10:00:00 '
+          'grant:$member')!,
+      _keyFor(g).d);
+  XprsGroups.instance.offer(gr);
+  XprsGroups.instance.offer(xprsSign(
+      XprsPacket.parse('t:moderate f:$member d:$g ts:2026-11-01_10:01:00 '
+          'r:${xprsIdentifier(gr)} accept:member')!,
+      _keyFor(member).d));
+}
 
 int _ms(String iso) => DateTime.parse('${iso}Z').millisecondsSinceEpoch;
 
@@ -164,6 +191,24 @@ void main() {
       file(_post('X1RD89', 'LISBOA', '2026-09-01_10:00:00', 'old'));
       expect(idx.stats().single.weeks.keys, isNot(contains(
           xprsWeekOf(_ms('2026-09-01T10:00:00')))));
+    });
+
+    test('a stranger\'s post does not decide public or private', () {
+      // X1RD89 is the only member; a stranger's sealed post must not hide the
+      // group, nor a post dated ahead.
+      final g = 'X5PUBL';
+      XprsGroups.instance.keyResolver = (c) => _keys[c]?.pub;
+      _join(g, 'X1RD89');
+      file(_post('X1RD89', g, '2026-11-19_10:00:00', 'in the clear'));
+      file(_post('X1NOPE', g, '2026-11-19_11:00:00', '', sealed: true));
+      file(_post('X1RD89', g, '2030-01-01_00:00:00', '', sealed: true));
+      expect(idx.stats().map((s) => s.group), contains(g));
+    });
+
+    test('a private room this station hosts is never listed', () {
+      idx.hostedPrivate = (g) => g == 'X5ROOM';
+      file(_post('X1QZ3N', 'X5ROOM', '2026-11-19_10:00:00', 'in the clear'));
+      expect(idx.stats(), isEmpty);
     });
 
     test('the counts survive a restart', () {
