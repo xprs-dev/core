@@ -164,15 +164,17 @@ void main() {
     expect((await post(a, _signed('t:moderate f:X1BOBB d:X3STAT ts:${ts(3)} r:${id(bobMsg)} remove:message', _bob))).status, 403);
   });
 
-  test('refused: a visitor who is not a moderator, an unknown key, a moderator appointing', () async {
+  test('refused: a visitor who is not a moderator, an unknown key, a moderator appointing; another group\'s act is carried', () async {
     final a = make();
     final s = await staff(a);
     expect((await post(a, _signed('t:moderate f:X1CARO d:X3STAT ts:${ts(1)} r:${id(bobMsg)} remove:message', _carol))).status, 403);
     keys.remove('X1CARO');
     expect((await post(a, _signed('t:moderate f:X1CARO d:X3STAT ts:${ts(1)} revoke:X1BOBB', _carol))).status, 403);
     expect((await post(a, _signed('t:moderate f:X1BOBB d:X3STAT ts:${ts(1)} grant:X1CARO role:mod', _bob))).status, 403);
-    expect((await post(a, _signed('t:moderate f:X1BOBB d:X5OTHR ts:${ts(1)} revoke:X1CARO', _bob))).status, 403,
-        reason: "only this station's rooms");
+    expect((await post(a, _signed('t:moderate f:X1BOBB d:X5OTHR ts:${ts(1)} revoke:X1CARO', _bob))).status, 200,
+        reason: "somebody else's group: carried, its own record judges it (10.4)");
+    expect((await post(a, _signed('t:moderate f:X1BOBB d:X5OTHR ts:${ts(1)} revoke:X1CARO', _carol))).status, 400,
+        reason: 'but only as signed');
     expect((await admin(a, {'action': 'appoint', 'session': s.bob, 'call': 'X1CARO'})).status, 403,
         reason: "appointing is the administrator's");
     expect(await shown(a), hasLength(3));

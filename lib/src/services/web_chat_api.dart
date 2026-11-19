@@ -55,6 +55,8 @@ import 'package:reticulum/reticulum.dart' show HostedWriter, MediaArchive, Nostr
 
 import '../platform/key_value_store.dart';
 
+import 'xprs/xprs_profiles.dart';
+import 'xprs/xprs_group_act.dart' show xprsGroupNickShown;
 import 'xprs/xprs_group_index.dart';
 import 'xprs/xprs_archive.dart' show XprsArchive;
 import 'xprs/xprs_file_acl.dart' show XprsFileAcl, XprsFileScope;
@@ -704,6 +706,7 @@ class WebChatApi {
     ];
     if (types.isEmpty) types = const ['message', 'reaction'];
     final closed = group.startsWith('X5');
+    final asker = sessionCall(q['session']);
     final g = groups;
     final roster = closed && g != null ? g.rosterOf(group) : null;
     final removed = <String>{
@@ -748,10 +751,34 @@ class WebChatApi {
         'group': {
           'state': roster != null && roster.closed ? 'closed' : 'open',
           'verified': roster?.verified ?? false,
+          if (_groupNick(group) != null) 'name': _groupNick(group),
+          // The asker's place in it, from the record this station holds:
+          // what lets the page offer Join, Leave or the moderator's menu.
+          if (asker != null && roster != null) ...{
+            'role': switch (roster.roles[_base(asker)]) {
+              XprsRole.admin => 'admin',
+              XprsRole.mod => 'mod',
+              XprsRole.member => 'member',
+              XprsRole.invited => 'invited',
+              _ => 'none',
+            },
+            if (roster.offers[_base(asker)] != null) ...{
+              'offer': roster.offers[_base(asker)],
+              'offer_role':
+                  roster.offerRoles[_base(asker)] == XprsRole.mod ? 'mod' : 'member',
+            },
+          },
         },
         'moderation': {'removed': removed.take(200).toList(), 'away': const []},
       },
     });
+  }
+
+  /// A group's name as its own `t:identity` gave it (6.3.2), shown with
+  /// spaces; null when none was heard.
+  static String? _groupNick(String group) {
+    final n = XprsProfiles.instance.nickFor(group) ?? '';
+    return n.isEmpty ? null : xprsGroupNickShown(n);
   }
 
   /// `room=` (spec/API-HTTP.md): one of the three chat rooms, else none.
@@ -1038,7 +1065,28 @@ class WebChatApi {
     if (p == null || !p.fits) return no(400, 'malformed');
     final from = (p['f'] ?? '').trim().toUpperCase();
     if (from.isEmpty) return no(400, 'no f:');
-    if (p.type == 'moderate') return _moderateFromVisitor(p, from, peer);
+    if (p.type == 'moderate') {
+      // About this station or a room it hosts: the station's to judge. About
+      // somebody else's group (10): an act its members and moderators sign
+      // -- an acceptance, a leave, a moderator's removal -- carried like a
+      // post to that group, and judged by every replay of its record (10.4).
+      final t = _base(p['d'] ?? '');
+      final foreign = t.startsWith('X5') && t != _station && _hostedRoom(t) == null;
+      if (!foreign) return _moderateFromVisitor(p, from, peer);
+      final key = keyOf(_base(from));
+      if (key == null) return no(409, 'identity unknown');
+      if (xprsVerify(p, key) != XprsSigState.verified) return no(400, 'forged');
+      if (!_allowed(peer)) return no(429, 'slow down');
+      groups?.offer(p);
+      final w = p.encode();
+      final door = receiveFrom;
+      if (door != null) {
+        door(w, local: isLocalPeer(peer));
+      } else {
+        receive(w);
+      }
+      return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
+    }
     // A hosted room decides what it takes (a forum room takes posts too,
     // which no visitor may air); everything else is the visitor's to send
     // only when [postable] says so.

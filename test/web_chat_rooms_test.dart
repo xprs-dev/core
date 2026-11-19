@@ -286,6 +286,23 @@ void main() {
     final h = await a.handle('GET', '/api/xprs/history', {'room': 'X5REMO'}, '', peer: lan);
     expect((h.json['rows'] as List).map((r) => r['wire']).toList(), [member]);
     expect(h.json['group'], {'state': 'open', 'verified': true});
+
+    // The group invites Carol; her page sees it and her acceptance, signed
+    // by her, goes out through this station like a post to the group.
+    final inv = xprsSign(XprsPacket.parse('t:moderate f:X5REMO d:X5REMO ts:${ts(-3)} grant:X1CARO')!, d);
+    groups.offer(inv);
+    final c = await session(a, 'X1CARO', _carol);
+    final g1 = (await a.handle('GET', '/api/xprs/history', {'room': 'X5REMO', 'session': c}, '', peer: lan))
+        .json['group'] as Map;
+    expect([g1['role'], g1['offer']], ['invited', xprsIdentifier(inv)]);
+    final acc = _signed('t:moderate f:X1CARO d:X5REMO ts:${ts(-2)} r:${xprsIdentifier(inv)} accept:member', _carol);
+    expect((await send(a, acc)).status, 200);
+    expect(received, contains(acc), reason: 'aired for the group and its members');
+    final g2 = (await a.handle('GET', '/api/xprs/history', {'room': 'X5REMO', 'session': c}, '', peer: lan))
+        .json['group'] as Map;
+    expect(g2['role'], 'member');
+    final forged = _signed('t:moderate f:X1CARO d:X5REMO ts:${ts(-1)} leave:group', _bob);
+    expect((await send(a, forged)).status, 400, reason: 'signed by somebody else');
   });
 
   test('update and close', () async {
