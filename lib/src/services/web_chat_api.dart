@@ -1253,6 +1253,13 @@ class WebChatApi {
     if (_roomModeration(room).away.contains(_base(from))) {
       return no(403, 'you were sent away from this room');
     }
+    // 10.4.2: while a room is closed only its admin and moderators post.
+    if (groups!.rosterOf(room).closed) {
+      final role = roleOf(_base(from), group: room);
+      if (role != 'mod' && role != 'admin' && !_isStaff(from)) {
+        return no(403, 'this room is closed to new posts');
+      }
+    }
     if (gallery) {
       final role = roleOf(_base(from), group: room);
       final staff = role == 'mod' || role == 'admin' || _isStaff(from);
@@ -1391,9 +1398,16 @@ class WebChatApi {
         'offer_role':
             r.offerRoles[_base(who)] == XprsRole.mod ? 'mod' : 'member',
       },
+      // 10.4.2: open or closed to new posts.
+      'state': r.closed ? 'closed' : 'open',
       'can_post': who != null &&
           !sentAway &&
-          (!membersOnly || role == 'member' || role == 'mod' || role == 'admin'),
+          (r.closed
+              ? role == 'mod' || role == 'admin'
+              : (!membersOnly ||
+                  role == 'member' ||
+                  role == 'mod' ||
+                  role == 'admin')),
       if (admin || role == 'mod') ...{
         'members': having(XprsRole.member),
         'moderators': having(XprsRole.mod),
@@ -1554,6 +1568,17 @@ class WebChatApi {
         if (visibility != null) meta['visibility'] = visibility;
         if (posting != null) meta['posting'] = posting;
         if (meta['visibility'] == 'private') meta['posting'] = 'members';
+        // Closed or open to new posts (10.4.2): an act the room signs, not
+        // a setting, so every copy of the record agrees.
+        final state = '${b['state'] ?? ''}';
+        if (state == 'closed' || state == 'open') {
+          final closedNow = groups!.rosterOf(call).closed;
+          if (closedNow != (state == 'closed')) {
+            final why = _roomSign(call, 'state:$state');
+            if (why != null) return no(409, why);
+            onSync?.call(call);
+          }
+        }
         rooms[call] = meta;
         _saveRooms(rooms);
         return _roomListFor(session, call);
@@ -1830,8 +1855,11 @@ class WebChatApi {
     }
     final self = p.has('accept') || p.has('leave');
     if (!self) {
-      // Appointing and lifting are the admin's, which the station signs.
-      if (p.has('grant')) return no(403, 'only the administrator appoints');
+      // Appointing and listing folders are the admin's, which the station
+      // signs; a moderator may grant plain membership (10.3).
+      if (p.has('grant') && p.has('role')) {
+        return no(403, 'only the administrator appoints');
+      }
       if (roleOf(from, group: target) != 'mod') {
         return no(403, 'not a moderator here');
       }

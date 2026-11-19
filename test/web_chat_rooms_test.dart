@@ -210,6 +210,39 @@ void main() {
         reason: 'not a moderator of the room');
   });
 
+  test('closed to new posts (10.4.2): only moderators post until it opens',
+      () async {
+    final a = make();
+    final s = await claim(a);
+    final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Done',
+        'visibility': 'public', 'posting': 'anyone'})).json['room'] as String;
+    final aliceOffer = (await rooms(a, s)).single['offer'];
+    await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:$aliceOffer accept:mod', _alice));
+    final c = await session(a, 'X1CARO', _carol);
+    expect((await rooms(a, c)).single['state'], 'open');
+    await post(a, '/api/rooms', {'action': 'update', 'session': s, 'call': call, 'state': 'closed'});
+    final seen = (await rooms(a, c)).single;
+    expect([seen['state'], seen['can_post']], ['closed', false]);
+    expect((await send(a, _signed('t:message f:X1CARO d:$call ts:${ts()} m:late', _carol))).status, 403);
+    expect((await send(a, _signed('t:message f:X1ALIC d:$call ts:${ts()} m:notice', _alice))).status, 200,
+        reason: 'a moderator still posts');
+    expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} state:open', _alice))).status, 200);
+    expect((await send(a, _signed('t:message f:X1CARO d:$call ts:${ts(2)} m:back', _carol))).status, 200);
+  });
+
+  test('a room moderator may grant membership, never appoint', () async {
+    final a = make();
+    final s = await claim(a);
+    final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Club',
+        'visibility': 'public', 'posting': 'members'})).json['room'] as String;
+    final aliceOffer = (await rooms(a, s)).single['offer'];
+    await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:$aliceOffer accept:mod', _alice));
+    expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} grant:X1BOBB', _alice))).status, 200);
+    final b = await session(a, 'X1BOBB', _bob);
+    expect((await rooms(a, b)).single['role'], 'invited');
+    expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} grant:X1CARO role:mod', _alice))).status, 403);
+  });
+
   test('update and close', () async {
     final a = make();
     final s = await claim(a);
