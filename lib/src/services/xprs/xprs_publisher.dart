@@ -560,7 +560,8 @@ class XprsPublisher {
     final author = (p['f'] ?? '').trim().toUpperCase();
     final a = author.split('-').first;
     if (a.isNotEmpty && a != me.split('-').first) return true;
-    return XprsGroups.instance.mayPost(g, me,
+    // A member of it, and not while it is closed to new posts (10.4.2).
+    return XprsGroups.instance.mayPostNow(g, me,
         haveKey: XprsGroups.instance.keyResolver?.call(g) != null);
   }
 

@@ -153,6 +153,24 @@ class XprsGroupAct {
     return xprsSign(p, scalar);
   }
 
+  /// The group closed to new posts, or opened again (XPRS.md 10.4.2):
+  /// `state:closed` / `state:open`, signed by the group (its admin) or by a
+  /// moderator as themselves ([signer]).
+  static XprsPacket? state({
+    required String group,
+    required bool closed,
+    required BigInt scalar,
+    String? signer,
+    int? nowMs,
+  }) {
+    final g = group.trim().toUpperCase();
+    if (g.isEmpty) return null;
+    final p = XprsPacket.parse('t:moderate f:${(signer ?? g).trim().toUpperCase()} '
+        'd:$g ts:${xprsNowTs(nowMs)} state:${closed ? 'closed' : 'open'}');
+    if (p == null) return null;
+    return xprsSign(p, scalar);
+  }
+
   /// A moderator's (or the admin's) replacement of somebody's publication
   /// (XPRS.md 10.4.1): `edit:<id> m:<text>` under `t:moderate`, so the packet
   /// can never be taken for the author's own. [messageId] is the ORIGINAL's §5

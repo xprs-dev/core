@@ -274,6 +274,20 @@ class XprsGroupOps {
 
   /// This station acting as a MODERATOR of [group] -- not its admin (who
   /// signs as the group), and only while its role is `mod` now.
+  /// Close [group] to new posts, or open it again (XPRS.md 10.4.2). The
+  /// admin signs as the group; a moderator signs as themselves.
+  static XprsGroupOpResult setClosed(String group, bool closed) {
+    final mod = _asModerator(group);
+    if (mod != null) {
+      return _finish(XprsGroupAct.state(
+          group: group, closed: closed, scalar: mod.scalar, signer: mod.me));
+    }
+    return _adminAct(
+        group,
+        (scalar) =>
+            XprsGroupAct.state(group: group, closed: closed, scalar: scalar));
+  }
+
   static ({BigInt scalar, String me})? _asModerator(String group) {
     final g = group.trim().replaceFirst('#', '').toUpperCase();
     if (XprsGroupKeys.instance.holdsKey(g)) return null;

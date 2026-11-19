@@ -62,7 +62,11 @@ enum XprsRole {
 class _Act {
   _Act(this.id, this.signer, this.ts, this.grant, this.revoke, this.role,
       this.until, this.since, this.hideRef, this.hide, this.accept, this.leave,
-      {this.edit = '', this.remove = '', this.text = ''});
+      {this.edit = '', this.remove = '', this.text = '', this.state = ''});
+
+  /// `state:closed` / `state:open` -- whether the group takes new posts
+  /// (XPRS.md 10.4.2). Empty for any other act.
+  final String state;
 
   /// Section 5 identifier -- breaks a tie when two acts share a `ts:` (26.4).
   final String id;
@@ -136,7 +140,14 @@ class XprsRoster {
       [this.offers = const {},
       this.moderation = const [],
       this.away = const {},
-      this.offerRoles = const {}]);
+      this.offerRoles = const {},
+      this.closedSince = 0]);
+
+  /// The `ts:` (epoch ms) of the act that closed the group to new posts, or
+  /// 0 while it is open (XPRS.md 10.4.2): only its admin and its moderators
+  /// post in a closed group.
+  final int closedSince;
+  bool get closed => closedSince > 0;
 
   /// callsign → the role the pending offer in [offers] carries
   /// ([XprsRole.mod] or [XprsRole.member]), so the invitee answers with the
@@ -278,6 +289,7 @@ class XprsGroups {
       edit: (p['edit'] ?? '').trim().toLowerCase(),
       remove: (p['remove'] ?? '').trim().toLowerCase(),
       text: p['m'] ?? '',
+      state: _state(p['state']),
     );
 
     final list = _acts.putIfAbsent(group, () {
@@ -459,6 +471,13 @@ class XprsGroups {
     _nextChange.remove(group);
   }
 
+  /// 10.4.2 takes two of the values `state:` has (11.7); any other is a
+  /// device's condition and says nothing about a group.
+  static String _state(String? v) {
+    final s = (v ?? '').trim().toLowerCase();
+    return s == 'closed' || s == 'open' ? s : '';
+  }
+
   static List<String> _calls(String? v) {
     if (v == null || v.isEmpty) return const [];
     return v
@@ -493,6 +512,34 @@ class XprsGroups {
     return role == XprsRole.member ||
         role == XprsRole.mod ||
         role == XprsRole.admin;
+  }
+
+  /// Whether [callsign] may post to [group] NOW: a member of it, and, while
+  /// the group is closed to new posts (XPRS.md 10.4.2), one of its
+  /// moderators or its admin. What a station asks before it writes there.
+  /// [mayPost] stays the question of membership alone (who reads a group's
+  /// files does not change when it closes).
+  bool mayPostNow(String group, String callsign,
+      {int? nowMs, bool haveKey = true}) {
+    final r = rosterOf(group, nowMs: nowMs, haveKey: haveKey);
+    if (!r.verified) return true; // fail open (10.7)
+    final role = r.roles[callsign.trim().toUpperCase()] ?? XprsRole.none;
+    if (role == XprsRole.mod || role == XprsRole.admin) return true;
+    return role == XprsRole.member && !r.closed;
+  }
+
+  /// Whether a post [callsign] dated [tsMs] is the group's to show: they
+  /// were a member then (10.4), and the group was open then or they held
+  /// authority (10.4.2). One replay of the record as it stood at that moment.
+  bool postStands(String group, String callsign, int tsMs) {
+    final g = group.trim().toUpperCase();
+    final c = callsign.trim().toUpperCase();
+    if (g.isEmpty || c.isEmpty) return false;
+    if (c == g) return true;
+    final r = _replay(g, tsMs, true, upTo: tsMs);
+    final role = r.roles[c] ?? XprsRole.none;
+    if (role == XprsRole.mod || role == XprsRole.admin) return true;
+    return role == XprsRole.member && !r.closed;
   }
 
   /// What [callsign] was in [group] at [tsMs] (XPRS.md 10.4: authority is
@@ -571,6 +618,7 @@ class XprsGroups {
     final moderation = <XprsModeration>[];
     final suspended = <String, int>{}; // callsign -> until
     final away = <String, int>{}; // 10.10: sent away from an open room
+    var closedSince = 0; // 10.4.2: the newest state act that counts decides
     // Offers awaiting an acceptance: callsign -> the grant that made them.
     final offered = <String, ({String id, XprsRole role, int ts})>{};
     var nextChange = 0;
@@ -675,6 +723,13 @@ class XprsGroups {
         }
       }
       if (a.hide.isNotEmpty && a.hideRef.isNotEmpty) hidden.add(a.hideRef);
+      // 10.4.2: the walk is in order of ts, and only the admin and a
+      // moderator of that moment got past the authority gate above.
+      if (a.state == 'closed' && isMod) {
+        closedSince = a.ts;
+      } else if (a.state == 'open' && isMod) {
+        closedSince = 0;
+      }
       // 10.4.1: an edit or a removal of somebody's publication. The authority
       // gate above already dropped anyone who was neither the admin nor a
       // moderator AT THIS MOMENT, and the void in PASS A dropped a moderator
@@ -706,7 +761,8 @@ class XprsGroups {
         {for (final e in offered.entries) e.key: e.value.id},
         moderation,
         away,
-        {for (final e in offered.entries) e.key: e.value.role});
+        {for (final e in offered.entries) e.key: e.value.role},
+        closedSince);
   }
 
   /// The tree the `role:sub` listings make (26.2): each listed group mapped

@@ -238,7 +238,7 @@ class WappDelivery {
     final a = author.trim().toUpperCase();
     if (a.isEmpty) return true;
     final haveKey = XprsGroups.instance.keyResolver?.call(g) != null;
-    if (!XprsGroups.instance.mayPost(g, a, haveKey: haveKey) &&
+    if (!XprsGroups.instance.mayPostNow(g, a, haveKey: haveKey) &&
         tsMs == null) {
       return false;
     }
@@ -246,11 +246,11 @@ class WappDelivery {
     // member's if they were one when they wrote it -- so a request to join,
     // replayed after its author was let in, stays a request, and what a
     // member wrote before being removed stays theirs.
+    // 10.4.2: and the group took posts then, or they held authority in it.
     if (tsMs != null && XprsGroups.instance.rosterOf(g, haveKey: haveKey).verified) {
-      final r = XprsGroups.instance.roleAt(g, a, tsMs);
-      return r == XprsRole.member || r == XprsRole.mod || r == XprsRole.admin;
+      return XprsGroups.instance.postStands(g, a, tsMs);
     }
-    return XprsGroups.instance.mayPost(g, a, haveKey: haveKey);
+    return XprsGroups.instance.mayPostNow(g, a, haveKey: haveKey);
   }
 
   /// Whether this station may accept somebody into closed group [dest]: it
