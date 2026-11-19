@@ -188,6 +188,16 @@ class XprsGroupKeys {
     return (rows.first['nick'] ?? '').toString();
   }
 
+  /// A new name for a group this station administers ([XprsGroupOps.rename]
+  /// announces it). False when we hold no key for [callsign].
+  bool setNick(String callsign, String nick) {
+    final db = _db;
+    final c = callsign.trim().toUpperCase();
+    if (db == null || !holdsKey(c)) return false;
+    db.execute('UPDATE xprs_groups SET nick = ? WHERE callsign = ?', [nick, c]);
+    return true;
+  }
+
   /// Whether this station holds the group's PRIVATE key, i.e. administers
   /// it. One indexed row. [npubFor] is no answer to this: a member keeps the
   /// group's public key too ([rememberGroupKey]), with an empty nsec.

@@ -132,6 +132,43 @@ class XprsGroupOps {
     return g;
   }
 
+  /// A group's name, changed by its admin: the `nick:` of the group's own
+  /// `t:identity` (6.3.2, a group being a station, 10.1), signed with the
+  /// group's key. A folder is a group (10.2), so this renames a folder too.
+  ///
+  /// The picture goes out with it, as the name goes out with the picture
+  /// ([setPicture]): a decoration states every field it has.
+  static XprsGroupOpResult rename(String group, String nick) {
+    final g = group.trim().replaceFirst('#', '').toUpperCase();
+    final scalar = XprsGroupKeys.instance.scalarFor(g);
+    if (scalar == null) {
+      return XprsGroupOpResult.failed('only the admin of $g can do that');
+    }
+    final n = xprsNickValue(nick);
+    if (n.isEmpty) return const XprsGroupOpResult.failed('a group needs a name');
+    final wires = XprsPublisher.composeDecoration(
+      call: g,
+      nick: n,
+      fileToken: XprsProfiles.instance.pictureFor(g)?.token ?? '',
+      about: '',
+      ts: xprsNowTs(),
+      signingKey: scalar,
+    );
+    if (wires.isEmpty) {
+      return const XprsGroupOpResult.failed('the act did not compose or fit');
+    }
+    XprsGroupKeys.instance.setNick(g, n);
+    final airs = <Future<void>>[];
+    for (final w in wires) {
+      final p = XprsPacket.parse(w);
+      if (p == null) continue;
+      XprsProfiles.instance.own(g, p); // a station never hears itself
+      airs.add(_air(p));
+    }
+    unawaited(Future.wait(airs).then((_) => XprsArchive.instance.flush()));
+    return XprsGroupOpResult.ok(wires.first);
+  }
+
   /// A group's picture (6.3.2 applied to the group's own `t:identity`, 10.1:
   /// "a group is a station"). [token] is `file:<sha>.<ext>` of a thumbnail
   /// already in the media archive, or empty to take the picture back with
