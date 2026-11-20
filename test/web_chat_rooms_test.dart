@@ -39,7 +39,9 @@ void main() {
     return '${t.year}-${two(t.month)}-${two(t.day)}_${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
   }
 
+  List<String> airedAsIs = [];
   WebChatApi make({MediaArchive? files}) => WebChatApi(
+        airVerbatim: airedAsIs.add,
         publicRows: ({sinceMs, untilMs, required types, from, visitor, room, required limit}) => [],
         held: (t) => 0,
         receive: received.add,
@@ -90,6 +92,7 @@ void main() {
     groups.keyResolver = (c) => keys[c];
     received = [];
     kept = [];
+    airedAsIs = [];
     clock = DateTime.now().toUtc();
   });
 
@@ -261,7 +264,9 @@ void main() {
     final b = await session(a, 'X1BOBB', _bob);
     final msg = _signed('t:message f:X1BOBB d:LISBOA ts:${ts()} m:ola', _bob);
     expect((await send(a, msg)).status, 200);
-    expect(received, contains(msg), reason: 'aired like any group post');
+    expect(received, contains(msg), reason: 'into the station like any group post');
+    expect(airedAsIs, [msg],
+        reason: 'and aired once as signed, not left to the repeat queue');
     kept.add(msg); // what the station's archive files when it hears it
     final h = await a.handle('GET', '/api/xprs/history',
         {'room': 'LISBOA', 'session': b}, '', peer: lan);

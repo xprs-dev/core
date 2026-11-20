@@ -281,6 +281,12 @@ class WebChatApi {
   /// Air a wire this station signed (its own moderation acts).
   final void Function(String wire)? publish;
 
+  /// Air a visitor's wire exactly as they signed it. The station is the only
+  /// link the page has: what it hands in goes out once, by the publisher's
+  /// path choice, and does not wait in the digipeater's best-effort queue
+  /// (13.2.1), which a busy station overflows.
+  final void Function(String wire)? airVerbatim;
+
   /// The host's hook to ask a shared room's peers now (XprsGroupMirror.poke):
   /// the administrator pressed Sync, or just mirrored a room.
   void Function(String group)? onSync;
@@ -321,6 +327,7 @@ class WebChatApi {
     this.keep,
     this.roomRows,
     this.groupRank,
+    this.airVerbatim,
     this.fileStore,
     this.fileMax = defaultFileMax,
     this.staffFileMax = defaultStaffFileMax,
@@ -1089,6 +1096,7 @@ class WebChatApi {
       } else {
         receive(w);
       }
+      airVerbatim?.call(w);
       return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
     }
     // A hosted room decides what it takes (a forum room takes posts too,
@@ -1159,6 +1167,9 @@ class WebChatApi {
     } else {
       receive(w);
     }
+    // A part of a split post (7.6) is aired as given by the door's own rule;
+    // a whole signed packet goes out once, now.
+    if (!part) airVerbatim?.call(w);
     return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
   }
 

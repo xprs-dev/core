@@ -135,6 +135,8 @@ WebChatApi stationWebChatApi({
             limit: limit,
           ),
       groupRank: (by) => xprsGroupRankRows(by),
+      airVerbatim: (w) =>
+          unawaited(XprsPublisher.instance.publishWire(w, verbatim: true, datagram: true)),
     )..ownIdentity = XprsPublisher.instance.ownIdentityWire;
 
 class StationHost {
