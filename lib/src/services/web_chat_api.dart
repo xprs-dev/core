@@ -769,7 +769,11 @@ class WebChatApi {
             },
           },
         },
-        'moderation': {'removed': removed.take(200).toList(), 'away': const []},
+        'moderation': {
+          'removed': removed.take(200).toList(),
+          'away': const [],
+          if (roster != null) 'edits': _editsOf(roster),
+        },
       },
     });
   }
@@ -1272,6 +1276,18 @@ class WebChatApi {
     );
   }
 
+  /// A group's corrections (10.4.1): the newest that counts for each
+  /// publication, as `{target: text}`, at most [max].
+  static Map<String, String> _editsOf(XprsRoster r, {int max = 200}) {
+    final newest = <String, XprsModeration>{};
+    for (final m in r.moderation) {
+      if (m.kind != 'edit') continue;
+      final was = newest[m.target];
+      if (was == null || m.tsMs >= was.tsMs) newest[m.target] = m;
+    }
+    return {for (final e in newest.entries.take(max)) e.key: e.value.text};
+  }
+
   /// Asking to join, at most once an hour per person and room (10.3).
   final Map<String, int> _asked = {};
   static const int _askEveryMs = 3600 * 1000;
@@ -1367,6 +1383,7 @@ class WebChatApi {
       'moderation': {
         'removed': mod.removed.take(200).toList(),
         'away': mod.away.toList(),
+        'edits': _editsOf(groups!.rosterOf(room)),
       },
     });
   }

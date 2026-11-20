@@ -305,6 +305,23 @@ void main() {
     expect((await send(a, forged)).status, 400, reason: 'signed by somebody else');
   });
 
+  test('a room moderator corrects a message (10.4.1); a member cannot', () async {
+    final a = make();
+    final s = await claim(a);
+    final call = (await post(a, '/api/rooms', {'action': 'create', 'session': s, 'name': 'Fix',
+        'visibility': 'public', 'posting': 'anyone'})).json['room'] as String;
+    final aliceOffer = (await rooms(a, s)).single['offer'];
+    await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts()} r:$aliceOffer accept:mod', _alice));
+    final msg = _signed('t:message f:X1CARO d:$call ts:${ts()} m:call me on 555-1234', _carol);
+    await send(a, msg);
+    final id = xprsIdentifier(XprsPacket.parse(msg)!);
+    expect((await send(a, _signed('t:moderate f:X1BOBB d:$call ts:${ts(1)} edit:$id m:bob was here', _bob))).status, 403);
+    expect((await send(a, _signed('t:moderate f:X1ALIC d:$call ts:${ts(1)} edit:$id m:[number removed by a moderator]', _alice))).status, 200);
+    final c = await session(a, 'X1CARO', _carol);
+    final h = await history(a, call, c);
+    expect((h.json['moderation'] as Map)['edits'], {id: '[number removed by a moderator]'});
+  });
+
   test('update and close', () async {
     final a = make();
     final s = await claim(a);
