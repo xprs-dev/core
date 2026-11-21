@@ -400,8 +400,8 @@ class MeshStore {
   ///
   /// `IN ()` is not valid SQL, and an empty name list used to be an `= ''`
   /// that matched nothing, so the false branch has to keep that meaning.
-  /// It is `0 = 1` and not `0`: in an `ORDER BY` term the SQLite dialect
-  /// (which zx speaks) reads a bare integer as an ORDINAL COLUMN
+  /// It is `0 = 1` and not `0`: in an `ORDER BY` term zx's SQL
+  /// reads a bare integer as an ORDINAL COLUMN
   /// REFERENCE, so `ORDER BY (0)` is not "sort by false", it is
   /// "1st ORDER BY term out of range" and the statement does not even
   /// prepare.

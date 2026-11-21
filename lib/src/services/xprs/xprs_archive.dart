@@ -243,7 +243,7 @@ class XprsArchive {
       // person or a group by name never scans the spool. `k` is the callsign
       // and the nick folded for matching (see [nameKey]).
       final namesNew = db
-          .select("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+          .select("SELECT 1 FROM zx_schema WHERE type = 'table' "
               "AND name = 'names'")
           .isEmpty;
       db.execute('''

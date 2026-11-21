@@ -295,8 +295,8 @@ class XprsGossip {
           );
         }
         // The cap: stalest pointers leave, whoever wrote them (every row
-        // past the cap-th freshest; an explicit big LIMIT, not the SQLite
-        // dialect's -1).
+        // past the cap-th freshest; an explicit big LIMIT, not
+        // a LIMIT of -1).
         db.execute(
           'DELETE FROM directory_ptr WHERE rowid IN '
           '(SELECT rowid FROM directory_ptr ORDER BY last_ts DESC '

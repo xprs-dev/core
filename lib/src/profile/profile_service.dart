@@ -130,7 +130,7 @@ class ProfileService {
     reticulum.dbMemoryOpener = openMemoryStoreDb;
     final root = xprsRootStorage();
     await root.createDirectory('');
-    // The SQLite files and profile.ear of before the zx stores: removed
+    // The database files and profile.ear of before the zx stores: removed
     // once, in the background (nothing reads them).
     unawaited(removePreZxFiles(root.basePath).then((n) {
       if (n > 0) LogService.instance.add('storage: removed $n pre-zx file(s)');
