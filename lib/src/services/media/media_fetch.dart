@@ -351,14 +351,26 @@ class MediaFetch {
   /// its own internet middle. Needs a holder callsign.
   void _askBulkLane(MediaRef ref, String? from) {
     final self = selfCallsign?.call().trim().toUpperCase() ?? '';
-    final dest = (from ?? '').trim().toUpperCase();
-    if (self.isEmpty || dest.isEmpty) return;
-    unawaited(XprsFileFetch.instance.fetch(
-      archiver: dest,
-      shaHex: ref.sha256Hex,
-      selfCallsign: self,
-      ext: ref.ext,
-    ));
+    if (self.isEmpty) return;
+    // The station that named the file, then every station known to hold it
+    // (spec 12.9.2): one fetch, and each of them a source. Asking only the
+    // sender left a file unfetchable whenever its sender was away, with
+    // other holders in reach.
+    final a = archive?.call();
+    final holders = <String>[
+      if ((from ?? '').trim().isNotEmpty) from!.trim().toUpperCase(),
+      if (a != null)
+        for (final h in xprsKnownHolders(a, ref.sha256Hex))
+          if (h != self) h,
+    ];
+    for (final dest in holders.toSet()) {
+      unawaited(XprsFileFetch.instance.fetch(
+        archiver: dest,
+        shaHex: ref.sha256Hex,
+        selfCallsign: self,
+        ext: ref.ext,
+      ));
+    }
   }
 
   void _runInternet(MediaRef ref, String? from) {

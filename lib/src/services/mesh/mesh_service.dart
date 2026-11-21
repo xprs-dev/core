@@ -716,15 +716,12 @@ class MeshService {
         // learned from gossip or a re-seed). A large archiver bridges this to
         // the provider-record/DHT lookup (Phase E) so a hash resolves network-
         // wide; a leaf answers with what its own store knows.
-        XprsFileServer.instance.holderIndex = (shaHex) {
-          final out = <String>[];
-          for (final (kind, value) in mediaArchive.getSources(shaHex)) {
-            if (kind == 'callsign' && value.trim().isNotEmpty) {
-              out.add(value.trim().toUpperCase());
-            }
-          }
-          return out;
-        };
+        XprsFileServer.instance.holderIndex =
+            (shaHex) => xprsKnownHolders(mediaArchive, shaHex);
+        // A station that answered `202` holds the file: remembered as a
+        // source, or the index above has nothing to say.
+        XprsFileFetch.instance.onHolder = (shaHex, holder) =>
+            mediaArchive.addSource(shaHex, 'callsign', holder.toUpperCase());
         // `cmd:put` deposits are gated by the operator's archiver policy
         // (§34.3): off until a quota is set, then a direct-link neighbour or a
         // followed author gets in, under the quota ceiling. The bytes land on

@@ -36,6 +36,7 @@ import 'package:reticulum/reticulum.dart';
 
 import '../log_service.dart';
 import '../mesh/mesh_bulk_spool.dart';
+import '../media/media_ref_index.dart';
 import 'xprs_id.dart';
 import 'xprs_airtime.dart';
 import 'xprs_monitor.dart';
@@ -446,6 +447,25 @@ class _Served {
   _Served(this.cmdId, this.to, this.self);
 }
 
+/// The stations known to hold [shaHex], best first: those that said so
+/// themselves (a `202`, kept as `callsign` sources of the archive), then the
+/// one whose message named the file. What a `q:have` miss names in `m:try`
+/// and what a fetch asks beside the sender (spec 8.1, 12.9.2).
+List<String> xprsKnownHolders(MediaArchive archive, String shaHex,
+    {int max = 4}) {
+  final out = <String>[];
+  void add(String? c) {
+    final v = (c ?? '').trim().toUpperCase();
+    if (v.isNotEmpty && !out.contains(v) && out.length < max) out.add(v);
+  }
+
+  for (final (kind, value) in archive.getSources(shaHex)) {
+    if (kind == 'callsign') add(value);
+  }
+  add(MediaRefIndex.instance.describe(shaHex)?.from);
+  return out;
+}
+
 /// Asks another station for a file by digest, and waits for the bytes.
 ///
 /// Follows the shape XprsCatchup already proved: a directed ask, correlation by
@@ -482,6 +502,12 @@ class XprsFileFetch {
   Future<String?> Function(
           String shaHex, String ext, String archiver, String? destDir)?
       internetFetch;
+
+  /// A station said it holds a file (its `202` to our ask). The core keeps
+  /// it as a source of that hash, which is what a `q:have` miss names in
+  /// `m:try` (spec 8.1, 12.9.2) and what a later fetch asks first. Nothing
+  /// recorded a holder before, so that index was always empty.
+  void Function(String shaHex, String holder)? onHolder;
 
   /// How long to wait for the bytes once a peer said `202`.
   ///
@@ -672,6 +698,13 @@ class XprsFileFetch {
         // completion is FILE_OK on that lane, not this packet. Stop re-airing.
         _accepted.add(ask.sha);
         LogService.instance.add('XPRS: ${ask.station} accepted (202)');
+        // "I hold it", from the holder itself: worth remembering whether or
+        // not its bytes are the ones that arrive (spec 12.9.2).
+        try {
+          onHolder?.call(ask.sha, ask.station);
+        } catch (e) {
+          LogService.instance.add('XPRS: noting a holder failed: $e');
+        }
         return;
       case 200:
         // The holder's closing receipt. The bytes themselves are what complete
