@@ -3147,7 +3147,13 @@ class RnsService {
     for (final n in _observed.values) {
       if (n.archiverSaidMs == 0) continue;
       final call = _bareUpper(n.callsign ?? '');
-      if (call.isEmpty || !seen.add(call)) continue;
+      // A station (X2, X3) only. The relay role is decided by capacity, so a
+      // person's phone charging on Wi-Fi announces itself an archiver under
+      // its X1, and a station that leans on it leaves its mail with a phone
+      // that will be in a pocket tomorrow. Heard on the public hub
+      // (2026-11-21): one X1 among the two "archivers" announcing there.
+      if (call.isEmpty || xprsKindOf(call) != XprsKind.station) continue;
+      if (!seen.add(call)) continue;
       rows.add((
         callsign: call,
         lastSeenMs: n.lastSeenMs,

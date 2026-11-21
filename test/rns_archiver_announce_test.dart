@@ -57,6 +57,16 @@ void main() {
     expect(calls, isNot(contains('X3PLAN')));
   });
 
+  test("a person's phone announcing the archiver role is not an archiver",
+      () async {
+    final phone = await RnsIdentity.generate();
+    rns.debugObserveAnnounce(
+        await _announce(phone, ['chat'], _chat('X1PHON', _archiver)));
+    expect(rns.announcedCallsigns(prefix: 'X1'), contains('X1PHON'));
+    expect(rns.announcedArchivers().map((r) => r.callsign),
+        isNot(contains('X1PHON')));
+  });
+
   test('the dedicated relay announce marks a named node an archiver',
       () async {
     final id = await RnsIdentity.generate();
