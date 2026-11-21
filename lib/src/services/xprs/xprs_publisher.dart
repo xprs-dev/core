@@ -17,6 +17,8 @@
 /// transmit unsigned, which the spec permits and the log states.
 library;
 
+import '../people/xprs_people.dart';
+import '../../profile/iwi_profile.dart';
 import 'xprs_self.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -1516,6 +1518,99 @@ class XprsPublisher {
     return [a, ?alone, b];
   }
 
+  /// One identity statement (6.3.3): the identities of ONE kind, signed, to
+  /// go as far as [scope]. [values] empty withdraws the kind (`data:-`). A
+  /// set that does not fit a packet is cut to its first ones: the newest
+  /// packet of a kind replaces the kind, so there is no second packet to
+  /// continue in. Pure. Null when there is nothing that can be signed, or
+  /// the kind or a value is not something a field can carry.
+  static String? composeIdentityStatement({
+    required String call,
+    required String idtype,
+    required List<String> values,
+    required String ts,
+    required BigInt? signingKey,
+    String scope = '',
+  }) {
+    final c = call.trim().toUpperCase();
+    final type = idtype.trim().toLowerCase();
+    if (c.isEmpty || signingKey == null) return null;
+    if (!RegExp(r'^[a-z0-9-]+$').hasMatch(type)) return null;
+    final set = <String>[];
+    for (final raw in values) {
+      // A field's value has no spaces, and a comma separates the set.
+      final v = raw.trim();
+      if (v.isEmpty || v == '-' || v.contains(RegExp(r'[\s,]'))) continue;
+      if (!set.contains(v)) set.add(v);
+    }
+    final sc = scope.trim();
+    final head = 't:identity f:$c ts:$ts'
+        '${sc.isEmpty || sc.toLowerCase() == 'global' ? '' : ' scope:$sc'}'
+        ' idtype:$type';
+    while (true) {
+      var p = XprsPacket.parse('$head data:${set.isEmpty ? '-' : set.join(',')}');
+      if (p == null) return null;
+      p = xprsSign(p, signingKey);
+      final w = p.encode();
+      if (utf8.encode(w).length <= XprsPacket.maxBytes) return w;
+      if (set.length <= 1) return null;
+      set.removeLast();
+    }
+  }
+
+  /// What this station last stated per kind, so an unchanged set is aired
+  /// with the daily decoration and not on every profile save.
+  final Map<String, String> _statedLast = {};
+
+  /// State this person's other identities (6.3.3), one packet per kind: the
+  /// issued callsigns they hold, and what they entered on their profile,
+  /// each as far as they chose. A kind they removed is withdrawn once.
+  /// Rare, like the decoration it goes out with.
+  Future<int> publishIdentities() async {
+    final profile = ProfileService.instance.activeProfile;
+    final key = xprsProfileScalar();
+    if (profile == null || key == null) return 0;
+    final now = DateTime.now().toUtc();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final ts = '${now.year}-${two(now.month)}-${two(now.day)}_'
+        '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
+    final sets = <StatedIdentities>[
+      if (profile.heldLicences.isNotEmpty)
+        StatedIdentities(XprsIdType.licence, profile.heldLicences),
+      for (final i in profile.identities)
+        if (i.type != XprsIdType.licence) i,
+    ];
+    // A kind stated before and no longer on the profile is withdrawn.
+    for (final was in _statedLast.keys.toList()) {
+      if (!sets.any((s) => s.type == was)) {
+        sets.add(StatedIdentities(was, const []));
+      }
+    }
+    var aired = 0;
+    for (final s in sets) {
+      final wire = composeIdentityStatement(
+          call: profile.wireCallsign,
+          idtype: s.type,
+          values: s.values,
+          ts: ts,
+          signingKey: key,
+          scope: s.scope);
+      if (wire == null) continue;
+      await publishWire(wire, slot: 'identity:${s.type}');
+      aired++;
+      if (s.values.isEmpty) {
+        _statedLast.remove(s.type);
+      } else {
+        _statedLast[s.type] = '${s.scope}|${s.values.join(',')}';
+      }
+      // Our own record says the same as everybody else's will.
+      XprsPeople.instance.stated(profile.npub, s.type,
+          s.values.isEmpty ? '-' : s.values.join(','),
+          tsMs: now.millisecondsSinceEpoch, scope: s.scope);
+    }
+    return aired;
+  }
+
   /// Put this station's decoration on the air (6.3.2): the nickname, the
   /// picture and the description from the active profile, under the name the
   /// station transmits with. Rare by design ("the decoration is larger and
@@ -1545,6 +1640,8 @@ class XprsPublisher {
       XprsIngest.own(w, bearer: air.carriedBy ?? 'none');
     }
     depositArchivers(wires, what: 'decoration');
+    // The other identities travel on the same rare schedule (6.3.3).
+    unawaited(publishIdentities());
     // Said when something carried it: a station with no bearer up retries on
     // the next tick, and that is not news every five seconds (perf. 8.10).
     if (air.report.values.any((v) => v == 'sent')) {

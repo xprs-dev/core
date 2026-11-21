@@ -13,6 +13,36 @@
  * inside the profile folder.
  */
 
+/// The identities of one kind a person states of themselves (XPRS.md
+/// 6.3.3): an e-mail address, the addresses of their boards, their node on
+/// another mesh. [type] is the `idtype:` word, [values] what goes in `data:`,
+/// [scope] how far its owner lets it be told (`local`, `regional`, `global`
+/// or country codes; empty is global, as for any packet).
+class StatedIdentities {
+  const StatedIdentities(this.type, this.values, {this.scope = ''});
+
+  final String type;
+  final List<String> values;
+  final String scope;
+
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        'data': values,
+        if (scope.isNotEmpty) 'scope': scope,
+      };
+
+  static StatedIdentities? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final type = '${j['type'] ?? ''}'.trim().toLowerCase();
+    final values = [
+      for (final v in (j['data'] as List?) ?? const [])
+        if (v is String && v.trim().isNotEmpty) v.trim(),
+    ];
+    if (type.isEmpty) return null;
+    return StatedIdentities(type, values, scope: '${j['scope'] ?? ''}'.trim());
+  }
+}
+
 class IwiProfile {
   /// Stable identifier. We use the callsign so paths on disk are
   /// human-readable (`devices/X1ABCD/`) and a profile can be swapped
@@ -72,6 +102,11 @@ class IwiProfile {
   /// 30 minutes (one per callsign, XPRS.md 6.4.2) stay a small cost.
   static const int maxLicences = 4;
 
+  /// The other identities this person states of themselves, one entry per
+  /// kind (6.3.3). The issued callsigns are not repeated here: they are
+  /// [heldLicences], and stated from there.
+  final List<StatedIdentities> identities;
+
   /// Bech32-encoded Nostr public key (`npub1...`). Shown to users,
   /// safe to share, used as the publisher identity when signing wapps.
   final String npub;
@@ -116,6 +151,7 @@ class IwiProfile {
     this.avatar = '',
     this.licenceCallsign = '',
     this.licenceCallsigns = const [],
+    this.identities = const [],
     this.nsecEnvelope,
   });
 
@@ -160,6 +196,7 @@ class IwiProfile {
     String? avatar,
     String? licenceCallsign,
     List<String>? licenceCallsigns,
+    List<StatedIdentities>? identities,
     Map<String, dynamic>? nsecEnvelope,
     bool clearNsecEnvelope = false,
   }) {
@@ -178,6 +215,7 @@ class IwiProfile {
       // already means "no licence".
       licenceCallsign: licenceCallsign ?? this.licenceCallsign,
       licenceCallsigns: licenceCallsigns ?? this.licenceCallsigns,
+      identities: identities ?? this.identities,
       nsecEnvelope:
           clearNsecEnvelope ? null : (nsecEnvelope ?? this.nsecEnvelope),
     );
@@ -202,6 +240,9 @@ class IwiProfile {
         // The whole list beside it. An older build ignores this key and keeps
         // transmitting under the active one, which is the right fallback.
         if (heldLicences.isNotEmpty) 'licenceCallsigns': heldLicences,
+        // Only when the person stated some: older profiles stay as written.
+        if (identities.isNotEmpty)
+          'identities': [for (final i in identities) i.toJson()],
       };
 
   factory IwiProfile.fromJson(Map<String, dynamic> json) {
@@ -225,6 +266,10 @@ class IwiProfile {
       licenceCallsigns: [
         for (final c in (json['licenceCallsigns'] as List?) ?? const [])
           if (c is String && c.trim().isNotEmpty) c.trim().toUpperCase(),
+      ],
+      identities: [
+        for (final j in (json['identities'] as List?) ?? const [])
+          ?StatedIdentities.fromJson(j),
       ],
       nsecEnvelope: envelope is Map ? envelope.cast<String, dynamic>() : null,
     );

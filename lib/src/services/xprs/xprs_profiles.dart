@@ -19,6 +19,9 @@
  *
  * Screens ask [pictureFor] and listen to [revision]; nothing here draws.
  */
+import 'package:hex/hex.dart';
+
+import '../people/xprs_people.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -111,6 +114,9 @@ class XprsProfiles {
 
   int accepted = 0, rejected = 0;
 
+  /// Statements of another identity (6.3.3) that changed what is held.
+  int identitiesStated = 0;
+
   static String _base(String call) {
     final c = call.trim().toUpperCase();
     final dash = c.indexOf('-');
@@ -119,7 +125,12 @@ class XprsProfiles {
 
   static bool _decorates(XprsPacket p) =>
       p.type == 'identity' &&
-      (p.has('nick') || p.has('file') || p.has('m') || p.has('url'));
+      (p.has('nick') ||
+          p.has('file') ||
+          p.has('m') ||
+          p.has('url') ||
+          // Another identity of the person (6.3.3).
+          (p.has('idtype') && p.has('data')));
 
   /// A web address a screen may offer as a link: http(s) only, no spaces,
   /// bounded. Anything else is not a web chat and is not kept.
@@ -222,12 +233,47 @@ class XprsProfiles {
     return ok;
   }
 
+  /// The person (npub) who goes by [call]: from the people record, or, for
+  /// a key this station held before that record existed, from the key
+  /// itself, which then claims the callsign there.
+  String? _personOf(String call) {
+    final people = XprsPeople.instance;
+    final held = people.holderOfCall(call);
+    if (!XprsPeople.isUnclaimed(held)) return held;
+    final key = (keyResolver ?? XprsArchive.instance.keyResolver)?.call(call);
+    if (key == null || key.length != 32) return null;
+    try {
+      final hex = HEX.encode(key);
+      final npub = NostrCrypto.encodeNpub(hex);
+      people.claim(npub, XprsPeople.callType(call), call,
+          evidence: NostrCrypto.callsignMatchesKey(call, hex)
+              ? XprsIdEvidence.derived
+              : XprsIdEvidence.signed);
+      return npub;
+    } catch (_) {
+      return null;
+    }
+  }
+
   bool _apply(String call, XprsPacket p, {required bool verify}) {
     if (verify && !_verified(p, call)) {
       rejected++;
       return false;
     }
     final ts = xprsParseTs(p['ts']) ?? 0;
+    // Another identity of the same person (6.3.3): filed under their key,
+    // the newest statement of a kind replacing that kind. Verified above
+    // like every other field of an identity packet.
+    final idtype = p['idtype'];
+    final data = p['data'];
+    if (idtype != null && data != null && idtype.isNotEmpty) {
+      final holder = _personOf(call);
+      if (holder != null &&
+          XprsPeople.instance.stated(holder, idtype, data,
+              tsMs: ts, scope: p['scope'] ?? '')) {
+        identitiesStated++;
+      }
+    }
     final d = _deco.putIfAbsent(call, StationDecoration.new);
     if (_deco.length > _maxStations) _deco.remove(_deco.keys.first);
     var changed = false;

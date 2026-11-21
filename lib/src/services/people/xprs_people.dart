@@ -70,6 +70,25 @@ abstract final class XprsIdType {
 
   static const String email = 'email';
 
+  /// The kinds a person may state of themselves (XPRS.md 6.3.3), in the
+  /// order a form offers them. Issued callsigns are stated from the
+  /// profile's own list and are not entered here. Any other word is a kind
+  /// too: this is the documented list, not a limit.
+  static const List<String> statable = [
+    email,
+    meshtastic,
+    meshcore,
+    ble,
+    wlan,
+    reticulum,
+    lxmf,
+  ];
+
+  /// How far a kind is worth telling when its owner has not chosen: a
+  /// board's radio address only helps somebody in range of it.
+  static String defaultScope(String type) =>
+      type == ble || type == wlan ? 'local' : 'global';
+
   /// [value] as this type is always written, or '' when it cannot be one.
   static String normalise(String type, String value) {
     final v = value.trim();
@@ -173,6 +192,10 @@ class XprsPeople {
   /// held; a holder with something signed or derived leaves last.
   static const int maxHolders = 4096;
 
+  /// Rows read from the store at start: more than [maxHolders] people can
+  /// hold between them in practice, and a bound whatever the file holds.
+  static const int maxRows = 32768;
+
   /// How much later a re-sighting must be to be written to the store again.
   static const int _lastStepMs = 60 * 60 * 1000;
 
@@ -223,13 +246,25 @@ class XprsPeople {
       db.execute(
         'CREATE INDEX IF NOT EXISTS idx_id_value ON identities(type, value)',
       );
+      // What a holder SAID of a kind (XPRS.md 6.3.3): the time of the
+      // newest packet that stated it, so an older one cannot bring a
+      // withdrawn identity back.
+      db.execute(
+        'CREATE TABLE IF NOT EXISTS said('
+        'holder TEXT NOT NULL, type TEXT NOT NULL, ts INTEGER NOT NULL,'
+        'PRIMARY KEY(holder, type))',
+      );
       _db = db;
       _by.clear();
       _index.clear();
-      for (final r in db.select(
+      // The newest [maxRows], read newest first and filed oldest first, so
+      // a holder's place in the map is its touch order again.
+      final rows = db.select(
         'SELECT holder,type,value,evidence,first_ms,last_ms,via,scope '
-        'FROM identities ORDER BY last_ms ASC',
-      )) {
+        'FROM identities ORDER BY last_ms DESC LIMIT ?',
+        [maxRows],
+      ).toList();
+      for (final r in rows.reversed) {
         final e = (r['evidence'] as int).clamp(0, XprsIdEvidence.values.length - 1);
         final id = XprsIdentity(
           r['type'] as String,
@@ -243,6 +278,13 @@ class XprsPeople {
         final holder = r['holder'] as String;
         _by.putIfAbsent(holder, () => []).add(id);
         _index.putIfAbsent(_k(id.type, id.value), () => {}).add(holder);
+      }
+      _saidTs.clear();
+      for (final r in db.select(
+          'SELECT holder,type,ts FROM said ORDER BY ts DESC LIMIT ?',
+          [maxRows])) {
+        _saidTs[_k(r['holder'] as String, r['type'] as String)] =
+            r['ts'] as int;
       }
     } on ProfileLockedException {
       LogService.instance.add('People: profile locked, kept in memory');
@@ -412,6 +454,8 @@ class XprsPeople {
       if (hs != null && hs.isEmpty) _index.remove(k);
     }
     _write('DELETE FROM identities WHERE holder=?', [holder]);
+    _saidTs.removeWhere((k, _) => k.startsWith('$holder|'));
+    _write('DELETE FROM said WHERE holder=?', [holder]);
   }
 
   /// The holder withdrew [type]:[value] (a `-` on the wire), or the owner of
@@ -490,6 +534,91 @@ class XprsPeople {
   List<String> reachCall(String callsign, String wanted,
           {XprsIdEvidence min = XprsIdEvidence.relayed}) =>
       reach(callType(callsign), callsign, wanted, min: min);
+
+  // ── What a person says of themselves (XPRS.md 6.3.3) ────────────────────
+
+  /// The mark on an identity that came from the holder's own statement, as
+  /// opposed to one this station worked out.
+  static const String said = 'said';
+
+  /// `holder|type` -> `ts` of the newest statement of that kind.
+  final Map<String, int> _saidTs = {};
+
+  /// [holder] stated, in a packet their key signed at [tsMs], that their
+  /// identities of kind [idtype] are [data] (comma-separated; `-` withdraws
+  /// the kind), to be told on as far as [scope].
+  ///
+  /// The newest statement of a kind replaces that kind: what an earlier one
+  /// stated and this one does not is gone. What this station learned by
+  /// itself (an address it saw, a derived callsign) is not the holder's to
+  /// withdraw and stays. An older statement than the one held is ignored.
+  /// A kind this station does not know is kept as written. Returns whether
+  /// anything changed.
+  bool stated(String holder, String idtype, String data,
+      {required int tsMs, String scope = ''}) {
+    final h = holder.trim();
+    final type = idtype.trim().toLowerCase();
+    if (h.isEmpty || isUnclaimed(h) || type.isEmpty) return false;
+    final key = _k(h, type);
+    if (tsMs <= (_saidTs[key] ?? 0)) return false;
+    _saidTs[key] = tsMs;
+    _write(
+        'INSERT INTO said(holder,type,ts) VALUES(?,?,?) '
+        'ON CONFLICT(holder,type) DO UPDATE SET ts=excluded.ts',
+        [h, type, tsMs]);
+
+    final want = <String>[];
+    if (data.trim() != '-') {
+      for (final raw in data.split(',')) {
+        final v = XprsIdType.normalise(type, raw);
+        if (v.isNotEmpty && !want.contains(v)) want.add(v);
+        if (want.length >= perType) break;
+      }
+    }
+    var changed = false;
+    final list = _by[h];
+    if (list != null) {
+      for (final id in List.of(list)) {
+        if (id.type == type && id.via == said && !want.contains(id.value)) {
+          _drop(h, list, id);
+          changed = true;
+        }
+      }
+      if (list.isEmpty) _by.remove(h);
+    }
+    for (final v in want) {
+      final was = of(h, type: type).where((e) => e.value == v).firstOrNull;
+      if (was == null || was.via != said || was.scope != scope) changed = true;
+      note(h, type, v,
+          evidence: XprsIdEvidence.signed, via: said, scope: scope);
+      // An identity already signed another way keeps its evidence; the mark
+      // and the scope are the statement's.
+      final now = of(h, type: type).where((e) => e.value == v).firstOrNull;
+      if (now != null && now.via != said) {
+        now.via = said;
+        _put(h, now);
+      }
+    }
+    return changed;
+  }
+
+  /// What [holder] stated of themselves that may be told to somebody at
+  /// [reach] (`local`, `regional` or `global`): the identities whose scope
+  /// admits it. An identity nobody stated has no scope and is never told.
+  List<XprsIdentity> tellable(String holder, {required String reach}) => [
+        for (final e in of(holder))
+          if (e.via == said && _admits(e.scope, reach)) e
+      ];
+
+  /// 9.11: no scope is global; `local` goes nowhere past earshot;
+  /// `regional` or country codes stop short of the whole network.
+  static bool _admits(String scope, String reach) {
+    final s = scope.trim().toLowerCase();
+    if (s.isEmpty || s == 'global') return true;
+    if (reach == 'local') return true;
+    if (reach == 'regional') return s != 'local';
+    return false;
+  }
 
   // ── Reading ─────────────────────────────────────────────────────────────
 
@@ -582,6 +711,7 @@ class XprsPeople {
     _pending.clear();
     _by.clear();
     _index.clear();
+    _saidTs.clear();
     noted = evicted = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;
   }
