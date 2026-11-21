@@ -531,6 +531,17 @@ class RnsService {
     final hex = FollowSet.toHex(key); // accepts hex / npub / base64url
     if (hex != null) {
       _callPub[c] = hex;
+      // The people record learns it too, as what it is: the key's own
+      // callsign by arithmetic, or else a pairing this station was told of.
+      // (A verified identity packet has already claimed it as signed, in
+      // XprsIngest; evidence only rises, so this never weakens that.)
+      try {
+        XprsPeople.instance.note(NostrCrypto.encodeNpub(hex),
+            XprsPeople.callType(c), c,
+            evidence: NostrCrypto.callsignMatchesKey(c, hex)
+                ? XprsIdEvidence.derived
+                : XprsIdEvidence.observed);
+      } catch (_) {/* a key that does not encode is not a person */}
       // ...and under the BARE name too, when this one carries a device suffix
       // (XPRS.md 3.1: the bare callsign is the person). `t:identity f:CT1ABC-9`
       // was filed as `CT1ABC-9` and nothing else, so pubkeyForCallsign('CT1ABC')
