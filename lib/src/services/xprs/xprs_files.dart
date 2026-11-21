@@ -378,6 +378,11 @@ class XprsFileServer {
   /// Do we hold the bytes for this digest? (Pinned or any resolver.)
   bool holds(String shaHex) => _lookUp(shaHex.toLowerCase()) != null;
 
+  /// The exact length in bytes of a file this station holds, or null. What a
+  /// `202` and a `q:have` answer state as `size:`: a fetch by pieces needs
+  /// the exact count, and a description's `size:` is rounded.
+  int? sizeOf(String shaHex) => _lookUp(shaHex.toLowerCase())?.size;
+
   /// "Who else holds this hash" — the seeder index (§12.9.2, Phase E): the
   /// sources table and, on an archiver, the provider-record/DHT lookup. Returns
   /// callsigns to name in a `q:have` miss's `m:try`. Null = nothing indexed.
@@ -399,10 +404,11 @@ class XprsFileServer {
     final shaHex = xprsFileSha(p['file']);
     if (shaHex == null) return;
     final id = xprsIdentifier(p);
-    if (holds(shaHex)) {
+    final size = sizeOf(shaHex);
+    if (size != null) {
       qHave++;
       unawaited(XprsPublisher.instance.publishWire('t:result f:$selfBase '
-          'd:$from ts:${xprsNowTs()} r:$id have:full'));
+          'd:$from ts:${xprsNowTs()} r:$id s:have have:full size:$size'));
       return;
     }
     if (!directed) return; // silent on a broadcast miss (§8.1)
@@ -621,19 +627,7 @@ class XprsFileFetch {
     // first: over the internet a Reticulum resource or a swarm usually beats
     // the ~27 kB/s bulk lane, and on a foreign network it is the only lane.
     // The completer guards against a double-complete, so the loser is a no-op.
-    final net = internetFetch;
-    if (net != null) {
-      // The internet middle needs a hub; a phone on battery holds one up
-      // for the fetch (RnsSession) and lets it go when the bytes are in.
-      unawaited(CoreHost.requestHub('fetch:${sha.substring(0, 8)}', const Duration(minutes: 15)));
-      unawaited(net(sha, want.ext, h, _destDir[sha]).then((path) {
-        if (path != null) _completeFromInternet(sha, path);
-      }).catchError((Object e) {
-        LogService.instance.add('XPRS: internet lane for '
-            '${sha.substring(0, 8)} from $h failed: $e');
-        return null;
-      }));
-    }
+    _runInternet(sha, h);
 
     // Re-air the ask until it is answered.
     //
@@ -668,6 +662,28 @@ class XprsFileFetch {
     }));
     return true;
   }
+
+  /// Start the internet lane for [sha] from holder [h]; a no-op without one.
+  void _runInternet(String sha, String h) {
+    final net = internetFetch;
+    final want = _wants[sha];
+    if (net == null || want == null) return;
+    // The internet middle needs a hub; a phone on battery holds one up
+    // for the fetch (RnsSession) and lets it go when the bytes are in.
+    unawaited(CoreHost.requestHub(
+        'fetch:${sha.substring(0, 8)}', const Duration(minutes: 15)));
+    unawaited(net(sha, want.ext, h, _destDir[sha]).then((path) {
+      if (path != null) _completeFromInternet(sha, path);
+    }).catchError((Object e) {
+      LogService.instance.add('XPRS: internet lane for '
+          '${sha.substring(0, 8)} from $h failed: $e');
+      return null;
+    }));
+  }
+
+  /// The smallest piece (spec 7.7.2): a file no longer than this is one
+  /// piece and has no piece list.
+  static const int kFilePieceMin = 65536;
 
   /// The fetch of [sha] is over: with [path] when the bytes are in hand, with
   /// null and [why] when they are not coming.
@@ -704,6 +720,16 @@ class XprsFileFetch {
           onHolder?.call(ask.sha, ask.station);
         } catch (e) {
           LogService.instance.add('XPRS: noting a holder failed: $e');
+        }
+        // The holder states the exact length (spec 11.2). A file of more
+        // than one piece can then be fetched by pieces from every holder,
+        // which the internet lane could not do while it knew no size: it
+        // started as a whole-file fetch from one, so it is started again.
+        final said = int.tryParse(p['size'] ?? '') ?? 0;
+        final want = _wants[ask.sha];
+        if (said > 0 && want != null && want.exactSize == 0) {
+          want.exactSize = said;
+          if (said > kFilePieceMin) _runInternet(ask.sha, ask.station);
         }
         return;
       case 200:

@@ -415,8 +415,14 @@ class XprsHistoryServer {
           from: from,
           cmdId: cmdId,
           sigVerified: sigVerified,
-          air: (code, {String? m}) =>
-              _airControl(selfBase, from, cmdId, code, m: m));
+          // An acceptance states the file's exact length (spec 11.2), so the
+          // asker can fetch by pieces without a second question.
+          air: (code, {String? m}) => _airControl(selfBase, from, cmdId, code,
+              m: m,
+              size: code == 202
+                  ? XprsFileServer.instance
+                      .sizeOf(xprsFileSha(p['file']) ?? '')
+                  : null));
       return;
     }
 
@@ -673,21 +679,25 @@ class XprsHistoryServer {
   }
 
   void _airControl(String self, String to, String cmdId, int code,
-      {String? m}) {
-    final p = _result(self, to, cmdId, code, m: m);
+      {String? m, int? size}) {
+    final p = _result(self, to, cmdId, code, m: m, size: size);
     if (p == null) return;
-    unawaited(_air('xprs-hist:c$code', p.encode(),
+    // A slot per answer: keyed by the code alone, two askers answered the
+    // same code within the slot's life shared one advert and the second
+    // displaced the first.
+    unawaited(_air('xprs-hist:c$code:$cmdId', p.encode(),
         const Duration(seconds: 30), to: to));
   }
 
   XprsPacket? _result(String self, String to, String cmdId, int code,
-      {String? m}) {
+      {String? m, int? size}) {
     final now = DateTime.now().toUtc();
     String two(int n) => n.toString().padLeft(2, '0');
     final ts = '${now.year}-${two(now.month)}-${two(now.day)}_'
         '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
     var p = XprsPacket.parse('t:result f:$self d:$to ts:$ts r:$cmdId '
-        'code:$code${m == null ? '' : ' m:$m'}');
+        'code:$code${size == null ? '' : ' size:$size'}'
+        '${m == null ? '' : ' m:$m'}');
     if (p == null) return null;
     final d = _keyFor(self);
     if (d != null) p = xprsSign(p, d);
