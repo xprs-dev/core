@@ -172,8 +172,18 @@ class XprsCatchup {
   }
 
   void _land(String base) {
-    if (_flight?.archiver == base) _flight = null;
+    if (_flight?.archiver != base) return;
+    _flight = null;
+    // The slot is free: the directory ask that waited for it goes now.
+    if (_directoryWanted.isNotEmpty && _directorySelf.isNotEmpty) {
+      unawaited(_askDirectories(_directorySelf, _directoryWanted, nowMs()));
+    }
   }
+
+  /// The archivers to ask for their directory, and as whom, from the last
+  /// sweep.
+  List<String> _directoryWanted = const [];
+  String _directorySelf = '';
 
   /// Is anybody looking? A fast cadence with the screen off spends somebody's
   /// battery on news no one is awake to read (docs/performance.md 6.5).
@@ -507,6 +517,8 @@ class XprsCatchup {
   /// Singleton, same reason as XprsMonitor.debugReset.
   void debugReset() {
     _directoryAskedAtMs.clear();
+    _directoryWanted = const [];
+    _directorySelf = '';
     directoryAsks = 0;
     _askedAtMs.clear();
     _lastAskMs.clear();
@@ -718,6 +730,7 @@ class XprsCatchup {
       for (final c in prefs.xprsNamedArchivers)
         if (_base(c).isNotEmpty && _base(c) != selfBase) _base(c)
     ];
+
     await _pullFollowed(selfCallsign, named, now, prefs);
     // A group's talk is held by its members and by whoever kept it, not only
     // by archivers the person named: those in earshot are asked too, and the
@@ -764,13 +777,18 @@ class XprsCatchup {
     // the federation's, not one archiver's).
     final announced = announcedOverride?.call() ??
         [for (final a in RnsService.instance.announcedArchivers()) a.callsign];
-    await _askDirectories(
-        selfCallsign,
-        {...named, ...announced.map(_base)}
-            .where((c) => c.isNotEmpty && c != _base(selfCallsign))
-            .take(directoryArchivers)
-            .toList(),
-        now);
+    // Remembered, because at this point of the sweep the one ask slot is
+    // usually taken by the history ask sent a moment ago: the directory ask
+    // then goes out when that one is answered ([_land]). Asked only here, it
+    // found the slot busy every sweep and was never sent: a fresh station
+    // asked a reachable archiver for messages for 40 minutes and never once
+    // for its directory, and its groups ranking stayed empty.
+    _directorySelf = selfCallsign;
+    _directoryWanted = {...named, ...announced.map(_base)}
+        .where((c) => c.isNotEmpty && c != _base(selfCallsign))
+        .take(directoryArchivers)
+        .toList();
+    await _askDirectories(selfCallsign, _directoryWanted, now);
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
@@ -1326,6 +1344,15 @@ class XprsCatchup {
   /// Directory asks sent (on /api/status with the other counters).
   int directoryAsks = 0;
 
+  static const Set<String> _localBearers = {'ble', 'ble5', 'lan', 'lora'};
+
+  /// Heard lately on a radio or the LAN, where a `t:service` travels.
+  bool _inEarshot(String a, int now) {
+    if (!XprsMonitor.instance.heardDirectly(a, nowMs: now)) return false;
+    final st = XprsMonitor.instance.stations[a];
+    return st != null && _localBearers.contains(st.bearer);
+  }
+
   Future<void> _askDirectories(
       String self, List<String> archivers, int now) async {
     // The one asked longest ago first (never asked: first of all, in the
@@ -1341,8 +1368,12 @@ class XprsCatchup {
     for (final a in order) {
       if (_busy(now)) return;
       if ((_refusedUntilMs[a] ?? 0) > now) continue;
-      // In earshot, the air already brings its announcement.
-      if (XprsMonitor.instance.heardDirectly(a, nowMs: now)) continue;
+      // In earshot, the air already brings its announcement: it rides the
+      // archiver's radio and LAN only. Heard over the internet is not
+      // earshot. Counted as such, an archiver that had just answered an ask
+      // over Reticulum was never asked for its directory at all, and the
+      // groups ranking of a station far from it stayed empty.
+      if (_inEarshot(a, now)) continue;
       if (now - (_directoryAskedAtMs[a] ?? 0) < directoryEvery.inMilliseconds) {
         continue;
       }
