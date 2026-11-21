@@ -25,7 +25,10 @@ Uint8List _chat(String call, RelayAnnouncement? ra) {
 }
 
 const _archiver = RelayAnnouncement(
-    role: RelayRole.archiver, capacity: 3, caps: RelayCap.search);
+    role: RelayRole.archiver,
+    capacity: 3,
+    caps: RelayCap.search,
+    uptimeSeconds: 7200);
 const _leaf =
     RelayAnnouncement(role: RelayRole.leaf, capacity: 0, caps: 0);
 
@@ -35,7 +38,7 @@ void main() {
   test('a chat announce carrying an archiver role names an archiver',
       () async {
     final id = await RnsIdentity.generate();
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(id, ['chat'], _chat('X3ARCV', _archiver)));
     expect(rns.announcedCallsigns(prefix: 'X3'), contains('X3ARCV'));
     final a = rns.announcedArchivers().where((r) => r.callsign == 'X3ARCV');
@@ -45,10 +48,10 @@ void main() {
 
   test('a leaf role, or none, names a station but not an archiver', () async {
     final leaf = await RnsIdentity.generate();
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(leaf, ['chat'], _chat('X3LEAF', _leaf)));
     final plain = await RnsIdentity.generate();
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(plain, ['chat'], _chat('X3PLAN', null)));
     expect(rns.announcedCallsigns(prefix: 'X3'),
         containsAll(['X3LEAF', 'X3PLAN']));
@@ -60,7 +63,7 @@ void main() {
   test("a person's phone announcing the archiver role is not an archiver",
       () async {
     final phone = await RnsIdentity.generate();
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(phone, ['chat'], _chat('X1PHON', _archiver)));
     expect(rns.announcedCallsigns(prefix: 'X1'), contains('X1PHON'));
     expect(rns.announcedArchivers().map((r) => r.callsign),
@@ -70,16 +73,16 @@ void main() {
   test('the dedicated relay announce marks a named node an archiver',
       () async {
     final id = await RnsIdentity.generate();
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(id, ['chat'], _chat('X3SPLT', null)));
     expect(rns.announcedArchivers().map((r) => r.callsign),
         isNot(contains('X3SPLT')));
-    rns.debugObserveAnnounce(
+    await rns.debugObserveAnnounce(
         await _announce(id, ['relay'], _archiver.encode()));
     expect(rns.announcedArchivers().map((r) => r.callsign),
         contains('X3SPLT'));
     // And says so no longer once it announces as a leaf.
-    rns.debugObserveAnnounce(await _announce(id, ['relay'], _leaf.encode()));
+    await rns.debugObserveAnnounce(await _announce(id, ['relay'], _leaf.encode()));
     expect(rns.announcedArchivers().map((r) => r.callsign),
         isNot(contains('X3SPLT')));
   });

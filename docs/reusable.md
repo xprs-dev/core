@@ -640,13 +640,15 @@ headless server). Tests point storage at a temp folder with
 
 ### Archivers known from Reticulum — `RnsService.announcedArchivers()`
 
-`lib/src/services/reticulum/rns_service.dart`. The nodes whose announces say
-they are archivers (the relay announcement riding the chat announce after a
-NUL, or the dedicated `xprs/relay` one) and name their callsign, newest
-first, with uptime. Use it wherever a station needs an archiver it cannot
-hear on the air: `MeshService._reconsiderArchiver` offers them to
-`XprsArchiverChoice` as `rns` offers. Never hard-code an archiver; the
-transport says who archives.
+`lib/src/services/reticulum/rns_service.dart`. A view over the existing
+relay directory (`relayDirectory.archivers()`, fed by
+`_observeRelayAnnouncement` from the dedicated `xprs/relay` announce and the
+relay announcement riding the chat announce after a NUL): the archivers that
+are stations (X2, X3) and announced a callsign, freshest first, with uptime.
+Use it wherever a station needs an archiver it cannot hear on the air:
+`MeshService._reconsiderArchiver` offers them to `XprsArchiverChoice` as
+`rns` offers. Never hard-code an archiver, and never keep a second list of
+them: the relay directory is the one record of who archives.
 
 ### An archiver's directory over the internet — `cmd:history kind:service only:<archiver>`
 

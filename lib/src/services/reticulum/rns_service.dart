@@ -231,6 +231,11 @@ class RnsService {
   final Map<String, int> _lastInboundPerVia = {};
   Timer? _linkWatchdog;
   static const Duration _linkSilenceTimeout = Duration(seconds: 30);
+
+  /// How long a station's hub may be quiet before it is redialled: long
+  /// enough for a hub with few nodes behind it, short enough to catch a
+  /// socket left half-open by a network change ([_watchdogTick]).
+  static const Duration _stationLinkSilenceTimeout = Duration(minutes: 10);
   // Reachability self-heal: if the observed network collapses to zero reachable
   // devices while we still hold hub uplinks, some segment wedged silently (the
   // "tank2 showed zero devices until restart" case). We track the high-water mark
@@ -1151,6 +1156,18 @@ class RnsService {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
 
     // Layer 1: per-uplink silence.
+    //
+    // A station holds every hub it is configured with (performance.md 8.20),
+    // so a quiet one is kept and redialled only after a long silence. A hub
+    // is not a firehose: one with few nodes behind it is quiet for minutes,
+    // and redialling it at 30 s made X3PTZM a NEW interface on the hub every
+    // few minutes, and a hub holds the announces of a new interface that
+    // relays a burst (RNS ingress control: under two hours old, over three
+    // announces a second). Its own announces were never forwarded: a fresh
+    // client on the same hub could not learn the archiver existed.
+    final station = PowerState.instance.profile.value == PowerProfile.station;
+    final silence =
+        station ? _stationLinkSilenceTimeout : _linkSilenceTimeout;
     final silentClients = <RnsTcpInterface>[];
     for (final c in List.of(_clients)) {
       final via = 'tcp:${c.host}:${c.port}';
@@ -1161,14 +1178,15 @@ class RnsService {
         _lastInboundPerVia[via] = nowMs;
         continue;
       }
-      if (nowMs - last > _linkSilenceTimeout.inMilliseconds) {
+      if (nowMs - last > silence.inMilliseconds) {
         silentClients.add(c);
       }
     }
     if (silentClients.isNotEmpty) {
       // A session's hub on a node that lives on its local bearers: dropped,
-      // not redialled. The session asks for one again when it needs it.
-      if (_mode != 'tcpclient') {
+      // not redialled. The session asks for one again when it needs it
+      // (8.22). A station's hubs are not sessions: they are redialled below.
+      if (_mode != 'tcpclient' && !station) {
         for (final c in silentClients) {
           LogService.instance.add(
               'RNS: session hub ${c.host}:${c.port} silent — dropped');
@@ -1176,10 +1194,12 @@ class RnsService {
         }
         return;
       }
-      if (silentClients.length >= _clients.length) {
+      // Every hub silent: a client of the hubs redials the whole mesh. A node
+      // that also lives on its LAN keeps it, and only its hubs are redialled.
+      if (_mode == 'tcpclient' && silentClients.length >= _clients.length) {
         _allLinksDown(
           'no inbound on any uplink for '
-          '${_linkSilenceTimeout.inSeconds}s+',
+          '${silence.inSeconds}s+',
         );
         return; // mesh redial in flight; skip the reachability check
       }
@@ -2296,10 +2316,10 @@ class RnsService {
       n.services.add(svc);
       if (svc == 'chat') {
         // The callsign, then (for a node with a relay role) a NUL and the
-        // msgpack relay announcement ([announce] puts it there because the
-        // hubs drop the dedicated relay announce). Reading the whole thing
-        // as the callsign failed the length test for every node that has a
-        // role, so no archiver was ever known by name over Reticulum.
+        // relay announcement, which [_onValidatedAnnounce] gives the relay
+        // directory. Read whole as the callsign, it failed the length test
+        // for every node with a role, so no archiver was ever listed by
+        // [announcedCallsigns] and nobody asked one.
         final a = ann.appData;
         final nul = a.indexOf(0);
         final cs = utf8
@@ -2307,10 +2327,6 @@ class RnsService {
             .trim();
         if (cs.isNotEmpty && cs.length <= 20 && !cs.contains(' ')) {
           n.callsign = cs;
-        }
-        if (nul >= 0 && nul + 1 < a.length) {
-          _noteRelayAnnouncement(
-              n, RelayAnnouncement.decode(a.sublist(nul + 1)), now);
         }
       } else if (svc == 'lxmf') {
         // An lxmf.delivery announce carries the peer's DISPLAY NAME — the
@@ -2324,8 +2340,8 @@ class RnsService {
         // The relay announce carries the peer's advertised uptime (warm-start
         // ranking) and its NOSTR pubkey (for the npub shown per device).
         final ra = RelayAnnouncement.decode(ann.appData);
-        _noteRelayAnnouncement(n, ra, now);
         if (ra != null) {
+          if (ra.uptimeSeconds > 0) n.uptimeSeconds = ra.uptimeSeconds;
           if (ra.pubkey != null && ra.pubkey!.isNotEmpty) {
             n.nostrPubHex = ra.pubkey;
             // Once a peer is genuinely reachable (re-announced), pull its kind-0
@@ -3026,11 +3042,11 @@ class RnsService {
   @visibleForTesting
   static void debugClearNameMemo() => _nameMemo.clear();
 
-  /// Test seam: fold a validated announce into the observed nodes, as one
-  /// arriving on [via] would be.
+  /// Test seam: take a validated announce as one arriving on [via] is taken
+  /// (the observed nodes, the callsign map, the relay directory).
   @visibleForTesting
-  void debugObserveAnnounce(RnsAnnounce ann, {String via = 'tcp:hub'}) =>
-      _observeAnnounce(ann, 1, via);
+  Future<void> debugObserveAnnounce(RnsAnnounce ann, {String via = 'tcp:hub'}) =>
+      _onValidatedAnnounce(ann, 1, via);
 
   /// `'<pub>|<announced>'` to the name we settled on.
   ///
@@ -3127,41 +3143,30 @@ class RnsService {
   /// stations (section 3's `X3`), and this runs on a poll: building every name
   /// the node has ever heard, sorting it, and discarding all but a handful is
   /// work paid once a minute for one answer.
-  /// What a relay announcement says about [n], from either announce it rides:
-  /// its uptime, and whether it is an archiver now.
-  void _noteRelayAnnouncement(_ObservedNode n, RelayAnnouncement? ra, int now) {
-    if (ra == null) return;
-    if (ra.uptimeSeconds > 0) n.uptimeSeconds = ra.uptimeSeconds;
-    n.archiverSaidMs = ra.isArchiver ? now : 0;
-  }
-
-  /// The nodes whose Reticulum announces say they are archivers and name
-  /// their callsign, newest first: who a station with nobody in earshot can
-  /// lean on (XPRS.md 12.3), found through the transport and nothing
-  /// configured. [lastSeenMs] is the newest announce of any of its
-  /// destinations; [uptimeS] is what it advertised.
+  /// The archivers the relay directory knows (their relay announcement, on
+  /// its own destination or riding the chat announce) that are stations and
+  /// announced a callsign, freshest first: who a station with nobody in
+  /// earshot can lean on (XPRS.md 12.3), found through the transport with
+  /// nothing configured. Stations only (X2, X3): the relay role follows
+  /// capacity, so a person's phone charging on Wi-Fi announces itself an
+  /// archiver under its X1 (one of two on the public hub, 2026-11-21), and
+  /// mail left with it is in a pocket tomorrow.
   List<({String callsign, int lastSeenMs, int uptimeS})> announcedArchivers(
       {int max = 16}) {
     final rows = <({String callsign, int lastSeenMs, int uptimeS})>[];
     final seen = <String>{};
-    for (final n in _observed.values) {
-      if (n.archiverSaidMs == 0) continue;
-      final call = _bareUpper(n.callsign ?? '');
-      // A station (X2, X3) only. The relay role is decided by capacity, so a
-      // person's phone charging on Wi-Fi announces itself an archiver under
-      // its X1, and a station that leans on it leaves its mail with a phone
-      // that will be in a pocket tomorrow. Heard on the public hub
-      // (2026-11-21): one X1 among the two "archivers" announcing there.
+    for (final e in _relayDir.archivers()) {
+      final call = _bareUpper(_observed[e.idHex]?.callsign ?? '');
       if (call.isEmpty || xprsKindOf(call) != XprsKind.station) continue;
       if (!seen.add(call)) continue;
       rows.add((
         callsign: call,
-        lastSeenMs: n.lastSeenMs,
-        uptimeS: n.uptimeSeconds,
+        lastSeenMs: e.lastSeenMs,
+        uptimeS: e.announcement.uptimeSeconds,
       ));
+      if (rows.length >= max) break;
     }
-    rows.sort((a, b) => b.lastSeenMs.compareTo(a.lastSeenMs));
-    return rows.take(max).toList();
+    return rows;
   }
 
   List<String> announcedCallsigns({int max = 32, String prefix = ''}) {
@@ -12597,11 +12602,6 @@ class _ObservedNode {
   // an npub for display so peers with the same callsign/nickname are tellable
   // apart. Null until we hear a relay announce carrying it.
   String? nostrPubHex;
-  // When this node last said, in a relay announcement (its own or the one
-  // riding its chat announce), that it is an archiver; 0 = never this run.
-  // What makes it an archiver a station with nobody in earshot can adopt
-  // (XPRS.md 12.3), found through the transport alone.
-  int archiverSaidMs = 0;
   // The display name from this node's lxmf.delivery announce (a NomadNet /
   // Sideband user's chosen name, e.g. "FixedComp"). Not persisted — announces
   // repeat on their own cadence, so it refills within minutes of a boot.
