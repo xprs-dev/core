@@ -26,6 +26,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
+import 'folder_event.dart' show pieceSizeForFile;
+
 /// The piece hashes of [file], read in bounded chunks so a 4 GB file costs one
 /// piece of memory rather than four gigabytes. Yields between pieces, so a big
 /// hash never freezes the isolate it runs on.
@@ -95,4 +97,26 @@ List<Uint8List>? unpackPieceHashes(Uint8List blob) {
     for (var i = 0; i < blob.length; i += 32)
       Uint8List.fromList(Uint8List.sublistView(blob, i, i + 32)),
   ];
+}
+
+/// The packed piece list (spec 7.7.2) of a file of [size] bytes that is read
+/// a range at a time through [read], or null when the file is one piece (it
+/// needs no list: its own hash verifies it) or a range could not be read.
+///
+/// For a file held as a blob rather than on disk. One piece is in memory at
+/// a time, and the loop yields between pieces, so hashing a large file never
+/// holds it whole or freezes the isolate it runs on.
+Future<Uint8List?> pieceListOfRanged(
+    int size, Uint8List? Function(int offset, int length) read) async {
+  final pieceSize = pieceSizeForFile(size);
+  if (size <= pieceSize) return null;
+  final hashes = <Uint8List>[];
+  for (var off = 0; off < size; off += pieceSize) {
+    final len = off + pieceSize > size ? size - off : pieceSize;
+    final piece = read(off, len);
+    if (piece == null || piece.length != len) return null;
+    hashes.add(Uint8List.fromList(crypto.sha256.convert(piece).bytes));
+    await Future<void>.delayed(Duration.zero);
+  }
+  return packPieceHashes(hashes);
 }

@@ -6895,8 +6895,66 @@ class RnsService {
     return _files?.publishProvider(
           fileHash,
           capacity: capacity ?? selfCapacity,
+          manifestHash: await _pieceListFor(fileHash),
         ) ??
         0;
+  }
+
+  /// The reference of the piece list of a file this node holds, as `ph:`
+  /// writes it (`<43 base64url>.xpl`, spec 7.7.2), or null when the file is
+  /// one piece or not held.
+  Future<String?> pieceListRefFor(String shaHex) async {
+    final sha = _bytesFromHex(shaHex.toLowerCase());
+    if (sha == null) return null;
+    final list = await _pieceListFor(sha);
+    if (list == null) return null;
+    final b64 = MediaRef.hexToB64u(_hex(list));
+    return b64 == null ? null : '$b64.xpl';
+  }
+
+  /// File hash (hex) to the hash of its piece list, for files this node
+  /// already cut. Bounded; a miss only costs hashing the file again.
+  final Map<String, Uint8List> _pieceListOf = {};
+
+  /// The piece list of a file this node holds, stored and advertised like any
+  /// blob, as the hash a provider record names; null for a file of one piece
+  /// or one not in the serve archive.
+  ///
+  /// Only a published FOLDER attached one. Everything else a station shared
+  /// or re-seeded (chat media, a fetched release) was advertised without, so
+  /// a downloader found no list and took the whole file from one holder, the
+  /// path that stalls (docs/torrents.md 16.4). Now every holder of a file of
+  /// more than one piece says where its piece list is.
+  Future<Uint8List?> _pieceListFor(Uint8List fileHash) async {
+    final hex = _hex(fileHash);
+    final known = _pieceListOf[hex];
+    if (known != null) return known;
+    final src = fileServeSource;
+    if (src is! MediaFileSource) return null;
+    try {
+      final size = src.archive.sizeOf(hex);
+      if (size == null) return null;
+      final blob = await pieceListOfRanged(
+          size, (off, len) => src.archive.readRange(hex, off, len));
+      if (blob == null) return null;
+      final token = src.archive.putBytes(blob, 'pieces');
+      final listHex = MediaRef.b64uToHex(MediaRef.parse(token)?.sha256 ?? '');
+      final list = listHex == null ? null : _bytesFromHex(listHex);
+      if (list == null) return null;
+      // A downloader must be able to FIND the list too.
+      await _files?.publishKey(list, capacity: selfCapacity);
+      if (_pieceListOf.length >= 256) {
+        _pieceListOf.remove(_pieceListOf.keys.first);
+      }
+      _pieceListOf[hex] = list;
+      LogService.instance.add('RNS/files: piece list for '
+          '${hex.substring(0, 8)} (${blob.length ~/ 32} pieces)');
+      return list;
+    } catch (e) {
+      LogService.instance
+          .add('RNS/files: piece list for ${hex.substring(0, 8)} failed: $e');
+      return null;
+    }
   }
 
   /// THE single content-addressed fetch path over Reticulum, used by folders /
@@ -6955,8 +7013,9 @@ class RnsService {
         return;
       }
     }
+    // Become a provider, saying where the piece list is ([dhtPublish]).
     // ignore: discarded_futures
-    _files?.publishProvider(sha, capacity: selfCapacity); // become a provider
+    dhtPublish(sha);
   }
 
   /// This node's LXMF delivery destination hash (peers address messages here).

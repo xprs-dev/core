@@ -650,6 +650,14 @@ class MeshService {
           return RnsService.instance
               .depositFileToCallsign(bytes, ref.ext, archiver);
         };
+        // `ph:` on a file's description: the piece list this station cut
+        // for it (none for a file of one piece).
+        XprsSend.pieceListRef = (fileRef) async {
+          final sha = xprsFileSha(fileRef);
+          return sha == null
+              ? null
+              : RnsService.instance.pieceListRefFor(sha);
+        };
         XprsSend.onFileShared = (fileValue, dest, {original}) {
           final ref = MediaRef.parse('file:$fileValue');
           if (ref == null) return;

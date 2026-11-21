@@ -624,14 +624,34 @@ class XprsSend {
     if (dest.isNotEmpty) b.write(' d:$dest');
     b.write(' ts:${_now()} r:$msgId file:${lift.original}');
     if (lift.originalSize != null) b.write(' size:${lift.originalSize}');
-    final wire = lift.originalName == null
-        ? b.toString()
-        : '${b.toString()} name:${lift.originalName}';
-    final p = XprsPacket.parse(wire);
-    // The name is a courtesy: drop it rather than split a description.
-    final fit = (p != null && p.fits) ? wire : b.toString();
-    unawaited(XprsPublisher.instance.publishWire(fit));
+    final base = b.toString();
+    unawaited(() async {
+      // `ph:` names the file's piece list (7.7.1, 7.7.2), which is what lets
+      // a reader take pieces from several holders. A file of one piece has
+      // none. Then the name, a courtesy: each is added only while the
+      // description still fits one packet, the piece list first.
+      var wire = base;
+      String? ph;
+      try {
+        final original = lift.original;
+        ph = original == null ? null : await pieceListRef?.call(original);
+      } catch (_) {
+        ph = null;
+      }
+      bool fits(String w) => XprsPacket.parse(w)?.fits ?? false;
+      if (ph != null && ph.isNotEmpty && fits('$wire ph:$ph')) {
+        wire = '$wire ph:$ph';
+      }
+      final name = lift.originalName;
+      if (name != null && fits('$wire name:$name')) wire = '$wire name:$name';
+      await XprsPublisher.instance.publishWire(wire);
+    }());
   }
+
+  /// The reference (`<hash>.xpl`) of the piece list of a file this station
+  /// holds, or null when it is one piece or not held. Wired by the mesh
+  /// service to the file layer, which cuts and stores the list.
+  static Future<String?> Function(String fileRef)? pieceListRef;
 
   static String _now() {
     final n = DateTime.now().toUtc();
