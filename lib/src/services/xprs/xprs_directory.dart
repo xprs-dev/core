@@ -312,13 +312,30 @@ class XprsDirectoryConsumer {
 
   int fetched = 0, failed = 0, ignored = 0;
 
+  /// Stations that said, in a `t:service` of their own, that they archive
+  /// (`serve:archive`, 24), and when it was last heard. This is the claim
+  /// that makes a station an archiver; a Reticulum relay announcement only
+  /// says the machine is on mains power with an uplink, which a station that
+  /// keeps nothing for others is too. Bounded.
+  final Map<String, int> _claims = {};
+  static const int _claimsMax = 256;
+
+  /// When [callsign] last claimed to archive, or null if it never did.
+  int? archiveClaimMs(String callsign) =>
+      _claims[callsign.trim().toUpperCase().split('-').first];
+
   /// A `t:service` heard on any lane. Cheap when it is not a directory
   /// announcement, or not from an archiver we lean on: two string checks
   /// and a set lookup, no I/O.
   void offer(XprsPacket p) {
-    if (!XprsDirectory.announces(p)) return;
     final from = (p['f'] ?? '').trim().toUpperCase().split('-').first;
     if (from.isEmpty) return;
+    if (p.type == 'service' && xprsServices(p).contains('archive')) {
+      _claims.remove(from);
+      if (_claims.length >= _claimsMax) _claims.remove(_claims.keys.first);
+      _claims[from] = DateTime.now().millisecondsSinceEpoch;
+    }
+    if (!XprsDirectory.announces(p)) return;
     final mine = (named?.call() ?? const <String>[])
         .map((c) => c.trim().toUpperCase().split('-').first);
     if (!mine.contains(from)) {
@@ -369,6 +386,7 @@ class XprsDirectoryConsumer {
 
   void debugReset() {
     _seen.clear();
+    _claims.clear();
     fetched = failed = ignored = 0;
     named = null;
     fetchText = null;

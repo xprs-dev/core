@@ -183,6 +183,10 @@ class XprsCatchup {
   /// The archivers to ask for their directory, and as whom, from the last
   /// sweep.
   List<String> _directoryWanted = const [];
+
+  /// The archivers this station asks for their directory: whose answer it
+  /// reads (XprsDirectoryConsumer.named).
+  List<String> get directoryAsked => _directoryWanted;
   String _directorySelf = '';
 
   /// Is anybody looking? A fast cadence with the screen off spends somebody's

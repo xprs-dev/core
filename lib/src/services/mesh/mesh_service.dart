@@ -1926,8 +1926,7 @@ class MeshService {
       // What this station filed itself counts too (12.9.7: the station that
       // reads is one more archiver of what it heard).
       ..own = XprsGroupIndex.instance.stats
-      ..named =
-          (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
+      ..named = _readFrom
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
           XprsGroupIndexFile.ext, XprsGroupIndexFile.maxBytes, mediaArchive));
     // What the archivers named before this start: read again when a screen
@@ -1937,11 +1936,20 @@ class MeshService {
     }
     XprsDirectoryConsumer.instance
       ..onIndex = XprsGroupRanking.instance.noteIndex
-      ..named =
-          (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
+      ..named = _readFrom
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,
           XprsDirectory.ext, XprsDirectory.maxBytes, mediaArchive));
   }
+
+  /// The archivers whose directory and groups index this station reads: the
+  /// ones it leans on and the ones it asked (XprsCatchup). An answer it asked
+  /// for is one it reads. Only the adopted one was read, so since
+  /// 1.13.0-beta.4 the other archivers' answers arrived and were ignored, and
+  /// a fresh station's groups ranking stayed empty with X3PTZM's in hand.
+  static List<String> _readFrom() => [
+        ...?PreferencesService.instanceSync?.xprsArchivers,
+        ...XprsCatchup.instance.directoryAsked,
+      ];
 
   // ── Who we hear, told to our archivers (12.1) ─────────────────────────────
   //
@@ -2229,8 +2237,16 @@ class MeshService {
       // nobody, asked nobody, and Search and the groups ranking stayed empty
       // while archivers were announcing on the same hub. The transport says
       // who is an archiver; nothing needs to be configured.
+      //
+      // Only one that has also CLAIMED to archive, in a `t:service
+      // serve:archive` of its own (it arrives as the answer to the directory
+      // ask). The relay announcement alone says "mains power and an uplink":
+      // a fresh station adopted a station started with no public archive,
+      // already gone, from the hub's copy of its last announcement, and
+      // leaned on it for hours.
       for (final a in RnsService.instance.announcedArchivers())
-        ArchiverOffer(
+        if (XprsDirectoryConsumer.instance.archiveClaimMs(a.callsign) != null)
+          ArchiverOffer(
           callsign: a.callsign,
           lastHeardMs: a.lastSeenMs,
           bearer: 'rns',
