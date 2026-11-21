@@ -2216,6 +2216,18 @@ class MeshService {
             bearer: st.bearer,
             uptimeS: xprsUptimeSeconds(st.uptime),
           ),
+      // And the ones that said so on Reticulum. A desktop with no radio and
+      // no station on its LAN hears no `serve:archive` at all, so it adopted
+      // nobody, asked nobody, and Search and the groups ranking stayed empty
+      // while archivers were announcing on the same hub. The transport says
+      // who is an archiver; nothing needs to be configured.
+      for (final a in RnsService.instance.announcedArchivers())
+        ArchiverOffer(
+          callsign: a.callsign,
+          lastHeardMs: a.lastSeenMs,
+          bearer: 'rns',
+          uptimeS: a.uptimeS,
+        ),
     ];
     // What the operator configured, minus whatever WE adopted last time — an
     // adopted archiver is written to the same list so every reader (the

@@ -497,6 +497,8 @@ class XprsCatchup {
   /// Test seam: forget every station's news, ask history and pending page.
   /// Singleton, same reason as XprsMonitor.debugReset.
   void debugReset() {
+    _directoryAskedAtMs.clear();
+    directoryAsks = 0;
     _askedAtMs.clear();
     _lastAskMs.clear();
     _newsSeen.clear();
@@ -742,6 +744,10 @@ class XprsCatchup {
         selfCallsign, {...named, ...alwaysOn, ...knownAlwaysOn}.toList(), now,
         prefs,
         names: true);
+    // Where each chosen archiver's directory and groups index are (12.9,
+    // 12.9.7): its own newest `t:service`, asked for when the air does not
+    // bring it.
+    await _askDirectories(selfCallsign, named, now);
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
@@ -1271,6 +1277,54 @@ class XprsCatchup {
       (_isGroup(target) && !_isKind(target)) || target == namesTarget
           ? '$target@$archiver'
           : target;
+
+  // ── An archiver's directory, asked for when it is not heard (12.9) ───────
+  //
+  // An archiver names its directory, and in it its groups index (12.9.7), in
+  // the `t:service` it airs every ten minutes. Its radio and its LAN carry
+  // that; Reticulum and the internet do not, so a station that reaches its
+  // archiver only over the internet never read a directory or an index, and
+  // the groups ranking stayed empty. The ask is the history replay 12.9.6
+  // already uses, for one type from one station: the archiver's own
+  // `t:service` of the last hour. The answer enters through the one receive
+  // door, where XprsDirectoryConsumer reads a chosen archiver's announcement.
+
+  /// How often one archiver is asked for its directory announcement. Its
+  /// index is rebuilt at most every thirty minutes, so a faster ask finds
+  /// the same file.
+  static const Duration directoryEvery = Duration(minutes: 30);
+
+  /// How far back the ask reaches: a few of its announcements, the newest
+  /// of which names the current files.
+  static const Duration directoryWindow = Duration(hours: 1);
+
+  final Map<String, int> _directoryAskedAtMs = {};
+
+  /// Directory asks sent (on /api/status with the other counters).
+  int directoryAsks = 0;
+
+  Future<void> _askDirectories(
+      String self, List<String> archivers, int now) async {
+    for (final a in archivers) {
+      if (_busy(now)) return;
+      if ((_refusedUntilMs[a] ?? 0) > now) continue;
+      // In earshot, the air already brings its announcement.
+      if (XprsMonitor.instance.heardDirectly(a, nowMs: now)) continue;
+      if (now - (_directoryAskedAtMs[a] ?? 0) < directoryEvery.inMilliseconds) {
+        continue;
+      }
+      _directoryAskedAtMs[a] = now;
+      directoryAsks++;
+      final wire = 't:command f:$self d:$a ts:${_ts(now)} '
+          'cmd:history kind:service only:$a '
+          'since:${_ts(now - directoryWindow.inMilliseconds)}';
+      final send = sendOverride ?? XprsPublisher.instance.publishWire;
+      await send(wire);
+      LogService.instance.add('XPRS: asked $a for its directory (12.9)');
+      // One ask per sweep: the archivers are few and the period is long.
+      return;
+    }
+  }
 
   // ── Names: every identity an archiver holds, asked of each archiver from
   // where its last answer ended (a mark per archiver, persisted: a restart
