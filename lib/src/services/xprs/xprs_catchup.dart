@@ -59,6 +59,15 @@ class XprsCatchup {
   int Function() nowMs = () => DateTime.now().millisecondsSinceEpoch;
   Future<Map<String, String>> Function(String wire)? sendOverride;
 
+  /// The archivers announced on Reticulum, for a test (RnsService's
+  /// announcedArchivers otherwise).
+  @visibleForTesting
+  List<String> Function()? announcedOverride;
+
+  /// How many archivers are asked for their directory, at most: one ask a
+  /// sweep, each archiver once in [directoryEvery].
+  static const int directoryArchivers = 6;
+
   /// The ask window never reaches further back than this (12.10.1 rule 4).
   static const Duration maxWindow = Duration(days: 7);
 
@@ -747,7 +756,21 @@ class XprsCatchup {
     // Where each chosen archiver's directory and groups index are (12.9,
     // 12.9.7): its own newest `t:service`, asked for when the air does not
     // bring it.
-    await _askDirectories(selfCallsign, named, now);
+    // The chosen ones first, then the others that announced themselves as
+    // archivers on Reticulum. The one this station adopted is the first it
+    // heard, kept for its mail (12.3); it may be many hops away and never
+    // answer, and asked alone it left Search and the groups ranking empty
+    // while a reachable archiver stood on the same hub (12.9.1: discovery is
+    // the federation's, not one archiver's).
+    final announced = announcedOverride?.call() ??
+        [for (final a in RnsService.instance.announcedArchivers()) a.callsign];
+    await _askDirectories(
+        selfCallsign,
+        {...named, ...announced.map(_base)}
+            .where((c) => c.isNotEmpty && c != _base(selfCallsign))
+            .take(directoryArchivers)
+            .toList(),
+        now);
 
     if (fresh.isEmpty && deep.isEmpty) return;
 
@@ -1305,7 +1328,17 @@ class XprsCatchup {
 
   Future<void> _askDirectories(
       String self, List<String> archivers, int now) async {
-    for (final a in archivers) {
+    // The one asked longest ago first (never asked: first of all, in the
+    // order given). One ask goes out a sweep and the first in the list comes
+    // due again every half hour, so taken in order it was asked for ever and
+    // the third never.
+    final order = [...archivers];
+    int at(String a) => _directoryAskedAtMs[a] ?? 0;
+    order.sort((x, y) {
+      final c = at(x).compareTo(at(y));
+      return c != 0 ? c : archivers.indexOf(x).compareTo(archivers.indexOf(y));
+    });
+    for (final a in order) {
       if (_busy(now)) return;
       if ((_refusedUntilMs[a] ?? 0) > now) continue;
       // In earshot, the air already brings its announcement.
