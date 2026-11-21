@@ -6320,8 +6320,15 @@ class RnsService {
     return f.resolveAndFetch(fileHash, timeout: timeout);
   }
 
+  /// The smallest piece (spec 7.7.2): a file no longer than this is one
+  /// piece and is fetched whole.
+  static const int kPieceMinBytes = 65536;
+
+  /// [also]: a station named as a holder (the sender of the message, the one
+  /// that answered `202`); its identity joins the providers the records name.
   Future<Uint8List?> _fetchPiecesBySha(
-      FileTransferNode f, Uint8List fileHash, int size, Duration timeout) async {
+      FileTransferNode f, Uint8List fileHash, int size, Duration timeout,
+      {String? also}) async {
     final d = f.dht;
     if (d == null) return null;
     final records = await d.resolve(fileHash);
@@ -6332,6 +6339,14 @@ class RnsService {
       if (_hex(r.providerIdentity.hash) == self) continue;
       providers.add(r.providerIdentity);
       manifest ??= r.manifestHash;
+    }
+    final named = (also ?? '').trim().isEmpty
+        ? null
+        : _callIdentity[_bareUpper(also!)] ?? _callIdentity[also.trim()];
+    if (named != null &&
+        _hex(named.hash) != self &&
+        !providers.any((p) => p.hexHash == named.hexHash)) {
+      providers.add(named);
     }
     if (providers.isEmpty || manifest == null) return null;
     final tag = _hex(fileHash).substring(0, 8);
@@ -6963,11 +6978,23 @@ class RnsService {
     if (local != null) return local;
     if (!_up) return null;
     Uint8List? bytes;
-    // 2) Direct from the named sender (route learned from its chat announce).
-    if (fromCallsign != null && fromCallsign.isNotEmpty) {
+    // 2) A file of more than one piece, when its exact length is known: by
+    // pieces from every holder first (spec 7.7.2). The whole file from one
+    // holder used to be tried first, and it is the path that stalls on a
+    // large file (docs/torrents.md 16.4); pieces resume, verify as they
+    // arrive and do not depend on one holder staying up.
+    final f = _files;
+    if (size > kPieceMinBytes && f != null) {
+      bytes = await _fetchPiecesBySha(f, sha, size, timeout,
+          also: fromCallsign);
+    }
+    // 3) Direct from the named sender (route learned from its chat announce).
+    if ((bytes == null || bytes.isEmpty) &&
+        fromCallsign != null &&
+        fromCallsign.isNotEmpty) {
       bytes = await fetchFileFromCallsign(sha, fromCallsign, timeout: timeout);
     }
-    // 3) DHT discovery + multi-source fetch.
+    // 4) DHT discovery + multi-source fetch.
     if (bytes == null || bytes.isEmpty) {
       bytes = await dhtResolveFetch(sha, timeout: timeout, size: size);
     }

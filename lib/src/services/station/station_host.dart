@@ -137,7 +137,19 @@ WebChatApi stationWebChatApi({
       groupRank: (by) => xprsGroupRankRows(by),
       airVerbatim: (w) =>
           unawaited(XprsPublisher.instance.publishWire(w, verbatim: true, datagram: true)),
-    )..ownIdentity = XprsPublisher.instance.ownIdentityWire;
+    )
+      ..ownIdentity = XprsPublisher.instance.ownIdentityWire
+      // A file kept over the station API is advertised, with its piece list
+      // when it has one (RnsService.dhtPublish): this station is a holder
+      // other stations can find, not only the one a visitor happened to ask.
+      ..fileKept = (shaHex) {
+        try {
+          unawaited(RnsService.instance
+              .dhtPublish(Uint8List.fromList(HEX.decode(shaHex))));
+        } catch (e) {
+          LogService.instance.add('station: advertising a kept file failed: $e');
+        }
+      };
 
 class StationHost {
   StationHost._();

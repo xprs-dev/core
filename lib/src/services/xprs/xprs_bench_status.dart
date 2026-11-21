@@ -14,7 +14,10 @@
  */
 library;
 
+import 'package:reticulum/reticulum.dart' show NostrCrypto;
+
 import '../mesh/mesh_bulk_spool.dart';
+import '../mesh/mesh_service.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_catchup.dart';
@@ -92,3 +95,38 @@ Map<String, dynamic>? xprsBenchStatus(String path) => switch (path) {
       kXprsFilesStatusPath => xprsFilesStatusMap(),
       _ => null,
     };
+
+/// The path of the fetch action below (the app's remote API has the same).
+const String kXprsFileFetchPath = '/api/xprs/file';
+
+/// Ask a station for a file and wait for it: `{"from": "X3HOLD", "sha256":
+/// "<64 hex>", "ext": "jpg", "timeoutSeconds": 120}`. Answers when the bytes
+/// have arrived and verified, or with why they did not. For a test that
+/// needs to make a station fetch; the fetch is the one every other caller
+/// uses (XprsFileFetch), so what it proves is the real path.
+Future<Map<String, dynamic>> xprsBenchFetchFile(
+    Map<String, dynamic> body) async {
+  final from = (body['from'] ?? '').toString().trim().toUpperCase();
+  final sha = (body['sha256'] ?? '').toString().trim().toLowerCase();
+  final ext = (body['ext'] ?? '').toString().trim();
+  final self = NostrCrypto.bareCallsign(MeshService.instance.tableCallsign);
+  if (from.isEmpty || sha.length != 64) {
+    return {'ok': false, 'error': 'from and sha256 (64 hex) are required'};
+  }
+  if (self.isEmpty) return {'ok': false, 'error': 'no callsign yet'};
+  final secs = int.tryParse('${body['timeoutSeconds'] ?? ''}') ?? 120;
+  final sw = Stopwatch()..start();
+  final path = await XprsFileFetch.instance.fetch(
+    archiver: from,
+    shaHex: sha,
+    selfCallsign: self,
+    ext: ext,
+    timeout: Duration(seconds: secs.clamp(5, 3600)),
+  );
+  return {
+    'ok': path != null,
+    if (path != null) 'path': path,
+    if (path == null) 'error': 'not fetched (refused, unanswered or timed out)',
+    'elapsedMs': sw.elapsedMilliseconds,
+  };
+}

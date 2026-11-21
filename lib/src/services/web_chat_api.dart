@@ -403,6 +403,11 @@ class WebChatApi {
   /// same store every file lane ends in, not a blog's or a page's.
   final MediaArchive? Function()? fileStore;
 
+  /// A file was kept by reference (its SHA-256 as hex). The host advertises
+  /// the station as a holder of it; without that a file uploaded here was
+  /// served to whoever asked this station and found by nobody else.
+  void Function(String shaHex)? fileKept;
+
   /// The largest file a visitor may store, and read back, through this page.
   /// A walk-up page is not a bulk lane: larger files travel by `cmd:file`.
   final int fileMax;
@@ -985,6 +990,10 @@ class WebChatApi {
     store.putHosted(raw, xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref),
         originPubHex: '', tier: 2);
     _bindUpload(sha, up.room);
+    // The station holds it now: the host says so to the network.
+    try {
+      fileKept?.call(sha);
+    } catch (_) {}
     return WebChatReply(200, {'ok': true, 'ref': ref, 'size': raw.length});
   }
 
@@ -1023,7 +1032,13 @@ class WebChatApi {
     final ext = xprsFileExt(ref).isEmpty ? 'bin' : xprsFileExt(ref);
     final w = store.beginHosted(ext, originPubHex: '', tier: staff ? 0 : 2, pin: staff);
     if (w == null) return no(503, 'no file store yet');
-    return WebChatUpload._(null, w, cap, ref, () => _bindUpload(sha, up.room));
+    return WebChatUpload._(null, w, cap, ref, () {
+      _bindUpload(sha, up.room);
+      // Kept: the host says so to the network (as [_filePut] does).
+      try {
+        fileKept?.call(sha);
+      } catch (_) {}
+    });
   }
 
   /// A held file for a host that streams it (and answers ranges): its size,

@@ -636,7 +636,16 @@ class XprsFileFetch {
     // first: over the internet a Reticulum resource or a swarm usually beats
     // the ~27 kB/s bulk lane, and on a foreign network it is the only lane.
     // The completer guards against a double-complete, so the loser is a no-op.
-    _runInternet(sha, h);
+    // The internet lane, once per holder. With the length known it starts
+    // now. Without it, it waits a moment for the holder's `202`, which
+    // states the length (spec 11.2): started at once it took the whole file
+    // from one holder, and when the `202` then made pieces possible a second
+    // fetch of the same bytes ran beside it on the same link.
+    if (want.exactSize > 0) {
+      _runInternet(sha, h);
+    } else {
+      want.timers.add(Timer(internetGrace, () => _runInternet(sha, h)));
+    }
 
     // Re-air the ask until it is answered.
     //
@@ -672,11 +681,17 @@ class XprsFileFetch {
     return true;
   }
 
-  /// Start the internet lane for [sha] from holder [h]; a no-op without one.
+  /// How long the internet lane waits for a holder's `202` (and the length
+  /// it states) before starting without it.
+  static Duration internetGrace = const Duration(seconds: 3);
+
+  /// Start the internet lane for [sha] from holder [h], once; a no-op
+  /// without one.
   void _runInternet(String sha, String h) {
     final net = internetFetch;
     final want = _wants[sha];
     if (net == null || want == null) return;
+    if (!want.netStarted.add(h)) return;
     // The internet middle needs a hub; a phone on battery holds one up
     // for the fetch (RnsSession) and lets it go when the bytes are in.
     unawaited(CoreHost.requestHub(
@@ -689,10 +704,6 @@ class XprsFileFetch {
       return null;
     }));
   }
-
-  /// The smallest piece (spec 7.7.2): a file no longer than this is one
-  /// piece and has no piece list.
-  static const int kFilePieceMin = 65536;
 
   /// The fetch of [sha] is over: with [path] when the bytes are in hand, with
   /// null and [why] when they are not coming.
@@ -737,9 +748,10 @@ class XprsFileFetch {
         // started as a whole-file fetch from one, so it is started again.
         final said = int.tryParse(p['size'] ?? '') ?? 0;
         final want = _wants[ask.sha];
-        if (said > 0 && want != null && want.exactSize == 0) {
-          want.exactSize = said;
-          if (said > kFilePieceMin) _runInternet(ask.sha, ask.station);
+        if (want != null) {
+          if (said > 0 && want.exactSize == 0) want.exactSize = said;
+          // It holds the file: the internet lane need not wait any longer.
+          _runInternet(ask.sha, ask.station);
         }
         return;
       case 200:
@@ -851,6 +863,9 @@ class _Want {
 
   /// Those of [asked] that answered `202`.
   final Set<String> accepted = {};
+
+  /// Holders the internet lane was started for.
+  final Set<String> netStarted = {};
   final List<Timer> timers = [];
 
   /// The file's length in bytes when the caller knows it EXACTLY (a release
