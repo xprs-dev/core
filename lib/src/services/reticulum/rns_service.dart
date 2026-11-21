@@ -31,6 +31,7 @@ import 'package:hex/hex.dart';
 import '../mesh/mesh_service.dart';
 import '../mesh/mesh_courier.dart';
 import '../xprs/xprs_key_wait.dart';
+import '../xprs/xprs_lan.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_catchup.dart';
 import '../xprs/xprs_archive_policy.dart';
@@ -4954,7 +4955,7 @@ class RnsService {
       // between its clients (which it doesn't). This is what makes media fetch
       // and FEED backfill work between devices on the same network even with no
       // always-on relay. Best-effort + non-fatal (e.g. no UDP on the platform).
-      if (_lan == null && mode != 'ble' && mode != 'ble5') {
+      if (_lan == null && XprsLan.enabled && mode != 'ble' && mode != 'ble5') {
         try {
           final lan = RnsLanInterface(
             port: _lanDiscoveryPort,

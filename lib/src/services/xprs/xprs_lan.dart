@@ -107,6 +107,13 @@ class XprsLan {
   /// `docs/XPRS.md` section 24.4.
   static const int port = 4242;
 
+  /// Whether this station uses the local network at all: this lane, and
+  /// Reticulum's LAN discovery (RnsService reads it too). On by default. A
+  /// host turns it off for a machine whose "local network" is not one: a
+  /// hosted server in a data centre, or a station under test that must reach
+  /// the others only through a hub.
+  static bool enabled = true;
+
   /// A peer we have not heard from in this long is not unicast to any more.
   /// Broadcast still reaches it, so this only stops the unicast list growing
   /// stale — it is not a reachability judgement.
@@ -151,6 +158,10 @@ class XprsLan {
   /// Open the socket. Safe to call repeatedly; safe before an interface has an
   /// address, since datagrams simply start arriving when one appears.
   Future<void> start({required String selfCallsign}) async {
+    if (!enabled) {
+      LogService.instance.add('XPRS/lan: off by configuration');
+      return;
+    }
     _selfCallsign = selfCallsign.trim();
     if (_socket != null) return;
     try {
