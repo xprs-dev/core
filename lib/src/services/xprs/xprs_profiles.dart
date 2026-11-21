@@ -494,6 +494,7 @@ class XprsProfiles {
     if (_started) return;
     _started = true;
     _fingerprint = _currentFingerprint();
+    _idsFingerprint = _identitiesFingerprint();
     ProfileService.instance.revision.addListener(_onProfile);
     unawaited(migrateLegacyAvatar());
   }
@@ -505,9 +506,39 @@ class XprsProfiles {
         .join('\u0001');
   }
 
+  /// What the person states of themselves beside the decoration (6.3.3):
+  /// the issued callsigns and the other identities, with their scopes.
+  String _identitiesFingerprint() {
+    final p = ProfileService.instance.activeProfile;
+    if (p == null) return '';
+    return [
+      p.id,
+      p.wireCallsign,
+      p.heldLicences.join(','),
+      for (final i in p.identities) '${i.type}|${i.scope}|${i.values.join(',')}',
+    ].join('\u0001');
+  }
+
+  String _idsFingerprint = '';
+  Timer? _statesSoon;
+
   void _onProfile() {
+    // The other identities changed and the decoration did not: state them
+    // now. They otherwise wait for the decoration's own, daily, schedule,
+    // and an address added today was told to nobody until tomorrow.
+    final ids = _identitiesFingerprint();
+    final idsChanged = ids != _idsFingerprint &&
+        ids.split('\u0001').first == _idsFingerprint.split('\u0001').first;
+    _idsFingerprint = ids;
     final f = _currentFingerprint();
-    if (f == _fingerprint) return;
+    if (f == _fingerprint) {
+      if (idsChanged) {
+        _statesSoon?.cancel();
+        _statesSoon = Timer(const Duration(seconds: 5),
+            () => unawaited(XprsPublisher.instance.publishIdentities()));
+      }
+      return;
+    }
     final sameStation = f.split('\u0001').first ==
         _fingerprint.split('\u0001').first;
     _fingerprint = f;
