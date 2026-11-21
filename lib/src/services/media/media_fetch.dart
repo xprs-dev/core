@@ -38,6 +38,7 @@ import '../receive/core_state.dart';
 import '../reticulum/rns_service.dart';
 import '../station/station_visits.dart';
 import '../xprs/xprs_files.dart';
+import '../mesh/mesh_bulk_spool.dart';
 import '../xprs/xprs_inline_file.dart';
 import '../xprs/xprs_lan.dart';
 import '../xprs/xprs_publisher.dart';
@@ -59,12 +60,32 @@ enum MediaState { absent, seeking, fetching, ready, failed }
 enum MediaLane { packet, bulkAndInternet, internetOnly, wait }
 
 /// A reading of one file's fetch, for a progress bar.
+///
+/// Every number is read from what this station already holds: bytes written,
+/// pieces verified, answers received. Reading it sends nothing, so a screen
+/// may ask as often as it redraws without touching the link (the progress of
+/// a transfer must never cost the transfer its airtime).
 class MediaProgress {
-  const MediaProgress(this.state, {this.received = 0, this.total = 0, this.lane});
+  const MediaProgress(this.state,
+      {this.received = 0,
+      this.total = 0,
+      this.lane,
+      this.holders = 0,
+      this.holding = 0});
   final MediaState state;
+
+  /// Bytes in hand and bytes in all, or pieces of pieces on the `pieces`
+  /// lane: a ratio either way. [total] is 0 while unknown.
   final int received;
   final int total;
+
+  /// The lane the bytes are arriving on: `visit`, `packet`, `bulk`,
+  /// `internet`; null while nothing has arrived.
   final String? lane;
+
+  /// Holders asked for the file, and how many of them said they hold it.
+  final int holders;
+  final int holding;
 }
 
 /// Fired when a file's fetch state moves (host-side listeners; the wapp side
@@ -389,6 +410,9 @@ class MediaFetch {
     final sha = _shaOf(shaOrRef);
     final a = archive?.call();
     if (a != null && a.has(sha)) return const MediaProgress(MediaState.ready);
+    final hex = sha.length == 64 ? sha : (MediaRef.b64uToHex(sha) ?? '');
+    final h = hex.isEmpty ? null : XprsFileFetch.instance.holdersOf(hex);
+    final holders = h?.asked ?? 0, holding = h?.accepted ?? 0;
     // Byte progress, first lane that reports.
     final visit = _visitBytes[sha];
     if (visit != null) {
@@ -398,7 +422,22 @@ class MediaFetch {
     final inline = XprsInlineAsm.instance.progressOf(sha);
     if (inline != null) {
       return MediaProgress(MediaState.fetching,
-          received: inline.received, total: inline.total, lane: 'packet');
+          received: inline.received,
+          total: inline.total,
+          lane: 'packet',
+          holders: holders,
+          holding: holding);
+    }
+    // The bulk lane (a Bluetooth session): bytes written so far.
+    final bulk =
+        hex.isEmpty ? null : MeshBulkSpool.instance.inboundProgress(hex);
+    if (bulk != null && bulk.received > 0) {
+      return MediaProgress(MediaState.fetching,
+          received: bulk.received,
+          total: bulk.total,
+          lane: 'bulk',
+          holders: holders,
+          holding: holding);
     }
     final shaBytes = _sha32(sha);
     if (shaBytes != null) {
@@ -406,12 +445,18 @@ class MediaFetch {
       if (rns != null && rns.received > 0) {
         final total = rns.total > 0 ? rns.total : (MediaRefIndex.instance.describe(sha)?.size ?? 0);
         return MediaProgress(MediaState.fetching,
-            received: rns.received, total: total, lane: 'internet');
+            received: rns.received,
+            total: total,
+            lane: 'internet',
+            holders: holders,
+            holding: holding);
       }
     }
     final st = _state[sha] ?? MediaState.absent;
     return MediaProgress(st,
-        total: MediaRefIndex.instance.describe(sha)?.size ?? 0);
+        total: MediaRefIndex.instance.describe(sha)?.size ?? 0,
+        holders: holders,
+        holding: holding);
   }
 
   /// What the message said about a hash (size, name, the original a preview

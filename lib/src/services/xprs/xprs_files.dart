@@ -592,6 +592,15 @@ class XprsFileFetch {
     return done.future;
   }
 
+  /// The holders asked for a file being fetched, and how many of them said
+  /// they hold it; null when no fetch of it is in flight. For a progress
+  /// reading: local state, no traffic.
+  ({int asked, int accepted})? holdersOf(String shaHex) {
+    final want = _wants[shaHex.toLowerCase()];
+    if (want == null) return null;
+    return (asked: want.asked.length, accepted: want.accepted.length);
+  }
+
   /// The exact length of a file being fetched, when its caller stated one,
   /// else 0. The internet lane needs it to fetch by pieces from several
   /// holders ([RnsService.fetchContentAddressed]); without it the lane can
@@ -717,6 +726,7 @@ class XprsFileFetch {
         // "I hold it", from the holder itself: worth remembering whether or
         // not its bytes are the ones that arrive (spec 12.9.2).
         try {
+          _wants[ask.sha]?.accepted.add(ask.station);
           onHolder?.call(ask.sha, ask.station);
         } catch (e) {
           LogService.instance.add('XPRS: noting a holder failed: $e');
@@ -838,6 +848,9 @@ class _Want {
   final String ext;
   final int off;
   final List<String> asked = [];
+
+  /// Those of [asked] that answered `202`.
+  final Set<String> accepted = {};
   final List<Timer> timers = [];
 
   /// The file's length in bytes when the caller knows it EXACTLY (a release

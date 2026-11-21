@@ -345,16 +345,13 @@ class MeshBulkSpool {
               ],
       };
 
-  /// Byte progress of an inbound transfer: (bytes on disk, declared size), or
-  /// null when nothing inbound is known for [hex]. The `.part` length is the
-  /// only honest figure; the size is what the offer declared.
-  ({int received, int total})? inboundProgress(String hex) {
-    final m = _meta(hex.toLowerCase());
-    if (m == null) return null;
-    final st = (m['state'] ?? '').toString();
-    if (st == 'done') return null;
-    return (received: _haveBytes(hex.toLowerCase()), total: (m['size'] as int?) ?? 0);
-  }
+  /// Byte progress of an inbound transfer: (bytes written, declared size), or
+  /// null when none is in flight for [hex]. Kept in memory as chunks are
+  /// written, so a progress bar that asks on every redraw reads no file: the
+  /// figure used to be the `.part` length and a metadata file, read from disk
+  /// on each call.
+  ({int received, int total})? inboundProgress(String hex) =>
+      _inbound[hex.toLowerCase()];
 
   /// Bytes of an inbound transfer already on disk (its resume offset).
   int _haveBytes(String hex) {
@@ -372,11 +369,17 @@ class MeshBulkSpool {
 
   // --- inbound (receiver / relay) --------------------------------------------
 
+  /// Bytes in hand of each file arriving on this lane, kept as they are
+  /// written ([inboundProgress]). Bounded by the transfers in flight;
+  /// cleared when one completes.
+  final Map<String, ({int received, int total})> _inbound = {};
+
   /// Answer an inbound FILE_OFFER: resume offset from the .part on disk,
   /// accept-at-size when we already hold the full content.
   MeshBulkDecision offered(String peer, MspFileOffer o) {
     if (!ready) return const MeshBulkDecision.reject(MspFileReject.quota);
     final hex = shaHex(o.sha256);
+    _inbound[hex] = (received: _inbound[hex]?.received ?? 0, total: o.size);
     // Already in the media archive (we are the target and have it)?
     if (_archive?.has('file:${shaB64u(o.sha256)}.${o.ext}') ?? false) {
       return MeshBulkDecision.accept(o.size);
@@ -485,6 +488,9 @@ class MeshBulkSpool {
         }
         raf.setPositionSync(offset);
         raf.writeFromSync(data);
+        final was = _inbound[hex];
+        _inbound[hex] =
+            (received: offset + data.length, total: was?.total ?? 0);
         return true;
       } finally {
         raf.closeSync();
@@ -539,6 +545,7 @@ class MeshBulkSpool {
   void completeInbound(Uint8List sha, {required String selfCallsign}) {
     final hex = shaHex(sha);
     _activeSha.remove(hex);
+    _inbound.remove(hex);
     final m = _meta(hex);
     if (m == null) return;
     final target = (m['target'] as String? ?? '').toUpperCase();
