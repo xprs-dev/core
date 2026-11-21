@@ -82,6 +82,32 @@ void main() {
     expect(people.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), npub);
   });
 
+  test('after a restart a derived callsign\'s key is answered from the '
+      'record; an issued one is not', () {
+    final rns = RnsService.instance;
+    final kp = NostrCrypto.generateKeyPair();
+    final call = 'X1${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
+    final npub = NostrCrypto.encodeNpub(kp.publicKeyHex);
+    // What an earlier run filed: the key's own callsign, by arithmetic, and
+    // an issued callsign the same key bound.
+    people.claim(npub, XprsIdType.callsign, call,
+        evidence: XprsIdEvidence.derived);
+    people.claim(npub, XprsIdType.licence, 'CT1ZZZ',
+        evidence: XprsIdEvidence.signed);
+    // This run has heard no identity packet.
+    expect(rns.pubkeyForCallsign(call), kp.publicKeyHex);
+    expect(rns.pubkeyForCallsign('$call-2'), kp.publicKeyHex,
+        reason: 'a device suffix is the same person (3.1)');
+    expect(rns.pubkeyForCallsign('CT1ZZZ'), isNull,
+        reason: 'no arithmetic ties an issued callsign to a key (6.4.2)');
+    // A callsign only OBSERVED beside a key is not proof of it.
+    final other = NostrCrypto.generateKeyPair();
+    people.note(NostrCrypto.encodeNpub(other.publicKeyHex),
+        XprsIdType.callsign, 'X1FAKE9',
+        evidence: XprsIdEvidence.observed);
+    expect(rns.pubkeyForCallsign('X1FAKE9'), isNull);
+  });
+
   test('the peer file of older builds is moved into the record once, and '
       'removed', () async {
     final rns = RnsService.instance;

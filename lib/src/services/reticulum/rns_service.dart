@@ -584,7 +584,33 @@ class RnsService {
     }
   }
 
-  String? pubkeyForCallsign(String callsign) => _callPub[callsign.trim()];
+  /// The key (hex) this station holds for [callsign], or null.
+  ///
+  /// From the bindings learned this run, and, for a callsign the key itself
+  /// derives (`X1` to `X5`), from the people record, which outlives a
+  /// restart: the table here is memory, so a station that restarted could
+  /// verify nobody until each identity packet had been heard again. A
+  /// derived callsign's key is safe to remember by arithmetic (the record
+  /// marks it derived only when the key gives that callsign). An issued
+  /// callsign has no such tie (6.4.2) and is still answered from this run's
+  /// bindings alone.
+  String? pubkeyForCallsign(String callsign) {
+    final c = callsign.trim();
+    final held = _callPub[c];
+    if (held != null) return held;
+    if (c.isEmpty || XprsPeople.callType(c) != XprsIdType.callsign) return null;
+    final npub = XprsPeople.instance.personWith(XprsIdType.callsign, c,
+        min: XprsIdEvidence.derived);
+    if (npub == null) return null;
+    try {
+      final hex = NostrCrypto.decodeNpub(npub);
+      if (hex.length != 64) return null;
+      _callPub[c] = hex; // one bech32 decode a callsign, not one a packet
+      return hex;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Hand the packet archive the base callsigns we follow — the middle tier of
   /// XPRS.md 12, and the only reason a phone with "public archiver" off keeps
