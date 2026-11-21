@@ -306,12 +306,18 @@ class XprsInlineAsm {
 class _Inbound {
   _Inbound(this.size, this.ext, this.at)
       : _buf = Uint8List(size),
+        _cover = Uint8List((size + 7) >> 3),
         nextReportAt = at;
   final int size;
   final String ext;
   DateTime at;
   final Uint8List _buf;
-  final Set<int> _spans = {}; // start offsets seen, to count filled bytes
+  // One bit per byte held. Counting chunks by their start offset counted a
+  // byte twice when the same bytes came again cut at other offsets (a re-send
+  // addressed to us has a longer header and so a shorter chunk than the
+  // broadcast before it): the file looked whole early, failed its hash and
+  // was thrown away with every byte of it in hand.
+  final Uint8List _cover;
   int _filled = 0;
 
   /// The grid, learned from the first full-length chunk (7.7.6: every chunk
@@ -323,14 +329,35 @@ class _Inbound {
   DateTime nextReportAt;
   Timer? idle;
 
-  Set<int> get spans => _spans;
+  /// The start offsets of the grid's chunks that are wholly held: what the
+  /// `have:` map says (8.1). Empty while the grid is unknown.
+  Set<int> get spans {
+    final out = <int>{};
+    if (chunkLen <= 0) return out;
+    for (var o = 0; o < size; o += chunkLen) {
+      final end = o + chunkLen > size ? size : o + chunkLen;
+      var whole = true;
+      for (var i = o; i < end; i++) {
+        if (_cover[i >> 3] & (1 << (i & 7)) == 0) {
+          whole = false;
+          break;
+        }
+      }
+      if (whole) out.add(o);
+    }
+    return out;
+  }
+
   int get filled => _filled;
 
   void place(int off, Uint8List chunk) {
-    if (_spans.contains(off)) return; // a repeated chunk is ignored
-    _spans.add(off);
     _buf.setRange(off, off + chunk.length, chunk);
-    _filled += chunk.length;
+    for (var i = off; i < off + chunk.length; i++) {
+      final bit = 1 << (i & 7);
+      if (_cover[i >> 3] & bit != 0) continue; // held already: not counted
+      _cover[i >> 3] |= bit;
+      _filled++;
+    }
     if (chunkLen == 0 && off + chunk.length < size) chunkLen = chunk.length;
     // A file that fits one chunk: that chunk is the grid.
     if (chunkLen == 0 && off == 0 && chunk.length == size) chunkLen = size;
@@ -338,7 +365,7 @@ class _Inbound {
 
   /// Section 8.1's map of what is held, or null while the grid is unknown.
   String? haveEncoded() =>
-      chunkLen == 0 ? null : xprsInlineHaveEncode(_spans, size, chunkLen);
+      chunkLen == 0 ? null : xprsInlineHaveEncode(spans, size, chunkLen);
 
   bool get complete => _filled >= size;
   Uint8List get bytes => _buf;

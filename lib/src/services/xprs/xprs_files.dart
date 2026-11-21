@@ -270,7 +270,10 @@ class XprsFileServer {
     if (_inFlight.length >= _inFlightMax) {
       _inFlight.remove(_inFlight.keys.first);
     }
-    _inFlight[held.shaHex] = _Served(cmdId, from, selfBase);
+    // Per file AND asker: keyed by the file alone, a second asker replaced
+    // the first, and then neither was sent its closing `200`.
+    _inFlight['${held.shaHex}|${from.toUpperCase()}'] =
+        _Served(cmdId, from, selfBase);
     LogService.instance
         .add('XPRS: cmd:file ${held.name} (${held.size}B) -> $from (202)');
     // A far requester fetches over a Reticulum link to us (the internet
@@ -412,9 +415,9 @@ class XprsFileServer {
   /// The peer verified the bytes and sent FILE_OK. Close the exchange with the
   /// `200` the spec makes conditional on exactly that.
   void noteHandedOver(String shaHex, String peer) {
-    final s = _inFlight.remove(shaHex.toLowerCase());
+    final s =
+        _inFlight.remove('${shaHex.toLowerCase()}|${peer.toUpperCase()}');
     if (s == null) return;
-    if (s.to.toUpperCase() != peer.toUpperCase()) return;
     final wire = 't:result f:${s.self} d:${s.to} '
         'ts:${xprsNowTs()} r:${s.cmdId} code:200';
     unawaited(XprsPublisher.instance.publishWire(wire));

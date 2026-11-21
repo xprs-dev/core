@@ -112,6 +112,30 @@ class MeshBulkSpool {
   /// An ORIGIN entry holds no payload of its own in the spool: the bytes live
   /// in the MediaArchive (`archive`) or in a file somebody else owns (`file`).
   /// Handover and eviction must never delete either.
+  /// Everyone a file of ours is owed to: the first asker, then those who
+  /// asked while it was still waiting. One entry a file kept one target, so a
+  /// second asker replaced the first, who had been answered `202` and then
+  /// never received anything.
+  static List<String> _targetsOf(Map<String, dynamic> m) => [
+        if ((m['target'] as String? ?? '').isNotEmpty)
+          (m['target'] as String).toUpperCase(),
+        for (final t in (m['also'] as List? ?? const []))
+          if ('$t'.isNotEmpty) '$t'.toUpperCase(),
+      ];
+
+  /// Add [target] to an origin entry still owed to somebody else. False when
+  /// the entry is not one to add to (not ours, or already delivered).
+  bool _alsoFor(String hex, Map<String, dynamic> existing, String target) {
+    if (!_isOrigin(existing) || existing['state'] != 'ready') return false;
+    existing['also'] = [
+      ...(existing['also'] as List? ?? const []),
+      target.toUpperCase(),
+    ];
+    _saveMeta(hex, existing);
+    _log('queued ${existing['name']} -> $target as well');
+    return true;
+  }
+
   static bool _isOrigin(Map<String, dynamic> m) {
     final src = m['src'] as String? ?? '';
     return src == 'archive' || src == 'file';
@@ -155,10 +179,10 @@ class MeshBulkSpool {
     final hex = shaHex(Uint8List.fromList(sha));
     final existing = _meta(hex);
     if (existing != null &&
-        (existing['target'] as String?)?.toUpperCase() ==
-            target.toUpperCase()) {
+        _targetsOf(existing).contains(target.toUpperCase())) {
       return false; // already queued
     }
+    if (existing != null && _alsoFor(hex, existing, target)) return true;
     final dot = token.lastIndexOf('.');
     _saveMeta(hex, {
       'sha': hex,
@@ -225,6 +249,11 @@ class MeshBulkSpool {
       }
       return false; // already queued and ready
     }
+    if (existing != null &&
+        _targetsOf(existing).contains(target.toUpperCase())) {
+      return false; // one of those it is already owed to
+    }
+    if (existing != null && _alsoFor(hex, existing, target)) return true;
     final base = name.isNotEmpty ? name : path.split(Platform.pathSeparator).last;
     final dot = base.lastIndexOf('.');
     _saveMeta(hex, {
@@ -247,6 +276,23 @@ class MeshBulkSpool {
 
   // --- scheduler / session queries -------------------------------------------
 
+  /// Which of the stations [m] is owed to is reached through [peer] and has
+  /// not had it yet: the peer itself, or one routed through it. Null if none.
+  String? _owedVia(
+      String hex, Map<String, dynamic> m, String peer, MeshTable? table) {
+    for (final target in _targetsOf(m)) {
+      var give = target == peer;
+      if (!give && table != null) {
+        final r = table.routes[meshHashHex(meshHash(target))];
+        give = r != null && r.viaCallsign.toUpperCase() == peer;
+      }
+      if (give && !MeshStore.instance.bulkHandedOver(hex, target)) {
+        return target;
+      }
+    }
+    return null;
+  }
+
   /// Next spooled file this session should move to [peer]: the target itself,
   /// or the route next hop, skipping files already handed over for their
   /// target and files that came FROM this peer.
@@ -255,17 +301,11 @@ class MeshBulkSpool {
     for (final e in _metas()) {
       final m = e.value;
       if (m['state'] != 'ready') continue;
-      final target = (m['target'] as String? ?? '').toUpperCase();
       final origin = (m['origin'] as String? ?? '').toUpperCase();
       final from = (m['from'] as String? ?? '').toUpperCase();
-      if (target.isEmpty || p == from || p == origin) continue;
-      var give = target == p;
-      if (!give && table != null) {
-        final r = table.routes[meshHashHex(meshHash(target))];
-        give = r != null && r.viaCallsign.toUpperCase() == p;
-      }
-      if (!give) continue;
-      if (MeshStore.instance.bulkHandedOver(e.key, target)) continue;
+      if (p == from || p == origin) continue;
+      final target = _owedVia(e.key, m, p, table);
+      if (target == null) continue;
       return MeshBulkPending(
         sha256: hexSha(e.key),
         size: (m['size'] as num).toInt(),
@@ -296,6 +336,7 @@ class MeshBulkSpool {
                     'src': e.value['src'],
                     'state': e.value['state'],
                     'target': e.value['target'],
+                    'targets': _targetsOf(e.value),
                     'origin': e.value['origin'],
                     // For an inbound transfer the .part length IS the resume
                     // offset, so it is also the only honest progress figure.
@@ -501,7 +542,12 @@ class MeshBulkSpool {
     final m = _meta(hex);
     if (m == null) return;
     final target = (m['target'] as String? ?? '').toUpperCase();
-    if (target == selfCallsign.toUpperCase()) {
+    // Without the device suffix on either side: a holder addresses the file
+    // to the asker's bare `f:`, and a device that answers as X1SELF-2 is
+    // still the X1SELF that asked. Compared exactly, the file was kept as
+    // relay custody and the fetch that asked for it waited for its timeout.
+    if (NostrCrypto.bareCallsign(target) ==
+        NostrCrypto.bareCallsign(selfCallsign)) {
       // Somebody may want this file as a file. Ask before archiving it, since
       // archiving is the expensive, memory-hungry answer.
       try {
@@ -543,14 +589,27 @@ class MeshBulkSpool {
     _cacheBytes = null;
     final m = _meta(hex);
     if (m == null) return;
-    final target = (m['target'] as String? ?? '').toUpperCase();
+    // The one of its targets this peer took it for: the peer itself, else
+    // (handed to a next hop) the first one still waiting.
+    final waiting = [
+      for (final t in _targetsOf(m))
+        if (!MeshStore.instance.bulkHandedOver(hex, t)) t
+    ];
+    final target = _owedVia(hex, m, peer.toUpperCase(), null) ??
+        (waiting.isNotEmpty
+            ? waiting.first
+            : (m['target'] as String? ?? '').toUpperCase());
     MeshStore.instance.recordBulkHandover(hex, target, peer);
     onOriginHandedOver?.call(hex, peer);
     if (_isOrigin(m)) {
       // Origin: the payload is ours and lives elsewhere (the archive blob, or
       // a file on disk that its owner manages). Record the handover and keep
-      // the entry; never touch the source.
-      m['state'] = 'done';
+      // the entry; never touch the source. Done once everyone it is owed to
+      // has it.
+      if (_targetsOf(m)
+          .every((t) => MeshStore.instance.bulkHandedOver(hex, t))) {
+        m['state'] = 'done';
+      }
       _saveMeta(hex, m);
     } else {
       // Intermediate hop: payload custody moved on — drop our copy.
