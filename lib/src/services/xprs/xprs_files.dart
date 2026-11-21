@@ -697,11 +697,39 @@ class XprsFileFetch {
     unawaited(CoreHost.requestHub(
         'fetch:${sha.substring(0, 8)}', const Duration(minutes: 15)));
     unawaited(net(sha, want.ext, h, _destDir[sha]).then((path) {
-      if (path != null) _completeFromInternet(sha, path);
+      if (path != null) {
+        _completeFromInternet(sha, path);
+      } else {
+        _retryInternet(sha, h, want);
+      }
     }).catchError((Object e) {
       LogService.instance.add('XPRS: internet lane for '
           '${sha.substring(0, 8)} from $h failed: $e');
+      _retryInternet(sha, h, want);
       return null;
+    }));
+  }
+
+  /// The first wait before the internet lane is tried again for a holder; it
+  /// doubles each time, [internetRetries] times at most.
+  static Duration internetRetry = const Duration(seconds: 60);
+  static const int internetRetries = 3;
+
+  /// The internet lane brought nothing from [h] and the file is still wanted:
+  /// try again later, a few times. A device that asks in its first seconds
+  /// has no Reticulum path to the holder yet; the one run failed on that and
+  /// the fetch then waited out its whole timeout with the holder a hop away.
+  void _retryInternet(String sha, String h, _Want want) {
+    if (!identical(_wants[sha], want)) return; // arrived, or given up
+    final n = want.netTries[h] ?? 0;
+    if (n >= internetRetries) return;
+    want.netTries[h] = n + 1;
+    want.timers.add(Timer(internetRetry * (1 << n), () {
+      if (!identical(_wants[sha], want)) return;
+      LogService.instance.add('XPRS: internet lane for '
+          '${sha.substring(0, 8)} from $h: trying again (${n + 1})');
+      want.netStarted.remove(h);
+      _runInternet(sha, h);
     }));
   }
 
@@ -866,6 +894,9 @@ class _Want {
 
   /// Holders the internet lane was started for.
   final Set<String> netStarted = {};
+
+  /// How many times it was tried again, per holder.
+  final Map<String, int> netTries = {};
   final List<Timer> timers = [];
 
   /// The file's length in bytes when the caller knows it EXACTLY (a release

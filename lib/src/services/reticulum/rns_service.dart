@@ -6332,8 +6332,14 @@ class RnsService {
       {String? also}) async {
     final d = f.dht;
     if (d == null) return null;
-    final records = await d.resolve(fileHash);
     final self = _hex(f.identity.hash);
+    final named = (also ?? '').trim().isEmpty
+        ? null
+        : _callIdentity[_bareUpper(also!)] ?? _callIdentity[also.trim()];
+    // The station named as holder is asked for its own record first: it
+    // keeps one, with the piece list's hash, wherever its replicas landed.
+    final records = await d.resolve(fileHash,
+        holders: [if (named != null && _hex(named.hash) != self) named]);
     final providers = <RnsIdentity>[];
     Uint8List? manifest;
     for (final r in records) {
@@ -6341,16 +6347,20 @@ class RnsService {
       providers.add(r.providerIdentity);
       manifest ??= r.manifestHash;
     }
-    final named = (also ?? '').trim().isEmpty
-        ? null
-        : _callIdentity[_bareUpper(also!)] ?? _callIdentity[also.trim()];
     if (named != null &&
         _hex(named.hash) != self &&
         !providers.any((p) => p.hexHash == named.hexHash)) {
       providers.add(named);
     }
-    if (providers.isEmpty || manifest == null) return null;
     final tag = _hex(fileHash).substring(0, 8);
+    if (providers.isEmpty || manifest == null) {
+      // Said out loud: a silent return here looked like thirty seconds of
+      // nothing before the whole-file path started.
+      LogService.instance.add('RNS/files: $tag: not by pieces — '
+          '${providers.length} holder(s), '
+          '${manifest == null ? 'no piece list known' : 'piece list known'}');
+      return null;
+    }
     return fetchByPieces(f,
         fileHash: fileHash,
         size: size,
