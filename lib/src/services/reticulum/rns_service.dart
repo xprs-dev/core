@@ -319,13 +319,11 @@ class RnsService {
   String? relayCursorsPath;
   Timer? _relayCursorSaveTimer;
 
-  /// JSON sidecar persisting the discovered callsign->identity map across
-  /// restarts (set by the app before start). Without it, a joining/returning node
-  /// re-pays minutes of announce-discovery before it can query peers for their
-  /// notes (group/Activity backfill); restoring it lets backfill query known
-  /// posters immediately on launch.
+  /// Where builds before the people record kept the peers they had heard
+  /// (`call_peers.json`). Read once at start, moved into XprsPeople, and
+  /// removed ([_importCallPeersFile]); nothing writes it. The host still
+  /// names the path so an upgraded install's file is found.
   String? callPeersPath;
-  Timer? _callPeersSaveTimer;
 
   /// Directory for resumable-download partials (set by the app before start). When
   /// set, fetches survive a drop/app-restart by resuming from the last completed
@@ -472,14 +470,49 @@ class RnsService {
   DateTime? _startedAt;
   // Count of verified inbound announces — proves a link really speaks Reticulum.
   int _rxAnnounces = 0;
-  // callsign -> that peer's chat dest hex (learned from chat announces), for
-  // direct media fetch from a known sender.
-  final Map<String, String> _callsignDest = {};
+  // WHO a callsign is, and which Reticulum identities its devices have, is
+  // asked of XprsPeople ([identityForCallsign]). This holds only the key
+  // material of the XPRS peers heard (identity hash -> identity), which a
+  // hash alone cannot give: newest last, bounded, and refilled at start from
+  // the stored node list, which keeps each node's public key.
+  //
+  // It replaces two maps keyed by callsign (identity, chat destination) that
+  // grew with every peer and were saved to a JSON file of their own.
+  final Map<String, RnsIdentity> _peerIds = {};
+  static const int _peerIdsMax = 512;
 
-  // callsign -> that peer's full RNS identity (learned from its chat announce).
-  // Lets us derive the peer's relay destination and fetch its NOSTR events
-  // (e.g. its kind-0 profile) DIRECTLY from it — no third-party archiver needed.
-  final Map<String, RnsIdentity> _callIdentity = {};
+  void _keepPeerId(RnsIdentity id) {
+    final h = id.hexHash;
+    _peerIds.remove(h); // re-insert: newest last
+    if (_peerIds.length >= _peerIdsMax) _peerIds.remove(_peerIds.keys.first);
+    _peerIds[h] = id;
+  }
+
+  /// The identity whose hash is [hash] (hex), from the peers heard, the live
+  /// node list, or the stored one. Null when its key was never seen.
+  RnsIdentity? _identityByHash(String hash) {
+    final h = hash.trim().toLowerCase();
+    final held = _peerIds[h];
+    if (held != null) return held;
+    final pub = _hexToBytes(
+        _observed[h]?.publicKeyHex ?? _obStore?.pubkeyOf(h) ?? '');
+    if (pub == null || pub.isEmpty) return null;
+    try {
+      final id = RnsIdentity.fromPublicKey(pub);
+      _keepPeerId(id);
+      return id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Where the chat destination of [callsign] is (hex), or null when the
+  /// station is not known. Every destination of a node follows from its
+  /// identity, so this needs no table of its own.
+  String? _chatDestFor(String callsign) {
+    final id = identityForCallsign(callsign);
+    return id == null ? null : _hex(RnsDestination.hash(id, _app, _aspects));
+  }
 
   // callsign -> that peer's NOSTR pubkey (hex), bridged from the APRS wapp's
   // pubkey beacons (social.identity). Drives the npub shown on Activity posts
@@ -1985,11 +2018,7 @@ class RnsService {
 
   /// A heard XPRS peer's identity by its 16-byte hash, or null.
   RnsIdentity? identityByHash16(Uint8List h16) {
-    final want = _hex(h16);
-    for (final id in _callIdentity.values) {
-      if (_hex(id.hash) == want) return id;
-    }
-    return null;
+    return _identityByHash(_hex(h16));
   }
 
   /// Encrypt [data] to the peer whose 16-byte identity hash is [destHash16]
@@ -4613,9 +4642,8 @@ class RnsService {
           _relay = null;
         }
 
-        // Restore discovered peers (callsign->identity) so backfill can query
-        // known posters immediately instead of re-waiting for their announces.
-        _loadCallPeers();
+        // Peers a build before the people record saved in a file of its own.
+        _importCallPeersFile();
         // Restore per-archiver Nomadnet pull cursors so we resume asking each
         // archiver from where we left off (incremental), not the cold window.
         _loadRelayCursors();
@@ -4832,6 +4860,8 @@ class RnsService {
           if (st.open()) {
             _obStore = st;
             _firstSeenByHex.addAll(st.loadFirstSeen());
+            // Known peers at once, without waiting for their announces.
+            _seedPeersFromStore();
             _obStats = st.stats();
             _obFlushTimer = Timer.periodic(
               const Duration(seconds: 20),
@@ -5664,7 +5694,7 @@ class RnsService {
   RnsIdentity? _apiIdentity(String c) {
     final id = _apiStation[c] ?? _wappStation[c];
     if (id != null || c.isEmpty) return id;
-    return xprsKindOf(c) == XprsKind.station ? _callIdentity[c] : null;
+    return xprsKindOf(c) == XprsKind.station ? _identityOfCall(c) : null;
   }
 
   void _bindStation(String call, RnsIdentity id) {
@@ -5800,7 +5830,7 @@ class RnsService {
     if (have != null) return have;
     // A person's phone may answer too (it says so only when asked: there is
     // no word for it on the air), so whoever asks decides whom to try.
-    final id = _apiIdentity(c) ?? _callIdentity[c];
+    final id = _apiIdentity(c) ?? _identityOfCall(c);
     if (!_up || _transport == null || id == null) return null;
     return _apiClients[c] = RnsRequestClient(
       peer: id,
@@ -5849,7 +5879,7 @@ class RnsService {
     if (me != null && c == _bareUpper(XprsArchive.instance.selfCallsign)) return me;
     // A person's phone is a station when its owner says so: whoever asks
     // tries it, as [stationRequests] does.
-    return _apiIdentity(c) ?? _callIdentity[c];
+    return _apiIdentity(c) ?? _identityOfCall(c);
   }
 
   /// Our own xprs/wapp destination, worked out once per identity: the test
@@ -6123,13 +6153,12 @@ class RnsService {
       _files?.addPeerFromAnnounce(ann.identity);
       final cs = text.trim();
       if (cs.isNotEmpty && cs.length <= 20 && !cs.contains(' ')) {
-        final isNewPeer = _callIdentity[cs]?.hexHash != ann.identity.hexHash;
+        // New to this run: its key was not held. (Who it is was filed by
+        // [_notePerson] when the announce was observed, and is kept in
+        // people.zx; the key is in the stored node list.)
+        final isNewPeer = !_peerIds.containsKey(ann.identity.hexHash);
         if (isNewPeer) newCallsign = cs;
-        _callsignDest[cs] = _hex(ann.destHash);
-        _callIdentity[cs] = ann.identity;
-        // Persist the discovered peer so backfill can query it on the next
-        // launch without re-waiting for its announce.
-        if (isNewPeer) _scheduleCallPeersSave();
+        _keepPeerId(ann.identity);
         // Now that we can reach this peer directly, fetch its profile if we
         // follow it and don't have it yet.
         _maybeFetchFollowedProfile(cs);
@@ -6210,8 +6239,11 @@ class RnsService {
     String callsign, {
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    final dest = _callsignDest[callsign.trim()];
-    if (dest != null) return fetchFileFrom(fileHash, dest, timeout: timeout);
+    final dest = _chatDestFor(callsign);
+    if (dest != null &&
+        _transport?.pathFor(_bytesFromHex(dest) ?? Uint8List(0)) != null) {
+      return fetchFileFrom(fileHash, dest, timeout: timeout);
+    }
     // No chat announce heard from it, but the station is known another way
     // (XprsPeople): every destination of a node hangs off one identity, so
     // its file destination follows from any of them.
@@ -6235,18 +6267,16 @@ class RnsService {
   RnsIdentity? identityForCallsign(String callsign) {
     final c = _bareUpper(callsign);
     if (c.isEmpty) return null;
-    final known = _callIdentity[c] ??
-        _callIdentity[callsign.trim()] ??
-        _apiStation[c] ??
-        _wappStation[c];
-    if (known != null) return known;
+    return _apiStation[c] ?? _wappStation[c] ?? _identityOfCall(c);
+  }
+
+  /// The identity of one of [c]'s devices, through the people record: the
+  /// best-attested Reticulum identity whose key is held.
+  RnsIdentity? _identityOfCall(String c) {
     for (final hash
         in XprsPeople.instance.reachCall(c, XprsIdType.reticulum)) {
-      final pub = _hexToBytes(_observed[hash]?.publicKeyHex ?? '');
-      if (pub == null || pub.isEmpty) continue;
-      try {
-        return RnsIdentity.fromPublicKey(pub);
-      } catch (_) {/* a key that is not one: the next */}
+      final id = _identityByHash(hash);
+      if (id != null) return id;
     }
     return null;
   }
@@ -6345,7 +6375,7 @@ class RnsService {
     String callsign, {
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    final dest = _callsignDest[callsign.trim()];
+    final dest = _chatDestFor(callsign);
     if (dest == null) {
       LogService.instance.add('RNS/host: no route to callsign "$callsign"');
       return false;
@@ -8088,53 +8118,66 @@ class RnsService {
     return stored;
   }
 
-  /// Schedule a debounced write of the discovered callsign->identity map.
-  void _scheduleCallPeersSave() {
-    _callPeersSaveTimer?.cancel();
-    _callPeersSaveTimer = Timer(const Duration(seconds: 5), _saveCallPeers);
-  }
+  /// The callsign -> key file of builds before the people record
+  /// (`call_peers.json`): read once into XprsPeople and the key cache, then
+  /// removed. Nothing writes it any more; who a callsign is lives in
+  /// people.zx and each node's key in the stored node list.
+  @visibleForTesting
+  void debugImportCallPeers() => _importCallPeersFile();
 
-  /// Persist the discovered callsign->identity map (callsign -> 64B public key
-  /// hex) so a returning node can query known posters immediately on launch.
-  Future<void> _saveCallPeers() async {
-    final path = callPeersPath;
-    if (path == null || path.isEmpty) return;
-    try {
-      final m = <String, String>{};
-      _callIdentity.forEach((cs, id) => m[cs] = _hex(id.getPublicKey()));
-      await fs.file(path).writeAsString(jsonEncode(m), flush: true);
-    } catch (_) {
-      // best-effort cache; ignore write errors
-    }
-  }
-
-  /// Restore the persisted callsign->identity map on start. Stale entries are
-  /// harmless (a query to a peer that moved simply gets no answer + is refreshed
-  /// by the next live announce).
-  void _loadCallPeers() {
+  void _importCallPeersFile() {
     final path = callPeersPath;
     if (path == null || path.isEmpty) return;
     try {
       final f = fs.file(path);
       if (!f.existsSync()) return;
       final m = jsonDecode(f.readAsStringSync());
-      if (m is! Map) return;
       var n = 0;
-      m.forEach((cs, ph) {
-        if (cs is! String || ph is! String) return;
-        final pub = _hexToBytes(ph);
-        if (pub == null || pub.length != 64) return;
-        final id = RnsIdentity.fromPublicKey(pub);
-        _callIdentity[cs] = id;
-        _callsignDest[cs] = _hex(RnsDestination.hash(id, _app, _aspects));
-        n++;
-      });
+      if (m is Map) {
+        m.forEach((cs, ph) {
+          if (cs is! String || ph is! String || n >= _peerIdsMax) return;
+          final pub = _hexToBytes(ph);
+          if (pub == null || pub.length != 64) return;
+          final id = RnsIdentity.fromPublicKey(pub);
+          _keepPeerId(id);
+          XprsPeople.instance.noteForCall(cs, XprsIdType.reticulum, id.hexHash,
+              evidence: XprsIdEvidence.observed, via: 'rns');
+          n++;
+        });
+      }
+      f.deleteSync();
       if (n > 0) {
-        LogService.instance.add('RNS: restored $n known peer(s) from cache');
+        LogService.instance
+            .add('RNS: $n known peer(s) moved from the old cache file');
       }
     } catch (_) {
-      // corrupt cache — start clean
+      // an unreadable cache is no peers, as it always was
     }
+  }
+
+  /// The XPRS peers the stored node list names, newest first: their keys
+  /// into the cache and who they are into the people record, so a returning
+  /// node can ask known posters at once instead of waiting for announces.
+  void _seedPeersFromStore() {
+    final st = _obStore;
+    if (st == null) return;
+    var n = 0;
+    for (final r in st.namedPeers(limit: _peerIdsMax ~/ 2).reversed) {
+      final pub = _hexToBytes('${r['pubkey'] ?? ''}');
+      final call = '${r['callsign'] ?? ''}'.trim();
+      if (pub == null || pub.isEmpty || call.isEmpty) continue;
+      try {
+        final id = RnsIdentity.fromPublicKey(pub);
+        _keepPeerId(id);
+        if (xprsIsCallsignShaped(call)) {
+          XprsPeople.instance.noteForCall(
+              call, XprsIdType.reticulum, id.hexHash,
+              evidence: XprsIdEvidence.observed, via: 'rns');
+        }
+        n++;
+      } catch (_) {/* a key that is not one */}
+    }
+    if (n > 0) LogService.instance.add('RNS: $n known peer(s) from the node list');
   }
 
   /// Backfill the FEED stream from Reticulum: ask every known relay peer (and
@@ -8242,7 +8285,7 @@ class RnsService {
     }
     // Every callsign peer answers at least its OWN posts — the decentralised
     // path that does not depend on anyone hosting the network.
-    for (final id in _callIdentity.values) {
+    for (final id in _peerIds.values) {
       targets.add(id);
     }
     final seen = <String>{};
@@ -8362,7 +8405,7 @@ class RnsService {
     for (final e in _relayDir.entries()) {
       targets.add(e.identity);
     }
-    for (final id in _callIdentity.values) {
+    for (final id in _peerIds.values) {
       targets.add(id);
     }
     final seen = <String>{};
@@ -8570,7 +8613,7 @@ class RnsService {
   RnsIdentity? _identityForPub(String pubHex) {
     for (final e in _callPub.entries) {
       if (e.value == pubHex) {
-        final id = _callIdentity[e.key];
+        final id = _identityOfCall(e.key);
         if (id != null) return id;
       }
     }
@@ -8905,7 +8948,7 @@ class RnsService {
         DateTime.now().millisecondsSinceEpoch - last < _profileTtlMs) {
       return;
     }
-    final id = _callIdentity[cs] ?? _relayDir.identityForPubkey(pub);
+    final id = _identityOfCall(cs) ?? _relayDir.identityForPubkey(pub);
     if (id == null) return; // no path yet — retried on the next announce/sweep
     _profileInFlight.add(cs);
     unawaited(_fetchProfileDirect(cs, id, pub));
@@ -8939,7 +8982,7 @@ class RnsService {
     if (fresh) return;
     // Reach the peer via its chat-announce identity, or (more reliably on a busy
     // hub) via its relay announce, which carries its npub in the directory.
-    final id = _callIdentity[cs] ?? _relayDir.identityForPubkey(pub);
+    final id = _identityOfCall(cs) ?? _relayDir.identityForPubkey(pub);
     if (id == null) return; // can't reach it directly yet — retried on announce
     _profileInFlight.add(cs);
     unawaited(_fetchProfileDirect(cs, id, pub));

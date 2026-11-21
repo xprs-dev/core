@@ -166,6 +166,42 @@ class ObservedStore {
     }
   }
 
+  /// The public key (hex) of node [id], or null. One keyed row.
+  String? pubkeyOf(String id) {
+    final db = _db;
+    if (db == null || id.isEmpty) return null;
+    try {
+      final rows =
+          db.select('SELECT pubkey FROM nodes WHERE id=? LIMIT 1', [id]);
+      if (rows.isEmpty) return null;
+      final p = rows.first['pubkey'] as String?;
+      return p == null || p.isEmpty ? null : p;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The nodes that can be NAMED (they announced a callsign), the ones
+  /// heard last first, at most [limit]: who to ask at start, before any
+  /// announce has arrived.
+  List<Map<String, Object?>> namedPeers({int limit = 256}) {
+    final db = _db;
+    if (db == null) return const [];
+    try {
+      return [
+        for (final r in db.select(
+            "SELECT id, pubkey, callsign FROM nodes WHERE xprs=1 "
+            "AND pubkey IS NOT NULL AND pubkey<>'' AND callsign IS NOT NULL "
+            "AND callsign<>'' ORDER BY last_seen DESC LIMIT ?",
+            [limit]))
+          {'id': r['id'], 'pubkey': r['pubkey'], 'callsign': r['callsign']}
+      ];
+    } catch (e) {
+      LogService.instance.add('ObservedStore: namedPeers failed: $e');
+      return const [];
+    }
+  }
+
   /// The most recently-heard nodes (last_seen ≥ [sinceMs]), newest first, capped
   /// at [limit]. Used on boot to hydrate RnsService's live registry so the wapp's
   /// graph shows the last-known network immediately instead of starting blank;

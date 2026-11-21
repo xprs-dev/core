@@ -1,6 +1,8 @@
 // What feeds XprsPeople, and the reader that closes the wait measured on
 // 2026-11-21: a station that knew an archiver's LXMF announce but not its
 // chat announce could not fetch a file from it.
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:reticulum/reticulum.dart';
@@ -78,6 +80,28 @@ void main() {
         'npub1qz3n7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f';
     people.stated(npub, 'meshtastic', 'MTA1B2C3D4', tsMs: 1795000000000);
     expect(people.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), npub);
+  });
+
+  test('the peer file of older builds is moved into the record once, and '
+      'removed', () async {
+    final rns = RnsService.instance;
+    final tmp = Directory.systemTemp.createTempSync('xprspeers');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final id = await RnsIdentity.generate();
+    final pubHex = id
+        .getPublicKey()
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    final f = File('${tmp.path}/call_peers.json')
+      ..writeAsStringSync(jsonEncode({'X3OLDY': pubHex, 'junk': 'zz'}));
+    rns.callPeersPath = f.path;
+    addTearDown(() => rns.callPeersPath = null);
+    rns.debugImportCallPeers();
+    expect(f.existsSync(), isFalse, reason: 'nothing writes it any more');
+    final got = rns.identityForCallsign('x3oldy');
+    expect(got, isNotNull);
+    expect(got!.hexHash, RnsIdentity.fromPublicKey(id.getPublicKey()).hexHash);
+    rns.debugImportCallPeers(); // no file: nothing to do, nothing thrown
   });
 
   test('a station named only by its LXMF announce is reachable by callsign',
