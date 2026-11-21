@@ -119,6 +119,7 @@ class XprsHistoryServer {
         'chainFor': _radio?.from,
         'directedReplays': [for (final r in _directed) r.from],
         'directedServed': directedServed,
+        'directedLost': directedLost,
       };
 
   final Map<String, int> _answeredIds = {};
@@ -153,6 +154,9 @@ class XprsHistoryServer {
   static const Duration directedInterPacket = Duration(milliseconds: 300);
   int directedServed = 0;
 
+  /// Directed replays stopped because a send was not delivered.
+  int directedLost = 0;
+
   /// Test seams for the directed lane: whether [to] has a path that is not
   /// shared airtime, and the send itself. Null is the real thing (the LXMF
   /// destination the network names for the callsign).
@@ -184,6 +188,7 @@ class XprsHistoryServer {
       '${(_kinds(p) ?? const <String>[]).join(',')}|${_base(p['only'] ?? '')}';
 
   void _stop(_Replay r) {
+    r.stopped = true;
     r.timer?.cancel();
     if (identical(_radio, r)) _radio = null;
     _directed.remove(r);
@@ -568,7 +573,6 @@ class XprsHistoryServer {
       if (r != null) unawaited(_sendDirected(from, r.encode()));
     }
 
-    control(202);
     var i = 0;
     final replay = _Replay(from, question);
     if (directedOnly) {
@@ -577,28 +581,60 @@ class XprsHistoryServer {
     } else {
       _radio = replay;
     }
-    replay.timer = Timer.periodic(
-        directedOnly ? directedInterPacket : interPacket, (t) {
-      if (i < page.length) {
-        // The stored wire, byte for byte — the author's packet, the author's
-        // signature (11.2.1, 12.2).
-        if (directedOnly) {
-          unawaited(_sendDirected(from, page[i]));
-        } else {
-          unawaited(_air('xprs-hist:$i', page[i], const Duration(seconds: 10),
-              to: from));
-        }
-        i++;
-        return;
-      }
+    // The directed lane is a datagram nobody retries (RnsService keeps its
+    // retry ladder for people's messages), so a send that fails is a page
+    // that never arrives while the log said it was served. Seen on X3PTZM:
+    // its route to a fresh station went the wrong way for forty seconds,
+    // the six packets of a directory answer were all lost, and the asker,
+    // told nothing, waited half an hour to ask again. A failed send stops
+    // the replay and says so; the asker asks again (XprsCatchup).
+    void lost(String what) {
       _stop(replay);
-      if (more) {
-        pages206++;
-      } else {
-        pages200++;
-      }
-      control(more ? 206 : 200);
-    });
+      directedLost++;
+      LogService.instance.add('XPRS: history for $from — directed $what '
+          'not delivered, replay stopped');
+    }
+
+    void start() {
+      replay.timer = Timer.periodic(
+          directedOnly ? directedInterPacket : interPacket, (t) {
+        if (i < page.length) {
+          // The stored wire, byte for byte — the author's packet, the
+          // author's signature (11.2.1, 12.2).
+          if (directedOnly) {
+            final n = i;
+            unawaited(_sendDirected(from, page[n]).then((ok) {
+              if (!ok && !replay.stopped) lost('packet ${n + 1}');
+            }));
+          } else {
+            unawaited(_air('xprs-hist:$i', page[i], const Duration(seconds: 10),
+                to: from));
+          }
+          i++;
+          return;
+        }
+        _stop(replay);
+        if (more) {
+          pages206++;
+        } else {
+          pages200++;
+        }
+        control(more ? 206 : 200);
+      });
+    }
+
+    if (!directedOnly) {
+      control(202);
+      start();
+    } else {
+      final r = _result(selfBase, from, cmdId, 202);
+      unawaited(() async {
+        final ok = r != null && await _sendDirected(from, r.encode());
+        if (replay.stopped) return;
+        if (!ok) return lost('202');
+        start();
+      }());
+    }
     LogService.instance.add('XPRS: history for $from — ${page.length} '
         'packet${page.length == 1 ? "" : "s"}${more ? ", more held" : ""}'
         '${directedOnly ? " (directed, beside the radio replay)" : ""}');
@@ -1025,6 +1061,7 @@ class XprsHistoryServer {
     directedPathOverride = null;
     directedTxOverride = null;
     directedServed = 0;
+    directedLost = 0;
     answered = 0;
     refused429 = 0;
     pages200 = pages206 = notFound = refusedBusy = refusedBudget = 0;
@@ -1037,4 +1074,5 @@ class _Replay {
   final String from;
   final String question;
   Timer? timer;
+  bool stopped = false;
 }

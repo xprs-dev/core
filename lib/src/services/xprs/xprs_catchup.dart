@@ -521,6 +521,8 @@ class XprsCatchup {
   /// Singleton, same reason as XprsMonitor.debugReset.
   void debugReset() {
     _directoryAskedAtMs.clear();
+    _directoryPending.clear();
+    _directoryAnswered.clear();
     _directoryWanted = const [];
     _directorySelf = '';
     directoryAsks = 0;
@@ -1130,6 +1132,14 @@ class XprsCatchup {
   /// result closes and moves the window, the cursor and the mark.
   void onResult(XprsPacket p) {
     final r = p['r'] ?? '';
+    final dirAsk = _directoryPending[r];
+    if (dirAsk != null) {
+      final code = int.tryParse(p['code'] ?? '') ?? 0;
+      if (code == 200 || code == 206 || code == 404 || code == 429) {
+        _directoryPending.remove(r);
+        _directoryAnswered.add(dirAsk);
+      }
+    }
     final followAsk = _followPending[r];
     if (followAsk != null) {
       _onFollowResult(r, followAsk, int.tryParse(p['code'] ?? '') ?? 0);
@@ -1339,6 +1349,14 @@ class XprsCatchup {
   /// the same file.
   static const Duration directoryEvery = Duration(minutes: 30);
 
+  /// How soon a directory ask nobody answered is asked again.
+  static const Duration directoryRetry = Duration(minutes: 5);
+
+  /// Directory asks in flight, by the ask's identifier, and the archivers
+  /// whose last one was answered (200/206/404). Bounded.
+  final Map<String, String> _directoryPending = {};
+  final Set<String> _directoryAnswered = {};
+
   /// How far back the ask reaches: a few of its announcements, the newest
   /// of which names the current files.
   static const Duration directoryWindow = Duration(hours: 1);
@@ -1378,14 +1396,28 @@ class XprsCatchup {
       // over Reticulum was never asked for its directory at all, and the
       // groups ranking of a station far from it stayed empty.
       if (_inEarshot(a, now)) continue;
-      if (now - (_directoryAskedAtMs[a] ?? 0) < directoryEvery.inMilliseconds) {
+      // Answered: not again for the half hour. Not answered: again after
+      // [directoryRetry]. An answer can be lost on the way (12.10.2: silence
+      // is evidence about the path), and waiting the half hour for one that
+      // never came is how a fresh station's groups stayed empty for the
+      // length of a test while the archiver had answered.
+      final wait = _directoryAnswered.contains(a) ? directoryEvery : directoryRetry;
+      if (now - (_directoryAskedAtMs[a] ?? 0) < wait.inMilliseconds) {
         continue;
       }
       _directoryAskedAtMs[a] = now;
+      _directoryAnswered.remove(a);
       directoryAsks++;
       final wire = 't:command f:$self d:$a ts:${_ts(now)} '
           'cmd:history kind:service only:$a '
           'since:${_ts(now - directoryWindow.inMilliseconds)}';
+      final asked = XprsPacket.parse(wire);
+      if (asked != null) {
+        if (_directoryPending.length >= 32) {
+          _directoryPending.remove(_directoryPending.keys.first);
+        }
+        _directoryPending[xprsIdentifier(asked)] = a;
+      }
       final send = sendOverride ?? XprsPublisher.instance.publishWire;
       await send(wire);
       LogService.instance.add('XPRS: asked $a for its directory (12.9)');
