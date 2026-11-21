@@ -641,6 +641,18 @@ class XprsPeople {
     return changed;
   }
 
+  /// What whoever goes by [callsign] stated of themselves, by kind, in the
+  /// order the kinds were first learned: for a screen on this device, which
+  /// received each statement within its scope. Empty for somebody who
+  /// stated nothing.
+  Map<String, List<String>> saidByCall(String callsign) {
+    final out = <String, List<String>>{};
+    for (final e in of(holderOfCall(callsign))) {
+      if (e.via == said) out.putIfAbsent(e.type, () => []).add(e.value);
+    }
+    return out;
+  }
+
   /// What [holder] stated of themselves that may be told to somebody at
   /// [reach] (`local`, `regional` or `global`): the identities whose scope
   /// admits it. An identity nobody stated has no scope and is never told.
