@@ -216,6 +216,22 @@ push to `d:`), as the conversation paths always did.
 
 All are codecs and state machines with no radio: test them on the host.
 
+## People (who a key is, how its holder is reached)
+
+### `XprsPeople` — `services/people/xprs_people.dart`
+One record per npub, with every identity learned under it: derived and issued
+callsigns, Reticulum identities, LXMF addresses, static Bluetooth and WLAN
+addresses, a node on another mesh, an e-mail address. Each with its evidence
+(`XprsIdEvidence`: relayed, observed, noted, signed, derived), first and last
+seen, and the scope its holder allows. **Any "who is this" or "how do I reach
+this callsign" lookup goes here**, not into a new map: `note` / `noteForCall`
+to file something, `of` / `valuesOf` for a holder's identities, `holders` /
+`personWith` for who has a value, `reachCall(callsign, type)` for another
+identity of whoever goes by a callsign, `claim` when a key proves a keyless
+record is its own. Kept in `people.zx`, bounded, writes batched.
+`RnsService.identityForCallsign` is the first reader (app
+`docs/plan-people.md` lists the tables still to be moved onto it).
+
 ## Storage (zx stores)
 
 ### `openStoreDb` / `openStoreDbWithSecret` / `openMemoryStoreDb` — `storage/store_db.dart`
