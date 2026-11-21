@@ -637,3 +637,23 @@ it where the first key was (keychain, else `station/device.json`) and wears it
 at once. Refused when the station key is the active profile (`isProfileKey`, a
 headless server). Tests point storage at a temp folder with
 `setStorageRootForTest(dir)` (storage_paths.dart) instead of the real data dir.
+
+### Archivers known from Reticulum — `RnsService.announcedArchivers()`
+
+`lib/src/services/reticulum/rns_service.dart`. The nodes whose announces say
+they are archivers (the relay announcement riding the chat announce after a
+NUL, or the dedicated `xprs/relay` one) and name their callsign, newest
+first, with uptime. Use it wherever a station needs an archiver it cannot
+hear on the air: `MeshService._reconsiderArchiver` offers them to
+`XprsArchiverChoice` as `rns` offers. Never hard-code an archiver; the
+transport says who archives.
+
+### An archiver's directory over the internet — `cmd:history kind:service only:<archiver>`
+
+`XprsCatchup._askDirectories`. An archiver's `t:service` (which names its
+directory and groups index) rides its radio and LAN only; a chosen archiver
+not heard on the air is asked for its own announcements of the last hour,
+at most every 30 minutes. The replay enters through the receive door and
+`XprsDirectoryConsumer.offer` reads it like a heard one. The same shape
+(one type, one station, a short window) fits any "latest record of X from
+its holder" need.
