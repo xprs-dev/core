@@ -189,10 +189,18 @@ class MediaFetch {
     required int maxMb,
     required bool userTapped,
   }) {
-    // Unknown size is treated as packet-lane-sized: the holder's 202/404 to a
-    // `have:AA` ask bounds it (the server refuses `have:` above the cap), so a
-    // wrong guess costs one small ask, never a large unasked transfer.
-    if (size == null || size <= kInlineMaxBytes) return MediaLane.packet;
+    if (size != null && size <= kInlineMaxBytes) return MediaLane.packet;
+    // Unknown size, and a person asked for it over a link: the lanes that
+    // carry any size. Left on the packet lane, a file over its cap was
+    // refused there (403) and nothing else was tried, so a tap on a picture
+    // whose size the message did not state fetched nothing. ([_runLanes]
+    // sends the packet-lane ask too: for a small file it answers first.)
+    if (size == null && userTapped && link) return MediaLane.bulkAndInternet;
+    // Unknown size and nobody asked, or no link: treated as packet-lane
+    // sized. The holder's 202/404 to a `have:AA` ask bounds it (the server
+    // refuses `have:` above the cap), so a wrong guess costs one small ask,
+    // never a large unasked transfer.
+    if (size == null) return MediaLane.packet;
     final withinCeiling = maxMb > 0 && size <= maxMb * 1024 * 1024;
     if (userTapped) {
       return link ? MediaLane.bulkAndInternet : MediaLane.internetOnly;
@@ -311,6 +319,12 @@ class MediaFetch {
         _askPacketLane(ref, from);
         _runInternet(ref, from);
       case MediaLane.bulkAndInternet:
+        // Size unknown: it may be small, and then the packet lane is the
+        // quickest answer and the only one a holder without a session gives.
+        if ((size ?? MediaRefIndex.instance.describe(ref.sha256)?.size) ==
+            null) {
+          _askPacketLane(ref, from);
+        }
         _askBulkLane(ref, from);
         _runInternet(ref, from);
       case MediaLane.internetOnly:

@@ -321,16 +321,7 @@ class XprsFetch {
     }
   }
 
-  static List<String> _tries(String? m) {
-    final t = (m ?? '').trim();
-    if (!t.startsWith('try ')) return const [];
-    return t
-        .substring(4)
-        .split(RegExp(r'[, ]+'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty && s != 'or')
-        .toList();
-  }
+  static List<String> _tries(String? m) => xprsTryCallsigns(m);
 
   /// Every packet off every lane, before the echo check: count the rows a
   /// fetch's page brought, and move its cursor.

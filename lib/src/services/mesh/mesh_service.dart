@@ -903,7 +903,10 @@ class MeshService {
           final bytes = await RnsService.instance.fetchContentAddressed(
               _hexBytes(shaHex),
               ext: ext,
-              fromCallsign: archiver);
+              fromCallsign: archiver,
+              // Pieces from several holders need the exact length; it was
+              // never passed, so every fetch here was whole-file from one.
+              size: XprsFileFetch.instance.exactSizeOf(shaHex));
           if (bytes == null || bytes.isEmpty) return null;
           if (destDir != null) {
             try {

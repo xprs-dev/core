@@ -491,8 +491,23 @@ class XprsFileFetch {
   /// one. The caller may pass its own.
   static const Duration defaultTimeout = Duration(minutes: 90);
 
+  /// What is still wanted, by digest: who asks, and who was asked. A fetch is
+  /// ONE per file however many callers and holders it has: a second caller
+  /// joins it, and every holder named for the file is one more source.
+  final Map<String, _Want> _wants = {};
+
+  /// How many holders one fetch asks at most. Each ask is airtime and a
+  /// metered answer at the far end (section 30.2).
+  static const int maxHolders = 6;
+
   /// Ask [archiver] for the file named by [shaHex]; complete with the local
-  /// path once it has arrived and verified, or null on any refusal or timeout.
+  /// path once it has arrived and verified, or null when every holder asked
+  /// refused, or on timeout.
+  ///
+  /// Asking again for a file already being fetched joins that fetch, and
+  /// [archiver], when it was not asked yet, is asked as well. A holder that
+  /// answers `404`/`429` with `m:try` names others (spec 8.1, 12.9, 30.2):
+  /// they are asked, one hop and no further.
   Future<String?> fetch({
     required String archiver,
     required String shaHex,
@@ -502,31 +517,78 @@ class XprsFileFetch {
     String? destDir,
     Duration timeout = defaultTimeout,
     Duration? acceptWithin,
+    int exactSize = 0,
   }) async {
     final sha = shaHex.toLowerCase();
     final existing = _waiting[sha];
-    if (existing != null) return existing.future;
+    if (existing != null) {
+      if (exactSize > 0) _wants[sha]?.exactSize = exactSize;
+      _askHolder(sha, archiver);
+      return existing.future;
+    }
+    if (MediaRef.hexToB64u(sha) == null) {
+      LogService.instance.add('XPRS: cmd:file for a malformed digest — not sent');
+      return null;
+    }
+    final done = Completer<String?>();
+    _waiting[sha] = done;
+    _wants[sha] = _Want(selfCallsign, ext, off)..exactSize = exactSize;
+    if (destDir != null) _destDir[sha] = destDir;
+    if (!_askHolder(sha, archiver)) {
+      _end(sha, 'could not be asked for');
+      return done.future;
+    }
 
-    final ref = MediaRef.hexToB64u(sha);
-    if (ref == null) return null;
-    final b = StringBuffer('t:command f:$selfCallsign d:$archiver '
-        'ts:${xprsNowTs()} cmd:file file:$ref');
-    if (ext.isNotEmpty) b.write('.$ext');
-    if (off > 0) b.write(' off:$off');
+    Timer(timeout, () {
+      if (identical(_waiting[sha], done)) _end(sha, 'timed out');
+    });
+    // A station that holds the file answers 202 within seconds; one that does
+    // not answers 404 -- or, on a board that has never heard of the ref, says
+    // nothing at all. [timeout] is sized for the TRANSFER (a 60 MB APK over
+    // the bulk lane is an hour), so without this window an unanswered ask
+    // held the caller for that whole hour. Measured on the C61: the updater
+    // asked the ESP32 for a release it could not possibly hold and sat at 0%
+    // re-airing the same wire every 45 s, and the HTTPS fallback that would
+    // have worked in a minute was never reached. Once a 202 is in hand the
+    // transfer timeout governs, exactly as before.
+    if (acceptWithin != null) {
+      Timer(acceptWithin, () {
+        if (!identical(_waiting[sha], done) || _accepted.contains(sha)) return;
+        _end(sha, 'unanswered after ${acceptWithin.inSeconds}s');
+      });
+    }
+    return done.future;
+  }
+
+  /// The exact length of a file being fetched, when its caller stated one,
+  /// else 0. The internet lane needs it to fetch by pieces from several
+  /// holders ([RnsService.fetchContentAddressed]); without it the lane can
+  /// only take the whole file from one.
+  int exactSizeOf(String shaHex) => _wants[shaHex.toLowerCase()]?.exactSize ?? 0;
+
+  /// Ask one more holder for a file already wanted. False when it was asked
+  /// before, the fetch is over, or the bound on holders is reached.
+  bool _askHolder(String sha, String holder, {bool redirected = false}) {
+    final want = _wants[sha];
+    final h = holder.trim().toUpperCase();
+    if (want == null || h.isEmpty) return false;
+    if (want.asked.contains(h) || want.asked.length >= maxHolders) return false;
+    final b = StringBuffer('t:command f:${want.self} d:$h '
+        'ts:${xprsNowTs()} cmd:file file:${MediaRef.hexToB64u(sha)}');
+    if (want.ext.isNotEmpty) b.write('.${want.ext}');
+    if (want.off > 0) b.write(' off:${want.off}');
     final wire = b.toString();
     final p = XprsPacket.parse(wire);
     if (p == null || !p.fits) {
       LogService.instance.add('XPRS: cmd:file ask does not fit — not sent');
-      return null;
+      return false;
     }
     final id = xprsIdentifier(p); // before signing, like every other ask
-    final done = Completer<String?>();
-    _waiting[sha] = done;
-    if (destDir != null) _destDir[sha] = destDir;
-    _pending[id] = _Ask(archiver, sha);
-
-    LogService.instance.add('XPRS: asking $archiver for ${sha.substring(0, 8)}');
-    await XprsPublisher.instance.publishWire(wire);
+    want.asked.add(h);
+    _pending[id] = _Ask(h, sha, redirected: redirected);
+    LogService.instance.add('XPRS: asking $h for ${sha.substring(0, 8)}'
+        '${redirected ? ' (named by another holder)' : ''}');
+    unawaited(XprsPublisher.instance.publishWire(wire));
 
     // Race the internet middle. The XPRS bracket stays authoritative for
     // control, but the bytes take whichever lane delivers a verified copy
@@ -538,9 +600,13 @@ class XprsFileFetch {
       // The internet middle needs a hub; a phone on battery holds one up
       // for the fetch (RnsSession) and lets it go when the bytes are in.
       unawaited(CoreHost.requestHub('fetch:${sha.substring(0, 8)}', const Duration(minutes: 15)));
-      unawaited(net(sha, ext, archiver, _destDir[sha]).then((path) {
+      unawaited(net(sha, want.ext, h, _destDir[sha]).then((path) {
         if (path != null) _completeFromInternet(sha, path);
-      }).catchError((_) => null));
+      }).catchError((Object e) {
+        LogService.instance.add('XPRS: internet lane for '
+            '${sha.substring(0, 8)} from $h failed: $e');
+        return null;
+      }));
     }
 
     // Re-air the ask until it is answered.
@@ -555,8 +621,8 @@ class XprsFileFetch {
     // The SAME wire is re-published each time, so `ts:` and therefore the
     // section-5 identifier stay put and the answer still correlates; the advert
     // key is refreshed rather than a second frame added.
-    final retry = Timer.periodic(askEvery, (t) {
-      if (done.isCompleted || !_pending.containsKey(id)) {
+    want.timers.add(Timer.periodic(askEvery, (t) {
+      if (!_pending.containsKey(id)) {
         t.cancel();
         return;
       }
@@ -569,42 +635,30 @@ class XprsFileFetch {
       //
       // §13.7.2 gates it on evidence: re-asking a holder we can no longer hear
       // teaches us nothing and costs a duty cycle everyone shares.
-      final reachable =
-          XprsMonitor.instance.stations[archiver.toUpperCase()] != null;
+      final reachable = XprsMonitor.instance.stations[h] != null;
       if (!XprsRetryLedger.instance.may(id, reachable: reachable)) return;
       XprsRetryLedger.instance.spend(id);
       unawaited(XprsPublisher.instance.publishWire(wire));
-    });
+    }));
+    return true;
+  }
 
-    void giveUp(String why) {
-      retry.cancel();
-      if (done.isCompleted) return;
-      _pending.remove(id);
-      _waiting.remove(sha);
-      _destDir.remove(sha);
-      _accepted.remove(sha);
+  /// The fetch of [sha] is over: with [path] when the bytes are in hand, with
+  /// null and [why] when they are not coming.
+  void _end(String sha, String? why, {String? path}) {
+    final want = _wants.remove(sha);
+    for (final t in want?.timers ?? const <Timer>[]) {
+      t.cancel();
+    }
+    _pending.removeWhere((_, a) => a.sha == sha);
+    _destDir.remove(sha);
+    _accepted.remove(sha);
+    final w = _waiting.remove(sha);
+    if (w == null || w.isCompleted) return;
+    if (why != null) {
       LogService.instance.add('XPRS: cmd:file ${sha.substring(0, 8)} $why');
-      done.complete(null);
     }
-
-    Timer(timeout, () => giveUp('timed out'));
-    // A station that holds the file answers 202 within seconds; one that does
-    // not answers 404 -- or, on a board that has never heard of the ref, says
-    // nothing at all. [timeout] is sized for the TRANSFER (a 60 MB APK over
-    // the bulk lane is an hour), so without this window an unanswered ask
-    // held the caller for that whole hour. Measured on the C61: the updater
-    // asked the ESP32 for a release it could not possibly hold and sat at 0%
-    // re-airing the same wire every 45 s, and the HTTPS fallback that would
-    // have worked in a minute was never reached. Once a 202 is in hand the
-    // transfer timeout governs, exactly as before.
-    if (acceptWithin != null) {
-      Timer(acceptWithin, () {
-        if (done.isCompleted || _accepted.contains(sha)) return;
-        giveUp('unanswered by $archiver after ${acceptWithin.inSeconds}s');
-      });
-    }
-    unawaited(done.future.whenComplete(retry.cancel));
-    return done.future;
+    w.complete(path);
   }
 
   /// A `t:result` arrived. Chained after XprsCatchup's own handler.
@@ -631,11 +685,23 @@ class XprsFileFetch {
       case 400:
       case 500:
         _pending.remove(p['r']);
-        final w = _waiting.remove(ask.sha);
         LogService.instance.add(
             'XPRS: ${ask.station} refused ${ask.sha.substring(0, 8)} ($code)'
             '${p.has('m') ? ' — ${p['m']}' : ''}');
-        if (w != null && !w.isCompleted) w.complete(null);
+        // It may have said who does hold it (`m:try`, spec 8.1, 12.9, 30.2).
+        // One hop: a holder we were sent to is not asked where to go next.
+        if (!ask.redirected) {
+          final self =
+              NostrCrypto.bareCallsign(_wants[ask.sha]?.self ?? '');
+          for (final c in xprsTryCallsigns(p['m'])) {
+            if (NostrCrypto.bareCallsign(c) == self) continue;
+            _askHolder(ask.sha, c, redirected: true);
+          }
+        }
+        // Over only when nobody asked is still to answer.
+        if (!_pending.values.any((a) => a.sha == ask.sha)) {
+          _end(ask.sha, 'refused by every holder asked');
+        }
         return;
       default:
         return;
@@ -671,26 +737,19 @@ class XprsFileFetch {
   /// the same digest finds the waiter gone and is a no-op.
   void _completeFromInternet(String shaHex, String path) {
     final sha = shaHex.toLowerCase();
-    _destDir.remove(sha);
-    _accepted.remove(sha);
-    final w = _waiting.remove(sha);
-    _pending.removeWhere((_, a) => a.sha == sha);
-    if (w == null || w.isCompleted) return;
+    if (!_waiting.containsKey(sha)) return;
     LogService.instance
         .add('XPRS: ${sha.substring(0, 8)} arrived over the internet');
-    w.complete(path);
+    _end(sha, null, path: path);
   }
 
   /// The bulk lane finished and the file verified against its digest.
   void noteInboundComplete(String shaHex, String path) {
-    _destDir.remove(shaHex.toLowerCase());
-    _accepted.remove(shaHex.toLowerCase());
-    final w = _waiting.remove(shaHex.toLowerCase());
-    _pending.removeWhere((_, a) => a.sha == shaHex.toLowerCase());
-    if (w == null || w.isCompleted) return;
+    final sha = shaHex.toLowerCase();
+    if (!_waiting.containsKey(sha)) return;
     LogService.instance
-        .add('XPRS: ${shaHex.substring(0, 8)} arrived over the bulk lane');
-    w.complete(path);
+        .add('XPRS: ${sha.substring(0, 8)} arrived over the bulk lane');
+    _end(sha, null, path: path);
   }
 
   bool get busy => _waiting.isNotEmpty;
@@ -698,11 +757,32 @@ class XprsFileFetch {
   Map<String, dynamic> statusJson() => {
         'pending': _pending.length,
         'waiting': [for (final s in _waiting.keys) s.substring(0, 8)],
+        'holders': {
+          for (final e in _wants.entries) e.key.substring(0, 8): e.value.asked
+        },
       };
 }
 
 class _Ask {
   final String station;
   final String sha;
-  _Ask(this.station, this.sha);
+
+  /// Asked because another holder named it in `m:try`.
+  final bool redirected;
+  _Ask(this.station, this.sha, {this.redirected = false});
+}
+
+/// One file being fetched: who wants it and which holders were asked.
+class _Want {
+  _Want(this.self, this.ext, this.off);
+  final String self;
+  final String ext;
+  final int off;
+  final List<String> asked = [];
+  final List<Timer> timers = [];
+
+  /// The file's length in bytes when the caller knows it EXACTLY (a release
+  /// feed, a station's listing), else 0. A message's `size:` is rounded and
+  /// is not this.
+  int exactSize = 0;
 }

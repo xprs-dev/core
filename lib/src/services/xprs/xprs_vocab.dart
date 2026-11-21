@@ -662,3 +662,17 @@ String xprsNickValue(String name) {
   final s = out.toString();
   return s.length > 16 ? s.substring(0, 16) : s;
 }
+
+/// The callsigns after `try` in a result's `m:` (spec 30.2: a comma list,
+/// best first), or none. Lenient, as the spec asks of a reader: spaces and
+/// the word `or` between callsigns are accepted, which older stations wrote.
+List<String> xprsTryCallsigns(String? m) {
+  final t = (m ?? '').trim();
+  if (!t.startsWith('try ')) return const [];
+  return t
+      .substring(4)
+      .split(RegExp(r'[, ]+'))
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty && s != 'or')
+      .toList();
+}
