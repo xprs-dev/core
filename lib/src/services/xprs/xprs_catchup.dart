@@ -44,6 +44,7 @@ import 'xprs_ingest.dart';
 import 'xprs_monitor.dart';
 import 'xprs_owned_stations.dart';
 import 'xprs_packet.dart';
+import 'xprs_callsign.dart';
 import 'xprs_presence.dart';
 import 'xprs_publisher.dart';
 import 'xprs_vocab.dart';
@@ -63,6 +64,17 @@ class XprsCatchup {
   /// announcedArchivers otherwise).
   @visibleForTesting
   List<String> Function()? announcedOverride;
+
+  /// The stations heard over the internet, for a test (XprsMonitor.remote
+  /// otherwise).
+  @visibleForTesting
+  List<String> Function()? remoteOverride;
+
+  /// A station's callsign: shaped like one (a bare word such as `XPRS`, which
+  /// some node announces as its name, is not), and a station rather than a
+  /// person, a device or a group.
+  static bool _isStationCall(String c) =>
+      xprsIsCallsignShaped(c) && xprsKindOf(c) == XprsKind.station;
 
   /// How many archivers are asked for their directory, at most: one ask a
   /// sweep, each archiver once in [directoryEvery].
@@ -783,6 +795,18 @@ class XprsCatchup {
     // the federation's, not one archiver's).
     final announced = announcedOverride?.call() ??
         [for (final a in RnsService.instance.announcedArchivers()) a.callsign];
+    // And the stations that reached us over the internet themselves, newest
+    // first. A hub forwards an announce when it is sent, at most hourly, and
+    // not always: a fresh station missed X3PTZM's 19:57 announce while
+    // X3PTZM was asking it for history, so it knew the archiver and never
+    // asked it where its directory was. Whoever answers with a `t:service
+    // serve:archive` is an archiver (XprsDirectoryConsumer.archiveClaimMs);
+    // whoever does not costs one ask.
+    final heard = remoteOverride?.call() ??
+        (XprsMonitor.instance.remote.entries.toList()
+              ..sort((x, y) => y.value.compareTo(x.value)))
+            .map((e) => e.key)
+            .toList();
     // Remembered, because at this point of the sweep the one ask slot is
     // usually taken by the history ask sent a moment ago: the directory ask
     // then goes out when that one is answered ([_land]). Asked only here, it
@@ -790,7 +814,10 @@ class XprsCatchup {
     // asked a reachable archiver for messages for 40 minutes and never once
     // for its directory, and its groups ranking stayed empty.
     _directorySelf = selfCallsign;
-    _directoryWanted = {...named, ...announced.map(_base)}
+    _directoryWanted = {
+      ...named,
+      ...[...announced, ...heard].map(_base).where(_isStationCall),
+    }
         .where((c) => c.isNotEmpty && c != _base(selfCallsign))
         .take(directoryArchivers)
         .toList();
