@@ -107,7 +107,7 @@ abstract final class XprsIdType {
 }
 
 /// How an identity was learned, weakest first. A reader asks for a minimum.
-enum XprsEvidence {
+enum XprsIdEvidence {
   /// Somebody else said it (a gateway's `via:`).
   relayed,
 
@@ -136,7 +136,7 @@ class XprsIdentity {
 
   final String type;
   final String value;
-  XprsEvidence evidence;
+  XprsIdEvidence evidence;
   final int firstMs;
   int lastMs;
 
@@ -230,11 +230,11 @@ class XprsPeople {
         'SELECT holder,type,value,evidence,first_ms,last_ms,via,scope '
         'FROM identities ORDER BY last_ms ASC',
       )) {
-        final e = (r['evidence'] as int).clamp(0, XprsEvidence.values.length - 1);
+        final e = (r['evidence'] as int).clamp(0, XprsIdEvidence.values.length - 1);
         final id = XprsIdentity(
           r['type'] as String,
           r['value'] as String,
-          XprsEvidence.values[e],
+          XprsIdEvidence.values[e],
           r['first_ms'] as int,
           r['last_ms'] as int,
           via: r['via'] as String? ?? '',
@@ -319,7 +319,7 @@ class XprsPeople {
   /// "observed" again by the next announce that carries it. [scope] is the
   /// holder's own word and replaces the one held when given.
   bool note(String holder, String type, String value,
-      {required XprsEvidence evidence, String via = '', String? scope}) {
+      {required XprsIdEvidence evidence, String via = '', String? scope}) {
     final h = holder.trim();
     final v = XprsIdType.normalise(type, value);
     if (h.isEmpty || type.isEmpty || v.isEmpty) return false;
@@ -390,7 +390,7 @@ class XprsPeople {
       // failing that, simply the one touched longest ago.
       String? victim;
       for (final e in _by.entries) {
-        if (!e.value.any((i) => i.evidence.index >= XprsEvidence.signed.index)) {
+        if (!e.value.any((i) => i.evidence.index >= XprsIdEvidence.signed.index)) {
           victim = e.key;
           break;
         }
@@ -435,7 +435,7 @@ class XprsPeople {
   /// most (what was only observed of a stranger stays observed), and the
   /// record is gone. A record that does not exist costs nothing.
   void claim(String npub, String type, String value,
-      {XprsEvidence evidence = XprsEvidence.signed}) {
+      {XprsIdEvidence evidence = XprsIdEvidence.signed}) {
     final from = unclaimed(type, value);
     final list = _by[from];
     note(npub, type, value, evidence: evidence);
@@ -452,12 +452,51 @@ class XprsPeople {
     forget(from);
   }
 
+  /// The identity type of a callsign: the derived kind for `X1` to `X5`,
+  /// an issued one for anything else (XPRS.md 3, 6.4.2).
+  static String callType(String callsign) {
+    final c = callsign.trim().toUpperCase();
+    return c.length >= 2 &&
+            c.codeUnitAt(0) == 0x58 /* X */ &&
+            c.codeUnitAt(1) >= 0x31 &&
+            c.codeUnitAt(1) <= 0x35
+        ? XprsIdType.callsign
+        : XprsIdType.licence;
+  }
+
+  /// Whoever goes by [callsign]: the person when a key is known for it,
+  /// else the keyless record of that callsign. Never empty for a callsign.
+  String holderOfCall(String callsign) {
+    final t = callType(callsign);
+    return personWith(t, callsign) ?? unclaimed(t, callsign);
+  }
+
+  /// [callsign] has the identity [type]:[value], filed under the person
+  /// when the key is known and under the callsign's keyless record until
+  /// then ([claim] folds it in when the key arrives).
+  bool noteForCall(String callsign, String type, String value,
+      {required XprsIdEvidence evidence, String via = ''}) {
+    final c = XprsIdType.normalise(callType(callsign), callsign);
+    if (c.isEmpty) return false;
+    final holder = holderOfCall(c);
+    if (isUnclaimed(holder) && (_by[holder]?.isEmpty ?? true)) {
+      // The record names itself: its callsign is its first identity.
+      note(holder, callType(c), c, evidence: XprsIdEvidence.observed, via: via);
+    }
+    return note(holder, type, value, evidence: evidence, via: via);
+  }
+
+  /// Another identity of whoever goes by [callsign], best first.
+  List<String> reachCall(String callsign, String wanted,
+          {XprsIdEvidence min = XprsIdEvidence.relayed}) =>
+      reach(callType(callsign), callsign, wanted, min: min);
+
   // ── Reading ─────────────────────────────────────────────────────────────
 
   /// What [holder] has, the strongest evidence first and, within it, the
   /// one seen last. [type] narrows it; [min] leaves out weaker evidence.
   List<XprsIdentity> of(String holder,
-      {String? type, XprsEvidence min = XprsEvidence.relayed}) {
+      {String? type, XprsIdEvidence min = XprsIdEvidence.relayed}) {
     final list = _by[holder.trim()];
     if (list == null) return const [];
     final out = [
@@ -474,14 +513,14 @@ class XprsPeople {
 
   /// The values of one type [holder] has, best first.
   List<String> valuesOf(String holder, String type,
-          {XprsEvidence min = XprsEvidence.relayed}) =>
+          {XprsIdEvidence min = XprsIdEvidence.relayed}) =>
       [for (final e in of(holder, type: type, min: min)) e.value];
 
   /// Who has [type]:[value], the strongest claim first. Several when it is
   /// contested; a caller that needs one takes the first and knows it may be
   /// one of several.
   List<String> holders(String type, String value,
-      {XprsEvidence min = XprsEvidence.relayed, bool people = false}) {
+      {XprsIdEvidence min = XprsIdEvidence.relayed, bool people = false}) {
     final v = XprsIdType.normalise(type, value);
     final hs = _index[_k(type, v)];
     if (hs == null) return const [];
@@ -504,7 +543,7 @@ class XprsPeople {
   /// The person (npub) who has [type]:[value], or null. The strongest claim
   /// when there are several.
   String? personWith(String type, String value,
-      {XprsEvidence min = XprsEvidence.relayed}) {
+      {XprsIdEvidence min = XprsIdEvidence.relayed}) {
     final hs = holders(type, value, min: min, people: true);
     return hs.isEmpty ? null : hs.first;
   }
@@ -518,7 +557,7 @@ class XprsPeople {
   /// of the station whose callsign is X3PTZM". Through the person when there
   /// is one, else through the keyless record. Best first.
   List<String> reach(String type, String value, String wanted,
-      {XprsEvidence min = XprsEvidence.relayed}) {
+      {XprsIdEvidence min = XprsIdEvidence.relayed}) {
     final out = <String>[];
     for (final h in holders(type, value)) {
       for (final v in valuesOf(h, wanted, min: min)) {

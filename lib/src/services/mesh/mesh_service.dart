@@ -35,6 +35,7 @@ import '../xprs/xprs_group_index.dart';
 import '../xprs/xprs_group_read.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_catchup.dart';
+import '../people/xprs_people.dart';
 import '../xprs/xprs_line.dart';
 import '../xprs/xprs_tcp.dart';
 import '../xprs/xprs_command_courier.dart';
@@ -483,6 +484,11 @@ class MeshService {
           ..install();
         XprsGossip.instance
             .init(wappsDataStorage(prefs).getAbsolutePath('xprs_gossip.zx'));
+        // Who each key is and how its holder is reached (XprsPeople): inside
+        // the profile, encrypted with it, since it holds people's addresses.
+        // In memory when the profile is still locked.
+        XprsPeople.instance
+            .init(wappsDataStorage(prefs).getAbsolutePath('people.zx'));
         if (prefs.xprsAlwaysOn) {
           // 12.9.4: the table stops being pocket-sized.
           XprsGossip.instance.maxBytes = 256 * 1024 * 1024;

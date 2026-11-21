@@ -49,6 +49,7 @@ import 'xprs_file_acl.dart';
 import 'xprs_inline_file.dart';
 import 'xprs_sig.dart';
 import 'xprs_profiles.dart';
+import '../people/xprs_people.dart';
 import 'xprs_mailbox.dart';
 import 'xprs_vocab.dart';
 import '../background_service.dart';
@@ -908,6 +909,15 @@ class XprsIngest {
         return;
       }
       hook(callsign, hex);
+      // The person, and this callsign as one of theirs: derived when the
+      // key's own arithmetic gives it (3), signed when it is an issued one
+      // the key bound (6.4.2). What was learned of the callsign before its
+      // key was known becomes the person's.
+      XprsPeople.instance.claim(
+          npub, XprsPeople.callType(callsign), callsign,
+          evidence: NostrCrypto.callsignMatchesKey(callsign, hex)
+              ? XprsIdEvidence.derived
+              : XprsIdEvidence.signed);
       // A decoration that arrived before this key could not be checked then.
       XprsProfiles.instance.keyLearned(callsign);
       // And a group act it signed before we held its key (26.3.1: a member's

@@ -26,15 +26,15 @@ void main() {
   test('identities accumulate under the key, and are found both ways', () {
     expect(
         p.note(_joao, XprsIdType.callsign, 'x1qz3n-2',
-            evidence: XprsEvidence.derived),
+            evidence: XprsIdEvidence.derived),
         isTrue);
-    p.note(_joao, XprsIdType.licence, 'CT1ABC', evidence: XprsEvidence.signed);
+    p.note(_joao, XprsIdType.licence, 'CT1ABC', evidence: XprsIdEvidence.signed);
     p.note(_joao, XprsIdType.licence, 'EA/CT1ABC',
-        evidence: XprsEvidence.signed);
+        evidence: XprsIdEvidence.signed);
     p.note(_joao, XprsIdType.reticulum, _rns.toUpperCase(),
-        evidence: XprsEvidence.observed, via: 'rns');
+        evidence: XprsIdEvidence.observed, via: 'rns');
     p.note(_joao, XprsIdType.ble, 'aa-bb-cc-dd-ee-ff',
-        evidence: XprsEvidence.observed);
+        evidence: XprsIdEvidence.observed);
 
     expect(p.valuesOf(_joao, XprsIdType.callsign), ['X1QZ3N'],
         reason: 'whole and uppercase, no device suffix');
@@ -53,48 +53,48 @@ void main() {
   test('a value that cannot be of its type is refused', () {
     expect(
         p.note(_joao, XprsIdType.ble, 'not a mac',
-            evidence: XprsEvidence.observed),
+            evidence: XprsIdEvidence.observed),
         isFalse);
     expect(
         p.note(_joao, XprsIdType.reticulum, 'xyz',
-            evidence: XprsEvidence.observed),
+            evidence: XprsIdEvidence.observed),
         isFalse);
     expect(
         p.note(_joao, XprsIdType.meshtastic, 'MTA1B2C3D',
-            evidence: XprsEvidence.relayed),
+            evidence: XprsIdEvidence.relayed),
         isFalse,
         reason: 'matched whole: two letters and eight digits (3.2)');
     expect(
-        p.note(_joao, XprsIdType.email, 'nobody', evidence: XprsEvidence.noted),
+        p.note(_joao, XprsIdType.email, 'nobody', evidence: XprsIdEvidence.noted),
         isFalse);
     expect(p.holderCount, 0);
   });
 
   test('evidence only rises; a reader asks for a minimum', () {
-    p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsEvidence.observed);
+    p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsIdEvidence.observed);
     expect(
-        p.of(_joao, type: XprsIdType.lxmf, min: XprsEvidence.signed), isEmpty);
+        p.of(_joao, type: XprsIdType.lxmf, min: XprsIdEvidence.signed), isEmpty);
     expect(
-        p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsEvidence.signed),
+        p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsIdEvidence.signed),
         isTrue,
         reason: 'the signed lx: is news');
     expect(
-        p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsEvidence.observed),
+        p.note(_joao, XprsIdType.lxmf, _rns, evidence: XprsIdEvidence.observed),
         isFalse);
     expect(p.of(_joao, type: XprsIdType.lxmf).single.evidence,
-        XprsEvidence.signed,
+        XprsIdEvidence.signed,
         reason: 'the next announce does not weaken it');
     // The strongest first.
-    p.note(_joao, XprsIdType.lxmf, 'ab' * 16, evidence: XprsEvidence.observed);
+    p.note(_joao, XprsIdType.lxmf, 'ab' * 16, evidence: XprsIdEvidence.observed);
     expect(p.valuesOf(_joao, XprsIdType.lxmf).first, _rns);
   });
 
   test('two keys may hold one issued callsign: both kept, marked contested',
       () {
-    p.note(_joao, XprsIdType.licence, 'CT1ABC', evidence: XprsEvidence.signed);
+    p.note(_joao, XprsIdType.licence, 'CT1ABC', evidence: XprsIdEvidence.signed);
     expect(p.contested(XprsIdType.licence, 'CT1ABC'), isFalse);
     now += 1000;
-    p.note(_ana, XprsIdType.licence, 'CT1ABC', evidence: XprsEvidence.signed);
+    p.note(_ana, XprsIdType.licence, 'CT1ABC', evidence: XprsIdEvidence.signed);
     expect(p.contested(XprsIdType.licence, 'CT1ABC'), isTrue);
     expect(p.holders(XprsIdType.licence, 'CT1ABC'), [_ana, _joao],
         reason: 'equal evidence: the one seen last first; nothing merged');
@@ -105,9 +105,9 @@ void main() {
     final node = XprsPeople.unclaimed(XprsIdType.meshtastic, 'mta1b2c3d4');
     expect(node, '~meshtastic:MTA1B2C3D4');
     p.note(node, XprsIdType.meshtastic, 'MTA1B2C3D4',
-        evidence: XprsEvidence.relayed, via: 'X3DCK0');
+        evidence: XprsIdEvidence.relayed, via: 'X3DCK0');
     p.note(node, XprsIdType.ble, 'AA:BB:CC:DD:EE:01',
-        evidence: XprsEvidence.observed);
+        evidence: XprsIdEvidence.observed);
     expect(p.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), isNull,
         reason: 'heard, and nobody\'s yet');
     expect(p.holders(XprsIdType.meshtastic, 'MTA1B2C3D4'), [node]);
@@ -117,13 +117,13 @@ void main() {
     expect(p.of(node), isEmpty, reason: 'the keyless record is gone');
     final ble = p.of(_joao, type: XprsIdType.ble).single;
     expect(ble.value, 'AA:BB:CC:DD:EE:01');
-    expect(ble.evidence, XprsEvidence.observed,
+    expect(ble.evidence, XprsIdEvidence.observed,
         reason: 'what was only observed of the node stays observed');
   });
 
   test('a withdrawn identity is gone', () {
     p.note(_joao, XprsIdType.email, 'Joao@Example.org',
-        evidence: XprsEvidence.signed, scope: 'PT,ES');
+        evidence: XprsIdEvidence.signed, scope: 'PT,ES');
     final e = p.of(_joao, type: XprsIdType.email).single;
     expect(e.value, 'joao@example.org');
     expect(e.scope, 'PT,ES');
@@ -135,11 +135,11 @@ void main() {
   test('bounded: so many of a type per holder, the weakest and oldest leave',
       () {
     p.note(_joao, XprsIdType.reticulum, 'ff' * 16,
-        evidence: XprsEvidence.signed);
+        evidence: XprsIdEvidence.signed);
     for (var i = 0; i < XprsPeople.perType + 3; i++) {
       now += 1000;
       p.note(_joao, XprsIdType.reticulum, i.toRadixString(16).padLeft(32, '0'),
-          evidence: XprsEvidence.observed);
+          evidence: XprsIdEvidence.observed);
     }
     final kept = p.valuesOf(_joao, XprsIdType.reticulum);
     expect(kept, hasLength(XprsPeople.perType));
@@ -155,12 +155,12 @@ void main() {
     final path = '${tmp.path}/people.zx';
     p.init(path);
     expect(p.ready, isTrue);
-    p.note(_joao, XprsIdType.callsign, 'X1QZ3N', evidence: XprsEvidence.derived);
+    p.note(_joao, XprsIdType.callsign, 'X1QZ3N', evidence: XprsIdEvidence.derived);
     p.note(_joao, XprsIdType.reticulum, _rns,
-        evidence: XprsEvidence.observed, via: 'rns');
+        evidence: XprsIdEvidence.observed, via: 'rns');
     p.note(_joao, XprsIdType.email, 'joao@example.org',
-        evidence: XprsEvidence.signed, scope: 'local');
-    p.note(_ana, XprsIdType.callsign, 'X3PTZM', evidence: XprsEvidence.derived);
+        evidence: XprsIdEvidence.signed, scope: 'local');
+    p.note(_ana, XprsIdType.callsign, 'X3PTZM', evidence: XprsIdEvidence.derived);
     p.remove(_joao, XprsIdType.email, 'joao@example.org');
     p.close();
     p.debugReset();
@@ -171,7 +171,7 @@ void main() {
     expect(p.holderCount, 2);
     expect(p.reach(XprsIdType.callsign, 'X1QZ3N', XprsIdType.reticulum), [_rns]);
     final r = p.of(_joao, type: XprsIdType.reticulum).single;
-    expect(r.evidence, XprsEvidence.observed);
+    expect(r.evidence, XprsIdEvidence.observed);
     expect(r.via, 'rns');
     expect(p.of(_joao, type: XprsIdType.email), isEmpty);
     expect(p.personWith(XprsIdType.callsign, 'X3PTZM'), _ana);
@@ -181,18 +181,18 @@ void main() {
     final tmp = Directory.systemTemp.createTempSync('xprspeople');
     addTearDown(() => tmp.deleteSync(recursive: true));
     p.init('${tmp.path}/people.zx');
-    p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsEvidence.observed);
+    p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsIdEvidence.observed);
     p.flush();
     final t0 = now;
     for (var i = 0; i < 50; i++) {
       now += 30 * 1000; // an announce every half minute
-      p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsEvidence.observed);
+      p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsIdEvidence.observed);
     }
     expect(p.of(_joao).single.lastMs, now, reason: 'memory has the new time');
     expect(p.of(_joao).single.savedMs, t0,
         reason: '25 minutes of sightings, no write');
     now += 61 * 60 * 1000;
-    p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsEvidence.observed);
+    p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsIdEvidence.observed);
     expect(p.of(_joao).single.savedMs, now, reason: 'an hour on, one write');
   });
 }

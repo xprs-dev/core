@@ -32,6 +32,8 @@ import '../mesh/mesh_service.dart';
 import '../mesh/mesh_courier.dart';
 import '../xprs/xprs_key_wait.dart';
 import '../xprs/xprs_lan.dart';
+import '../people/xprs_people.dart';
+import '../xprs/xprs_callsign.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_catchup.dart';
 import '../xprs/xprs_archive_policy.dart';
@@ -2370,6 +2372,7 @@ class RnsService {
         if (dh.isNotEmpty) rememberLxmfIdentity(dh, cs);
       }
     }
+    _notePerson(n);
     // Mark for the next periodic flush to disk.
     if (_obStore != null) _obDirty.add(key);
   }
@@ -2766,6 +2769,8 @@ class RnsService {
     final key = XprsArchive.instance.keyResolver?.call(f);
     if (key == null || xprsVerify(p, key) != XprsSigState.verified) return;
     noteLxmfCallsign(lx, f);
+    XprsPeople.instance
+        .noteForCall(f, XprsIdType.lxmf, lx, evidence: XprsIdEvidence.signed);
   }
 
   /// The callsign known for an LXMF delivery destination, or '' if none.
@@ -6204,11 +6209,85 @@ class RnsService {
     Duration timeout = const Duration(seconds: 30),
   }) async {
     final dest = _callsignDest[callsign.trim()];
-    if (dest == null) {
+    if (dest != null) return fetchFileFrom(fileHash, dest, timeout: timeout);
+    // No chat announce heard from it, but the station is known another way
+    // (XprsPeople): every destination of a node hangs off one identity, so
+    // its file destination follows from any of them.
+    final f = _files;
+    final id = identityForCallsign(callsign);
+    if (!_up || f == null || id == null) {
       LogService.instance.add('RNS/files: no route to callsign "$callsign"');
       return null;
     }
-    return fetchFileFrom(fileHash, dest, timeout: timeout);
+    return f.fetch(fileHash, id, timeout: timeout);
+  }
+
+  /// The Reticulum identity of [callsign], from whatever taught it: its chat
+  /// or station announce, or any other announce, beacon or signed word that
+  /// tied one of its devices to it (XprsPeople). Null when nothing did.
+  ///
+  /// It read only the chat announce, which a hub forwards hourly and not
+  /// every time: a station that had the archiver's LXMF announce and its
+  /// verified messages could not open a file link to it, and a 4 kB groups
+  /// index waited half an hour for that one announce.
+  RnsIdentity? identityForCallsign(String callsign) {
+    final c = _bareUpper(callsign);
+    if (c.isEmpty) return null;
+    final known = _callIdentity[c] ??
+        _callIdentity[callsign.trim()] ??
+        _apiStation[c] ??
+        _wappStation[c];
+    if (known != null) return known;
+    for (final hash
+        in XprsPeople.instance.reachCall(c, XprsIdType.reticulum)) {
+      final pub = _hexToBytes(_observed[hash]?.publicKeyHex ?? '');
+      if (pub == null || pub.isEmpty) continue;
+      try {
+        return RnsIdentity.fromPublicKey(pub);
+      } catch (_) {/* a key that is not one: the next */}
+    }
+    return null;
+  }
+
+  /// What an announce taught about a person: the Reticulum identity and
+  /// LXMF address of the device that sent it, filed under the key when the
+  /// announce carried one and under the callsign when it only named itself.
+  /// Observed, never more: the announce is signed by the device, and the
+  /// name inside it is a claim.
+  void _notePerson(_ObservedNode n) {
+    final people = XprsPeople.instance;
+    final call = _bareUpper(
+        (n.callsign ?? '').trim().isNotEmpty ? n.callsign! : (n.lxmfName ?? ''));
+    final pubHex = (n.nostrPubHex ?? '').trim().toLowerCase();
+    final lx = _lxmfDestHexForPub(n.publicKeyHex);
+    if (pubHex.length == 64) {
+      String npub;
+      try {
+        npub = NostrCrypto.encodeNpub(pubHex);
+      } catch (_) {
+        return;
+      }
+      people.note(npub, XprsIdType.reticulum, n.identityHex,
+          evidence: XprsIdEvidence.observed, via: 'rns');
+      if (lx.isNotEmpty) {
+        people.note(npub, XprsIdType.lxmf, lx,
+            evidence: XprsIdEvidence.observed, via: 'rns');
+      }
+      // The callsign the key derives is the person's by arithmetic; any
+      // other name in an announce stays the announce's claim.
+      if (call.isNotEmpty && NostrCrypto.callsignMatchesKey(call, pubHex)) {
+        people.claim(npub, XprsIdType.callsign, call,
+            evidence: XprsIdEvidence.derived);
+      }
+      return;
+    }
+    if (call.isEmpty || !xprsIsCallsignShaped(call)) return;
+    people.noteForCall(call, XprsIdType.reticulum, n.identityHex,
+        evidence: XprsIdEvidence.observed, via: 'rns');
+    if (lx.isNotEmpty) {
+      people.noteForCall(call, XprsIdType.lxmf, lx,
+          evidence: XprsIdEvidence.observed, via: 'rns');
+    }
   }
 
   /// Deposit [bytes] to a host (identified by its [peerDestHex]) for
@@ -6333,9 +6412,8 @@ class RnsService {
     final d = f.dht;
     if (d == null) return null;
     final self = _hex(f.identity.hash);
-    final named = (also ?? '').trim().isEmpty
-        ? null
-        : _callIdentity[_bareUpper(also!)] ?? _callIdentity[also.trim()];
+    final named =
+        (also ?? '').trim().isEmpty ? null : identityForCallsign(also!);
     // The station named as holder is asked for its own record first: it
     // keeps one, with the piece list's hash, wherever its replicas landed.
     final records = await d.resolve(fileHash,
