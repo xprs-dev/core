@@ -63,7 +63,7 @@ import '../social/node_profile_service.dart';
 import '../social/pointer_sync_service.dart';
 import '../folders/disk_folder_manager.dart';
 import '../folders/folder_event.dart'
-    show kKindFolderKeyset, kKindFolderOp, kFolderTag, FolderShareType, FileEntry, pieceSizeForFile;
+    show kKindFolderKeyset, kKindFolderOp, kFolderTag, FolderShareType, FileEntry;
 import '../folders/folder_keystore.dart';
 import '../folders/folder_relay.dart';
 import '../folders/folder_service.dart';
@@ -6334,33 +6334,14 @@ class RnsService {
       manifest ??= r.manifestHash;
     }
     if (providers.isEmpty || manifest == null) return null;
-    // The list itself is a small blob every holder also serves; one whole-file
-    // fetch of a few KB, from whichever provider answers first.
-    Uint8List? blob;
-    for (final p in providers) {
-      blob = await f.fetch(manifest, p, timeout: const Duration(seconds: 45));
-      if (blob != null && blob.isNotEmpty) break;
-    }
-    if (blob == null) {
-      LogService.instance.add(
-          'RNS/files: no holder served the piece list for ${_hex(fileHash).substring(0, 8)} — whole-file path');
-      return null;
-    }
-    final hashes = unpackPieceHashes(blob);
-    final pieceSize = pieceSizeForFile(size);
-    if (hashes == null || hashes.length != pieceCountFor(size, pieceSize)) {
-      LogService.instance.add(
-          'RNS/files: piece list for ${_hex(fileHash).substring(0, 8)} does not match its size — whole-file path');
-      return null;
-    }
-    return f.fetchFilePieces(
-      fileHash: fileHash,
-      size: size,
-      pieceSize: pieceSize,
-      pieceHashes: hashes,
-      providers: providers,
-      timeout: timeout,
-    );
+    final tag = _hex(fileHash).substring(0, 8);
+    return fetchByPieces(f,
+        fileHash: fileHash,
+        size: size,
+        providers: providers,
+        manifest: manifest,
+        timeout: timeout,
+        log: (m) => LogService.instance.add('RNS/files: $tag: $m'));
   }
 
   // ── Archiver↔Archiver pointer sync (docs/NOSTR.md) ──────────────────────────

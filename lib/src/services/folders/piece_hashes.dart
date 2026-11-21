@@ -25,6 +25,7 @@ import 'package:file/file.dart';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:reticulum/reticulum.dart';
 
 import 'folder_event.dart' show pieceSizeForFile;
 
@@ -119,4 +120,52 @@ Future<Uint8List?> pieceListOfRanged(
     await Future<void>.delayed(Duration.zero);
   }
   return packPieceHashes(hashes);
+}
+
+/// Fetch a file of exactly [size] bytes by pieces from [providers], given the
+/// hash of its piece list ([manifest], what a provider record or a `ph:`
+/// names): the list first, from whichever holder serves it, then the pieces
+/// from all of them at once, each verified against the list, the whole
+/// against [fileHash]. Null when no holder serves the list, the list does not
+/// match the size, or the pieces cannot be completed; the caller then falls
+/// back to a whole-file fetch.
+///
+/// The one place the three facts a piece fetch needs meet: the exact length
+/// (a holder's `202` or `q:have` answer, spec 11.2, 8.1), the piece list
+/// (7.7.2) and the holders.
+Future<Uint8List?> fetchByPieces(
+  FileTransferNode f, {
+  required Uint8List fileHash,
+  required int size,
+  required List<RnsIdentity> providers,
+  required Uint8List manifest,
+  Duration timeout = const Duration(minutes: 20),
+  void Function(String message)? log,
+}) async {
+  if (size <= 0 || providers.isEmpty) return null;
+  // The list itself is a small blob every holder also serves; one whole-file
+  // fetch of a few KB, from whichever provider answers first.
+  Uint8List? blob;
+  for (final p in providers) {
+    blob = await f.fetch(manifest, p, timeout: const Duration(seconds: 45));
+    if (blob != null && blob.isNotEmpty) break;
+  }
+  if (blob == null || blob.isEmpty) {
+    log?.call('no holder served the piece list — whole-file path');
+    return null;
+  }
+  final hashes = unpackPieceHashes(blob);
+  final pieceSize = pieceSizeForFile(size);
+  if (hashes == null || hashes.length != pieceCountFor(size, pieceSize)) {
+    log?.call('piece list does not match its size — whole-file path');
+    return null;
+  }
+  return f.fetchFilePieces(
+    fileHash: fileHash,
+    size: size,
+    pieceSize: pieceSize,
+    pieceHashes: hashes,
+    providers: providers,
+    timeout: timeout,
+  );
 }
