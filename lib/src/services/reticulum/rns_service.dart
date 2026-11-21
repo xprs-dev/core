@@ -5620,6 +5620,8 @@ class RnsService {
       // The beacon named its own sender, so this destination has a callsign
       // whether or not its announce ever carried one.
       noteLxmfCallsign(destHex, callsign);
+      XprsPeople.instance.noteForCall(callsign, XprsIdType.lxmf, destHex,
+          evidence: XprsIdEvidence.observed, via: 'beacon');
       // And if it is an ESP32 station's xprs/wapp destination, that is where
       // a directed wire to it goes ([wireToStation]).
       noteStationAddress(destHex, callsign);

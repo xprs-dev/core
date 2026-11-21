@@ -416,6 +416,17 @@ class XprsIngest {
     onHeardAny?.call(p);
     if (from.isEmpty || from == self) return;
 
+    // Somebody on another mesh, written by the gateway that carried them
+    // (3.2): a record with no key, until a person says the node is theirs
+    // (6.3.3).
+    final net = xprsNetworkOf(from);
+    if (net != null) {
+      final via = (p['via'] ?? '').split(',').last.trim();
+      XprsPeople.instance.note(
+          XprsPeople.unclaimed(net, from), net, from,
+          evidence: XprsIdEvidence.relayed, via: via);
+    }
+
     // A small binary chunked into t:file packets (§7.7.6) is reassembled here
     // and, when whole and verified, handed to the media store. Safe for every
     // packet: a non-file or non-chunk is ignored. A chunk is nobody's history:

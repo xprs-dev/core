@@ -530,6 +530,45 @@ class XprsPeople {
     return note(holder, type, value, evidence: evidence, via: via);
   }
 
+  /// How long the same address must keep answering for one callsign before
+  /// it is taken as that station's own. A phone's Bluetooth address rotates
+  /// about every quarter of an hour; a board's never does.
+  static const Duration stableAfter = Duration(minutes: 30);
+
+  /// `callsign|type|value` -> when it was first seen. Bounded, oldest out.
+  final Map<String, int> _seenSince = {};
+  static const int _seenMax = 256;
+
+  /// [callsign] was heard directly from the hardware address [value] (a
+  /// Bluetooth or WLAN address). Filed as observed only once the same
+  /// address has gone on answering for [stableAfter]: an address that
+  /// rotates never gets there, so nothing has to guess from its bits which
+  /// kind it is. Returns whether it was filed now.
+  bool noteAddress(String callsign, String type, String value) {
+    final c = XprsIdType.normalise(callType(callsign), callsign);
+    final v = XprsIdType.normalise(type, value);
+    if (c.isEmpty || v.isEmpty) return false;
+    final holder = holderOfCall(c);
+    if ((_by[holder] ?? const <XprsIdentity>[])
+        .any((e) => e.type == type && e.value == v)) {
+      // Known already: only the time moves.
+      return note(holder, type, v, evidence: XprsIdEvidence.observed);
+    }
+    final key = '$c|$type|$v';
+    final now = nowMs();
+    final since = _seenSince[key];
+    if (since == null) {
+      if (_seenSince.length >= _seenMax) {
+        _seenSince.remove(_seenSince.keys.first);
+      }
+      _seenSince[key] = now;
+      return false;
+    }
+    if (now - since < stableAfter.inMilliseconds) return false;
+    _seenSince.remove(key);
+    return noteForCall(c, type, v, evidence: XprsIdEvidence.observed, via: type);
+  }
+
   /// Another identity of whoever goes by [callsign], best first.
   List<String> reachCall(String callsign, String wanted,
           {XprsIdEvidence min = XprsIdEvidence.relayed}) =>
@@ -712,6 +751,7 @@ class XprsPeople {
     _by.clear();
     _index.clear();
     _saidTs.clear();
+    _seenSince.clear();
     noted = evicted = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;
   }

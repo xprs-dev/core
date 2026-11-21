@@ -41,6 +41,45 @@ void main() {
     expect(people.holderOfCall('CT1ABC'), '~licence:CT1ABC');
   });
 
+  test('a hardware address is a station\'s own once it has kept answering; '
+      'one that rotates never is', () {
+    var now = 1795000000000;
+    people.nowMs = () => now;
+    const board = 'A4:CF:12:0B:7E:31';
+    // A board: the same address for an hour.
+    expect(people.noteAddress('X3VGAZ', XprsIdType.ble, board), isFalse,
+        reason: 'the first sighting proves nothing');
+    now += 10 * 60 * 1000;
+    expect(people.noteAddress('X3VGAZ', XprsIdType.ble, board), isFalse);
+    now += 25 * 60 * 1000;
+    expect(people.noteAddress('X3VGAZ', XprsIdType.ble, board), isTrue);
+    expect(people.reachCall('X3VGAZ', XprsIdType.ble), [board]);
+    expect(people.holders(XprsIdType.ble, board), ['~callsign:X3VGAZ']);
+    // A phone: a new address every quarter of an hour.
+    for (var i = 0; i < 12; i++) {
+      now += 15 * 60 * 1000;
+      final rotating = '5A:00:00:00:00:${i.toRadixString(16).padLeft(2, '0')}';
+      people.noteAddress('X1PHONE', XprsIdType.ble, rotating);
+      now += 5 * 60 * 1000;
+      people.noteAddress('X1PHONE', XprsIdType.ble, rotating);
+    }
+    expect(people.reachCall('X1PHONE', XprsIdType.ble), isEmpty);
+  });
+
+  test('a node on another mesh is a record with no key until somebody says '
+      'it is theirs', () {
+    final node = XprsPeople.unclaimed(XprsIdType.meshtastic, 'MTA1B2C3D4');
+    people.note(node, XprsIdType.meshtastic, 'MTA1B2C3D4',
+        evidence: XprsIdEvidence.relayed, via: 'X3DCK0');
+    expect(people.of(node).single.via, 'X3DCK0');
+    expect(people.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), isNull);
+    // The person states it (6.3.3): theirs now, as their signed word.
+    const npub =
+        'npub1qz3n7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f';
+    people.stated(npub, 'meshtastic', 'MTA1B2C3D4', tsMs: 1795000000000);
+    expect(people.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), npub);
+  });
+
   test('a station named only by its LXMF announce is reachable by callsign',
       () async {
     final rns = RnsService.instance;

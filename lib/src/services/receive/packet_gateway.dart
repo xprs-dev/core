@@ -40,6 +40,7 @@
  * or the inbox. `tool/arch_guard.dart` (`one-receive-door`) fails the build
  * when it does, because a rule nobody checks is a rule that lasts one sprint.
  */
+import '../people/xprs_people.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -185,6 +186,14 @@ class PacketGateway {
     }
     if (p != null) {
       xprsFrames++;
+      // The hardware address this packet came from is its sender's own when
+      // nobody relayed it (no via:) and it came over a radio that has one.
+      if (peer.isNotEmpty && !p.has('via') && bearer.startsWith('ble')) {
+        final from = p['f'] ?? '';
+        if (from.isNotEmpty) {
+          XprsPeople.instance.noteAddress(from, XprsIdType.ble, peer);
+        }
+      }
       XprsIngest.heard(
         p,
         bearer: bearer,
