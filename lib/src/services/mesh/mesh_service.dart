@@ -72,6 +72,7 @@ import '../xprs/xprs_fetch.dart';
 import '../xprs/xprs_forwarder.dart';
 import 'mesh_transfer_scheduler.dart';
 import '../xprs/xprs_lan.dart';
+import '../xprs/xprs_group_act.dart';
 import '../xprs/xprs_group_deposit.dart';
 import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
@@ -826,13 +827,49 @@ class MeshService {
                   g,
             ];
           })
-          ..record = ((g) => [
-                for (final t in const ['identity', 'moderate'])
-                  for (final r in XprsArchive.instance
-                      .query(types: [t], only: g, limit: t == 'identity' ? 4 : 64)
-                      .reversed)
-                    if (r['wire'] is String) r['wire'] as String,
-              ])
+          ..record = ((g) {
+            // The acts from the roster's own durable record (10.4): the
+            // archive is a spool and may have let them go. The identity
+            // from the archive, and for a group this station holds the key
+            // of, signed afresh when the archive no longer has it.
+            final seen = <String>{};
+            final out = <String>[];
+            void add(Object? w) {
+              if (w is String && w.isNotEmpty && seen.add(w)) out.add(w);
+            }
+
+            final ids = XprsArchive.instance
+                .query(types: const ['identity'], only: g, limit: 4)
+                .reversed
+                .toList();
+            for (final r in ids) {
+              add(r['wire']);
+            }
+            if (ids.isEmpty) {
+              final scalar = XprsGroupKeys.instance.scalarFor(g);
+              final npub = XprsGroupKeys.instance.npubFor(g);
+              if (scalar != null && npub != null) {
+                add(XprsGroupAct.identity(
+                        group: g,
+                        npub: npub,
+                        scalar: scalar,
+                        nick: XprsGroupKeys.instance.nickFor(g))
+                    ?.encode());
+              }
+            }
+            final acts = XprsGroupKeys.instance.actsFor(g);
+            for (final w in acts.length > 96
+                ? acts.sublist(acts.length - 96)
+                : acts) {
+              add(w);
+            }
+            for (final r in XprsArchive.instance
+                .query(types: const ['moderate'], only: g, limit: 64)
+                .reversed) {
+              add(r['wire']);
+            }
+            return out;
+          })
           ..send = ((call, wire) async {
             final hex = RnsService.instance.lxmfDestForCallsign(call);
             if (hex.isEmpty) return false;

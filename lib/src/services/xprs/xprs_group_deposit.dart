@@ -68,7 +68,9 @@ class XprsGroupDeposit {
   bool _busy = false;
 
   static String _key(String group, String archiver) =>
-      'xprs.groupDeposit.$archiver.$group';
+      // `2`: the first version read the acts from the archive alone, which
+      // may have let them go, and marked such a group as handed over.
+      'xprs.groupDeposit2.$archiver.$group';
 
   /// The archivers a group's traffic is also addressed to.
   List<String> targets() => [
@@ -89,12 +91,17 @@ class XprsGroupDeposit {
     _busy = true;
     try {
       for (final g in groups?.call() ?? const <String>[]) {
+        // One group a turn, to every archiver it is due at: a person with
+        // thirty groups and three archivers is done in half an hour, not in
+        // an hour and a half.
+        List<String>? wires;
+        var total = 0;
         for (final a in to) {
           // Never handed over, or made due again by a new act: 0.
           final last = st.getInt(_key(g, a)) ?? 0;
           if (last > 0 && t - last < every.inMilliseconds) continue;
-          final wires = rec(g);
-          if (wires.isEmpty) continue;
+          wires ??= rec(g);
+          if (wires.isEmpty) break;
           var sent = 0;
           for (final w in wires) {
             if (await out(a, w)) sent++;
@@ -105,10 +112,11 @@ class XprsGroupDeposit {
           await st.setInt(_key(g, a), t);
           deposits++;
           packets += sent;
+          total += sent;
           LogService.instance.add(
               'XPRS: record of $g handed to archiver $a ($sent packet(s), 10.9.2)');
-          return sent;
         }
+        if (total > 0) return total;
       }
       return 0;
     } finally {

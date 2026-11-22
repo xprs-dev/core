@@ -45,19 +45,19 @@ void main() {
     expect(sent, isEmpty);
   });
 
-  test('every group to every archiver, one pair a turn, then quiet for a week',
+  test('every group to every archiver, one group a turn, then quiet for a week',
       () async {
     await d.tick();
     await minutes(3);
-    expect(sent.length, 2, reason: 'the first pair, on the first turn after settling');
+    expect(sent.length, 4, reason: 'the first group, to both, on the first turn after settling');
     expect(sent.first, ('X3ARC', 't:identity f:X5ROOT'));
-    await minutes(3);
-    expect(sent.length, 8);
     expect({for (final s in sent) s.$1}, {'X3ARC', 'X3TWO'});
+    await minutes(1);
+    expect(sent.length, 8);
     await minutes(30);
     expect(sent.length, 8, reason: 'handed over: not again within the week');
     clock += XprsGroupDeposit.every.inMilliseconds;
-    await minutes(4);
+    await minutes(2);
     expect(sent.length, 16);
   });
 
@@ -68,16 +68,16 @@ void main() {
     expect(sent.where((s) => s.$1 == 'X3TWO'), isEmpty);
     expect(sent.length, 4);
     named = {'X3ARC', 'X3TWO'};
-    await minutes(3);
+    await minutes(2);
     expect(sent.where((s) => s.$1 == 'X3TWO').length, 4);
   });
 
   test('a new act makes the record due again', () async {
     await d.tick();
-    await minutes(8);
+    await minutes(4);
     expect(sent.length, 8);
     d.changed('x5root');
-    await minutes(3);
+    await minutes(1);
     expect(sent.length, 12);
     expect(sent.skip(8).every((s) => s.$2.contains('X5ROOT')), isTrue);
   });

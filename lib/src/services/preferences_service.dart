@@ -85,6 +85,14 @@ class PreferencesService {
   bool get remoteApiEnabled => _prefs.getBool('remoteApi.enabled') ?? false;
   set remoteApiEnabled(bool v) => _prefs.setBool('remoteApi.enabled', v);
 
+  /// The API also answers the local network (default off), to a caller that
+  /// carries [remoteApiKey]. Its owner's choice, on the Developer page.
+  bool get remoteApiLan => _prefs.getBool('remoteApi.lan') ?? false;
+  set remoteApiLan(bool v) => _prefs.setBool('remoteApi.lan', v);
+
+  String get remoteApiKey => _prefs.getString('remoteApi.key') ?? '';
+  set remoteApiKey(String v) => _prefs.setString('remoteApi.key', v);
+
   int get remoteApiPort => _prefs.getInt('remoteApi.port') ?? 3456;
   set remoteApiPort(int v) => _prefs.setInt('remoteApi.port', v);
 
