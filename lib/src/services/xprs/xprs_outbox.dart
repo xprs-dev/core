@@ -83,6 +83,7 @@ class XprsOutbox {
   /// (docs/architecture.md §2).
   ZxSqlDb? _db;
   ZxKvStore? _kv; // KV `sent`: the message id as key, {peer, state, ts}
+  ZxKvStore? _kept; // KV `kept`: the message id as key, {station: how}
 
   /// Rows kept on disk. Larger than [maxRows] — memory holds the hot end, the
   /// file holds enough history that a receipt for yesterday's message still
@@ -95,6 +96,7 @@ class XprsOutbox {
       final db = openStoreDb(path);
       _db = db;
       _kv = db.kv('sent');
+      _kept = db.kv('kept');
       _restore();
     } catch (e) {
       _db = null;
@@ -109,7 +111,70 @@ class XprsOutbox {
     } catch (_) {}
     _db = null;
     _kv = null;
+    _kept = null;
   }
+
+  // ── Where a message this station sent is kept ───────────────────────────
+  //
+  // A person who leaves word at a station for somebody who is not there has
+  // nothing to go by unless the app says where the word now is. Two things
+  // are known and recorded here, per message:
+  //   `held`   a station said, signed, that it keeps this message
+  //            (XPRS.md 12.7.1: `t:observation ... s:held r:<id>`);
+  //   `handed` this station handed a copy to that archiver (12.7), which
+  //            is a send, not yet anybody's word that it is kept.
+  // `held` outranks `handed`. Kept with the outbox rows and bounded by the
+  // same rule; a message with no row here was not sent from this device.
+
+  static const String keptHeld = 'held';
+  static const String keptHanded = 'handed';
+
+  /// Record that [station] keeps ([how] `held`) or was handed (`handed`)
+  /// message [id]. Returns whether anything changed.
+  bool noteKept(String id, String station, String how) {
+    final kv = _kept;
+    final st = station.trim().toUpperCase();
+    if (kv == null || id.isEmpty || st.isEmpty) return false;
+    if (how != keptHeld && how != keptHanded) return false;
+    try {
+      final have = keptAt(id);
+      if (have[st] == how || have[st] == keptHeld) return false;
+      if (have.length >= 16 && !have.containsKey(st)) return false;
+      have[st] = how;
+      kv.putString(id, jsonEncode(have));
+      keptNotes++;
+      // Bound the file with the rows it annotates.
+      if (keptNotes % 200 == 0) {
+        final ids = [for (final e in kv.scan()) e.keyString];
+        if (ids.length > keepRows) {
+          kv.batch((b) {
+            for (final k in ids.take(ids.length - keepRows)) {
+              b.deleteString(k);
+            }
+          });
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Station -> `held` or `handed`, for message [id]. Empty when nothing is
+  /// known.
+  Map<String, String> keptAt(String id) {
+    final v = _kept?.getString(id);
+    if (v == null) return {};
+    try {
+      return {
+        for (final e in (jsonDecode(v) as Map).entries) '${e.key}': '${e.value}',
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static int keptNotes = 0;
 
   TxRecord _decode(String id, String json) {
     final m = jsonDecode(json) as Map;

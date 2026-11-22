@@ -716,3 +716,10 @@ its holder" need.
 - A placeholder is not a delivery (`MeshCourier.deliverXprs(notice: true)`):
   nothing that stands in for content may acknowledge it, or the holders
   release what nobody read.
+- `XprsArchive.flushInSlices()`: periodic database work goes a few rows at a
+  time with the event loop given a turn between (the screen and the touches
+  share this isolate). `flush()` stays for a caller that needs it written
+  now. `tool/flush_time.dart <archive.zx>` measures a flush on a real file.
+- `XprsOutbox.noteKept` / `keptAt`: where a message this station sent is kept
+  (`held`: a station said so, `handed`: a copy was sent to an archiver).
+  `XprsIngest.noteHeld` takes a station's signed `t:observation s:held r:<id>`.

@@ -98,6 +98,10 @@ class XprsMailbox {
   /// The archivers this station leans on, in preference order.
   List<String> Function()? archivers;
 
+  /// A copy of packet [id] was handed to [archiver]: told to whoever keeps
+  /// track of where a sent message is (the outbox).
+  void Function(String id, String archiver)? onDeposited;
+
   /// This station's own callsign, bare.
   String Function()? selfCallsign;
 
@@ -262,6 +266,8 @@ class XprsMailbox {
       final ok = await (sendTo?.call(a, wire) ?? Future.value(false));
       if (ok) {
         sent++;
+        // Where this message now is, for whoever wrote it (the Info page).
+        onDeposited?.call(ident, a);
       } else {
         // A deposit that did not go out is the failure this whole file exists
         // to prevent, and it must never be silent: without a counter here the

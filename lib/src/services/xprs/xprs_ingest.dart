@@ -745,6 +745,18 @@ class XprsIngest {
       }
     }
 
+    // A station saying it KEEPS a message of ours (12.7.1): a signed
+    // observation, `s:held r:<id>`, addressed to the author. Believed only
+    // when it verifies and comes from a station; recorded for the Info page
+    // of that message and told to whoever draws it.
+    if (p.type == 'observation' && (p['s'] ?? '') == 'held') {
+      try {
+        noteHeld(p);
+      } catch (e) {
+        LogService.instance.add('XPRS: held notice handling failed: $e');
+      }
+    }
+
     // A receipt releases held mail — ours and other people's. Deliberately not
     // gated on `forUs`: §13.3 has a carrier discard its copy on OVERHEARING the
     // acknowledgement, which is the only way a chain of custodians drains.
@@ -755,6 +767,28 @@ class XprsIngest {
         LogService.instance.add('XPRS: receipt handling failed: $e');
       }
     }
+  }
+
+  /// How many stations said they keep a message of ours (for the status).
+  static int heldNotices = 0;
+
+  /// Take a station's word that it keeps message `r:` of ours. Returns
+  /// whether it was recorded.
+  static bool noteHeld(XprsPacket p) {
+    final id = (p['r'] ?? '').trim().toLowerCase();
+    final st = NostrCrypto.bareCallsign(p['f'] ?? '').toUpperCase();
+    final to = NostrCrypto.bareCallsign(p['d'] ?? '').toUpperCase();
+    if (id.length != 6 || st.isEmpty || !xprsAddressesStation(st)) return false;
+    if (!XprsSelf.instance.isMine(to)) return false;
+    if (!p.has('sig') ||
+        xprsVerify(p, XprsArchive.instance.keyResolver?.call(st)) !=
+            XprsSigState.verified) {
+      return false;
+    }
+    if (!XprsOutbox.instance.noteKept(id, st, XprsOutbox.keptHeld)) return false;
+    heldNotices++;
+    LogService.instance.add('XPRS: $st keeps $id for its reader (12.7.1)');
+    return true;
   }
 
   /// Identity packets verified in the current minute, and when that started.

@@ -102,4 +102,23 @@ void main() {
     expect(talk(), ['c', 'b', 'a']);
     expect(a.roomScans, scans);
   });
+
+  // The periodic write: everything heard in twenty seconds used to go in
+  // one transaction on the isolate that draws the screen (2 to 5 s on a
+  // phone). It goes in slices, with the event loop given a turn between.
+  test('the periodic write goes in slices and loses nothing', () async {
+    for (var i = 0; i < 20; i++) {
+      say('X1AAAA', '15:00:${i.toString().padLeft(2, '0')}', 'scope:local m:s$i');
+    }
+    final before = XprsArchive.slices;
+    var turns = 0;
+    final watch = Stream<void>.periodic(const Duration(milliseconds: 5))
+        .listen((_) => turns++);
+    await a.flushInSlices();
+    await watch.cancel();
+    expect(XprsArchive.slices - before, greaterThanOrEqualTo(4),
+        reason: 'twenty rows are several slices');
+    expect(turns, greaterThan(3), reason: 'other work ran between them');
+    expect(room('local', limit: 50).length, 20);
+  });
 }

@@ -267,7 +267,7 @@ class XprsArchive {
       _prunedThisSession = false;
       _flushTimer?.cancel();
       _flushTimer =
-          Timer.periodic(const Duration(seconds: 20), (_) => flush());
+          Timer.periodic(const Duration(seconds: 20), (_) => unawaited(flushInSlices()));
     } catch (e) {
       _db = null;
       // A broken disk degrades to no archive, never to a crash.
@@ -394,7 +394,9 @@ class XprsArchive {
     _pending.add(_Pending(p, bearer, rssi, own,
         nowMs ?? DateTime.now().millisecondsSinceEpoch,
         tier ?? (own ? Tier.self : Tier.stranger)));
-    if (_pending.length >= _flushEarlyAt) flush();
+    // In slices too: a full queue on a busy channel is exactly when one
+    // long write hurts most.
+    if (_pending.length >= _flushEarlyAt) unawaited(flushInSlices());
   }
 
   /// Write the pending batch, verify signatures, prune. Public so tests and
@@ -417,13 +419,49 @@ class XprsArchive {
   /// After the [onFiled] calls of one flush: a listener batches its writes.
   void Function()? onFiledDone;
 
-  void flush({int? nowMs}) {
+  /// The periodic write, a few packets at a time with the event loop given
+  /// a turn between them.
+  ///
+  /// It used to be one [flush] of everything heard in twenty seconds: forty
+  /// to a hundred packets in one transaction on the isolate that also draws
+  /// the screen and reads the touches. Measured, 2026-11-22: 0.4 to 1.8 s
+  /// for sixty rows on a Raspberry Pi 4, and on a phone the log went silent
+  /// for two to five seconds at :10, :30 and :50 of every minute, the menu
+  /// that was tapped then did not open, and Android offered to close the
+  /// app (performance.md 8.1, 8.7). The same rows now go in slices of
+  /// [flushSlice]; what a caller needs written NOW still calls [flush].
+  static const int flushSlice = 6;
+  bool _slicing = false;
+
+  /// Slices written by the periodic flush, for the diagnostic line.
+  static int slices = 0;
+
+  Future<void> flushInSlices() async {
+    if (_slicing) return;
+    _slicing = true;
+    try {
+      if (_pending.isEmpty) {
+        flush();
+        return;
+      }
+      while (_db != null && _pending.isNotEmpty) {
+        flush(max: flushSlice);
+        slices++;
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    } finally {
+      _slicing = false;
+    }
+  }
+
+  void flush({int? nowMs, int? max}) {
     final db = _db;
     if (db == null || _pending.isEmpty) {
       if (db != null) _prune(db, nowMs: nowMs);
       return;
     }
-    final batch = List.of(_pending);
+    final take = max != null && max > 0 && max < _pending.length;
+    final batch = take ? _pending.sublist(0, max) : List.of(_pending);
     // Collected during the write and fired after the transaction, so a hook
     // that throws cannot leave the batch half-committed.
     final stored = <MapEntry<String, int?>>[];
@@ -432,7 +470,11 @@ class XprsArchive {
     final identities = <String>{};
     /// Stations followed by callsign whose presence rows need capping.
     final capped = <String>{};
-    _pending.clear();
+    if (take) {
+      _pending.removeRange(0, batch.length);
+    } else {
+      _pending.clear();
+    }
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     final newest = <String, int>{};
     try {

@@ -886,6 +886,8 @@ class MeshService {
           ..archivers =
               (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
           ..outboxState = ((id) => XprsOutbox.instance.stateOf(id))
+          ..onDeposited = ((id, a) => XprsOutbox.instance
+              .noteKept(id, a, XprsOutbox.keptHanded))
           ..holdersOf = ((call) => XprsArchive.instance.holdersFor(call))
           // REACHABLE MEANS THIS station, not "some station".
           //
