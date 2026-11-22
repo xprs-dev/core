@@ -26,6 +26,7 @@ import '../receive/packet_gateway.dart';
 import '../reticulum/rns_service.dart';
 import '../web_chat_api.dart';
 import '../web_chat_rns.dart';
+import '../xprs/xprs_group_index.dart';
 import '../xprs/xprs_group_rank_rows.dart';
 import '../xprs/xprs_archive.dart';
 import '../xprs/xprs_group_keys.dart';
@@ -139,6 +140,7 @@ WebChatApi stationWebChatApi({
           unawaited(XprsPublisher.instance.publishWire(w, verbatim: true, datagram: true)),
     )
       ..ownIdentity = XprsPublisher.instance.ownIdentityWire
+      ..groupHolders = XprsGroupRanking.instance.holdersOf
       // A file kept over the station API is advertised, with its piece list
       // when it has one (RnsService.dhtPublish): this station is a holder
       // other stations can find, not only the one a visitor happened to ask.

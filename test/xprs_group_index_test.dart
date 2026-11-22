@@ -233,6 +233,24 @@ void main() {
       return s;
     }
 
+    test('who keeps a group: this station first, then the archivers that '
+        'list it', () {
+      r.put('X3ARC1', 'a', {'X5BUSY': posts('X5BUSY', 0, 10)});
+      r.put('X3ARC2', 'b', {
+        'X5BUSY': posts('X5BUSY', 0, 10),
+        'LISBOA': posts('LISBOA', 0, 10),
+      });
+      expect(r.holdersOf('x5busy'), ['X3ARC1', 'X3ARC2']);
+      expect(r.holdersOf('LISBOA'), ['X3ARC2']);
+      expect(r.holdersOf('X5NONE'), isEmpty,
+          reason: 'nobody lists it: a link to it says so, it does not guess');
+      r
+        ..self = 'X3SELF'
+        ..own = () => [posts('LISBOA', 0, 5)];
+      expect(r.holdersOf('LISBOA'), ['X3SELF', 'X3ARC2']);
+      expect(r.holdersOf('X5BUSY'), ['X3ARC1', 'X3ARC2']);
+    });
+
     test('members from the newest record, activity from the combined sketch',
         () {
       final a = posts('X5BUSY', 0, 300)

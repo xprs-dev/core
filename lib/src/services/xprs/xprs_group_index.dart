@@ -738,6 +738,26 @@ class XprsGroupRanking {
 
   int get sources => _have.length + (own == null ? 0 : 1);
 
+  /// The archivers whose index lists [group] (an open group's name or a
+  /// closed one's `X5` callsign): where its history can be asked for. This
+  /// station first when it lists the group itself, then the others in the
+  /// order their indexes were read. What a link to a group needs: somebody
+  /// who has never heard the group must be sent to a station that keeps it
+  /// (12.9.1: discovery is the federation's, not one archiver's).
+  List<String> holdersOf(String group) {
+    final g = group.trim().toUpperCase();
+    if (g.isEmpty) return const [];
+    final out = <String>[];
+    final mine = own?.call();
+    if (mine != null && self.isNotEmpty && mine.any((s) => s.group == g)) {
+      out.add(self);
+    }
+    for (final e in _have.entries) {
+      if (e.value.groups.containsKey(g) && !out.contains(e.key)) out.add(e.key);
+    }
+    return out;
+  }
+
   /// Every group, combined across archivers (12.9.7), for weeks counted
   /// from [nowMs].
   List<XprsGroupRank> merged({int? nowMs}) {

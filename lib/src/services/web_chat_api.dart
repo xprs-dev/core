@@ -307,6 +307,11 @@ class WebChatApi {
   final ({int sources, List<Map<String, Object?>> rows}) Function(String by)?
       groupRank;
 
+  /// The archivers that list one group in their index (12.9.7):
+  /// `GET /api/xprs/groups?g=<name or X5 callsign>`. What a link to a group
+  /// is resolved with. Null where the host keeps no ranking.
+  List<String> Function(String group)? groupHolders;
+
   WebChatApi({
     required this.publicRows,
     required this.held,
@@ -484,6 +489,23 @@ class WebChatApi {
     }
     if (method == 'GET' && path == '/api/xprs/mail') return _mail(query);
     if (method == 'GET' && path == '/api/xprs/groups' && groupRank != null) {
+      // One group: who keeps it, and what the ranking says of it.
+      final one = (query['g'] ?? '').trim().toUpperCase();
+      if (one.isNotEmpty) {
+        if (!RegExp(r'^[A-Z0-9][A-Z0-9_-]{0,15}$').hasMatch(one)) {
+          return const WebChatReply(400, {'ok': false, 'error': 'g: a group name or X5 callsign'});
+        }
+        final row = groupRank!('active')
+            .rows
+            .where((r) => '${r['g']}'.toUpperCase() == one)
+            .firstOrNull;
+        return WebChatReply(200, {
+          'ok': true,
+          'g': one,
+          'holders': groupHolders?.call(one) ?? const <String>[],
+          'row': ?row,
+        });
+      }
       final by = query['by'] ?? 'active';
       if (!const {'active', 'members', 'growing'}.contains(by)) {
         return const WebChatReply(400, {'ok': false, 'error': 'by: active, members or growing'});
