@@ -68,6 +68,42 @@ void main() {
     expect(people.reachCall('X1PHONE', XprsIdType.ble), isEmpty);
   });
 
+  test('an announce heard again files nothing again: one piece of work a '
+      'node, not one a packet', () async {
+    final rns = RnsService.instance;
+    final id = await RnsIdentity.generate();
+    final pkt = await RnsAnnounceBuilder.build(id, 'lxmf', const ['delivery'],
+        appData: Uint8List.fromList('X3BUSY'.codeUnits));
+    final ann = await validateAnnounce(RnsPacket.parse(pkt.pack())!);
+    await rns.debugObserveAnnounce(ann!);
+    final after = people.noted;
+    expect(after, greaterThan(0));
+    // A public hub repeats it hundreds of times a minute.
+    for (var i = 0; i < 200; i++) {
+      await rns.debugObserveAnnounce(ann);
+    }
+    expect(people.noted, after,
+        reason: 'the same words from the same node cost one comparison');
+    expect(people.reachCall('X3BUSY', XprsIdType.reticulum), hasLength(1));
+  });
+
+  test('a packet from the same address is settled by one lookup', () {
+    var now = 1795000000000;
+    people.nowMs = () => now;
+    const mac = 'A4:CF:12:0B:7E:31';
+    people.noteAddress('X3VGAZ', XprsIdType.ble, mac);
+    final after = people.noted;
+    // Beacons every few seconds for four minutes.
+    for (var i = 0; i < 80; i++) {
+      now += 3000;
+      people.noteAddress('X3VGAZ', XprsIdType.ble, mac);
+    }
+    expect(people.noted, after);
+    // And the rule still holds: half an hour on, it is the station's own.
+    now += 31 * 60 * 1000;
+    expect(people.noteAddress('X3VGAZ', XprsIdType.ble, mac), isTrue);
+  });
+
   test('a node on another mesh is a record with no key until somebody says '
       'it is theirs', () {
     final node = XprsPeople.unclaimed(XprsIdType.meshtastic, 'MTA1B2C3D4');

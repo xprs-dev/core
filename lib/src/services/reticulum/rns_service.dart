@@ -136,10 +136,12 @@ class RnsService {
     // a packet from it is good only under its holder's key, and a verified
     // packet from the holder starts its year again.
     xprsAlternateKeys = (callsign) {
+      // Called for every packet that did not verify. Nearly all of those
+      // are from a callsign a key derives, which has no other key: two
+      // character tests settle it before anything is looked up.
+      if (XprsPeople.callType(callsign) != XprsIdType.licence) return const [];
       final hex = pubkeyForCallsign(callsign);
-      if (hex == null || XprsPeople.callType(callsign) != XprsIdType.licence) {
-        return const [];
-      }
+      if (hex == null) return const [];
       try {
         return [Uint8List.fromList(HEX.decode(hex))];
       } catch (_) {
@@ -148,8 +150,16 @@ class RnsService {
     };
     xprsVerifiedAs = (callsign, key) {
       try {
-        XprsPeople.instance.licenceActive(
-            callsign, NostrCrypto.encodeNpub(HEX.encode(key)));
+        final hex = HEX.encode(key);
+        var npub = _npubOfKey[hex];
+        if (npub == null) {
+          npub = NostrCrypto.encodeNpub(hex);
+          if (_npubOfKey.length >= 256) {
+            _npubOfKey.remove(_npubOfKey.keys.first);
+          }
+          _npubOfKey[hex] = npub;
+        }
+        XprsPeople.instance.licenceActive(callsign, npub);
       } catch (_) {/* not a key */}
     };
     // Closed groups verify the same way and from the same map: section 26 is
@@ -506,8 +516,12 @@ class RnsService {
   final Map<String, RnsIdentity> _peerIds = {};
   static const int _peerIdsMax = 512;
 
+  /// Identity hashes whose key was not found, and when that was learned.
+  final Map<String, int> _peerIdMiss = {};
+
   void _keepPeerId(RnsIdentity id) {
     final h = id.hexHash;
+    _peerIdMiss.remove(h);
     _peerIds.remove(h); // re-insert: newest last
     if (_peerIds.length >= _peerIdsMax) _peerIds.remove(_peerIds.keys.first);
     _peerIds[h] = id;
@@ -519,8 +533,25 @@ class RnsService {
     final h = hash.trim().toLowerCase();
     final held = _peerIds[h];
     if (held != null) return held;
-    final pub = _hexToBytes(
-        _observed[h]?.publicKeyHex ?? _obStore?.pubkeyOf(h) ?? '');
+    final live = _observed[h]?.publicKeyHex;
+    String? stored;
+    if (live == null || live.isEmpty) {
+      // A key that is not in the store is not asked for again for ten
+      // minutes: a store query per call, for an answer that was "no" the
+      // last time, is the miss nobody cached (performance.md 3.2).
+      final nowM = DateTime.now().millisecondsSinceEpoch;
+      final missed = _peerIdMiss[h];
+      if (missed != null && nowM - missed < 10 * 60 * 1000) return null;
+      stored = _obStore?.pubkeyOf(h);
+      if (stored == null || stored.isEmpty) {
+        if (_peerIdMiss.length >= 256) {
+          _peerIdMiss.remove(_peerIdMiss.keys.first);
+        }
+        _peerIdMiss[h] = nowM;
+        return null;
+      }
+    }
+    final pub = _hexToBytes(live != null && live.isNotEmpty ? live : stored!);
     if (pub == null || pub.isEmpty) return null;
     try {
       final id = RnsIdentity.fromPublicKey(pub);
@@ -659,6 +690,9 @@ class RnsService {
   /// npub -> key hex, for the holders of issued callsigns: one bech32
   /// decode a holder, not one a packet. Bounded.
   final Map<String, String> _leaseKeyHex = {};
+
+  /// And the other way, for a holder heard using its callsign.
+  final Map<String, String> _npubOfKey = {};
 
   /// Hand the packet archive the base callsigns we follow — the middle tier of
   /// XPRS.md 12, and the only reason a phone with "public archiver" off keeps
@@ -6372,6 +6406,18 @@ class RnsService {
   /// Observed, never more: the announce is signed by the device, and the
   /// name inside it is a claim.
   void _notePerson(_ObservedNode n) {
+    // An announce arrives hundreds of times a minute on a public hub, and
+    // nearly all of them say what the last one from that node said. What is
+    // filed depends on three strings, so those are compared first: the
+    // bech32 encodes, the callsign arithmetic and the regular expression
+    // below run when a node is new or says something new, and otherwise
+    // once an hour to keep its last-seen time (performance.md 8.13; and the
+    // note on [_nameMemo]: never derive a callsign from a key per packet).
+    final sig = '${n.callsign}|${n.lxmfName}|${n.nostrPubHex}';
+    final nowP = DateTime.now().millisecondsSinceEpoch;
+    if (n.peopleSig == sig && nowP - n.peopleAtMs < 60 * 60 * 1000) return;
+    n.peopleSig = sig;
+    n.peopleAtMs = nowP;
     final people = XprsPeople.instance;
     final call = _bareUpper(
         (n.callsign ?? '').trim().isNotEmpty ? n.callsign! : (n.lxmfName ?? ''));
@@ -12866,6 +12912,10 @@ class RnsService {
 /// identity (a node announces several service destinations). Lives only in
 /// memory; capped and stale-swept by RnsService. See [RnsService.graphSnapshot].
 class _ObservedNode {
+  /// What [RnsService._notePerson] last filed for this node, and when.
+  String peopleSig = '';
+  int peopleAtMs = 0;
+
   final String identityHex;
   final String publicKeyHex;
   final int firstSeenMs;

@@ -356,12 +356,21 @@ class XprsPeople {
     }
   }
 
+  int _lastFlushMs = 0;
+
   void _write(String sql, List<Object?> params) {
     if (_db == null) return;
     _pending.add((sql, params));
-    if (_pending.length >= 200) {
+    // Committed by the next write once a minute has passed, not only by a
+    // timer: with the screen off a Dart timer barely fires (performance.md
+    // 8.2), and what this station learned in a pocket would sit unwritten
+    // until it was killed. The timer is for the quiet case, nothing more.
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_pending.length >= 200 ||
+        (_lastFlushMs != 0 && now - _lastFlushMs >= flushAfter.inMilliseconds)) {
       flush();
     } else {
+      if (_lastFlushMs == 0) _lastFlushMs = now;
       _flushTimer ??= Timer(flushAfter, flush);
     }
   }
@@ -374,6 +383,7 @@ class XprsPeople {
     if (db == null || _pending.isEmpty) return;
     final work = List.of(_pending);
     _pending.clear();
+    _lastFlushMs = DateTime.now().millisecondsSinceEpoch;
     try {
       db.transaction(() {
         for (final (sql, params) in work) {
@@ -600,6 +610,10 @@ class XprsPeople {
 
   /// `callsign|type|value` -> when it was first seen. Bounded, oldest out.
   final Map<String, int> _seenSince = {};
+
+  /// The same, as the strings arrived, and when the pair was last looked at.
+  final Map<String, int> _addressChecked = {};
+  static const int _addressEvery = 5 * 60 * 1000;
   static const int _seenMax = 256;
 
   /// [callsign] was heard directly from the hardware address [value] (a
@@ -608,6 +622,19 @@ class XprsPeople {
   /// rotates never gets there, so nothing has to guess from its bits which
   /// kind it is. Returns whether it was filed now.
   bool noteAddress(String callsign, String type, String value) {
+    // Called for every packet off a radio. The same callsign from the same
+    // address is the usual case and is settled by one map lookup on the
+    // strings as they came: the normalising, the regular expressions and
+    // the search for the holder below run once a pair per [_addressEvery]
+    // (performance.md 8.13: count the operations per packet).
+    final raw = '$callsign|$type|$value';
+    final now0 = nowMs();
+    final seen = _addressChecked[raw];
+    if (seen != null && now0 - seen < _addressEvery) return false;
+    if (seen == null && _addressChecked.length >= _seenMax) {
+      _addressChecked.remove(_addressChecked.keys.first);
+    }
+    _addressChecked[raw] = now0;
     final c = XprsIdType.normalise(callType(callsign), callsign);
     final v = XprsIdType.normalise(type, value);
     if (c.isEmpty || v.isEmpty) return false;
@@ -1070,6 +1097,8 @@ class XprsPeople {
     _index.clear();
     _saidTs.clear();
     _seenSince.clear();
+    _addressChecked.clear();
+    _lastFlushMs = 0;
     _leases.clear();
     _leaseSaved.clear();
     _witness.clear();

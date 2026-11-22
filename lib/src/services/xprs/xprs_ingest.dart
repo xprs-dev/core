@@ -421,10 +421,20 @@ class XprsIngest {
     // (6.3.3).
     final net = xprsNetworkOf(from);
     if (net != null) {
-      final via = (p['via'] ?? '').split(',').last.trim();
-      XprsPeople.instance.note(
-          XprsPeople.unclaimed(net, from), net, from,
-          evidence: XprsIdEvidence.relayed, via: via);
+      // Once a node per ten minutes, not once a packet: a busy Meshtastic
+      // channel is many packets from few nodes (performance.md 8.13).
+      final nowF = DateTime.now().millisecondsSinceEpoch;
+      final last = _foreignNoted[from];
+      if (last == null || nowF - last >= 10 * 60 * 1000) {
+        if (last == null && _foreignNoted.length >= 256) {
+          _foreignNoted.remove(_foreignNoted.keys.first);
+        }
+        _foreignNoted[from] = nowF;
+        final via = (p['via'] ?? '').split(',').last.trim();
+        XprsPeople.instance.note(
+            XprsPeople.unclaimed(net, from), net, from,
+            evidence: XprsIdEvidence.relayed, via: via);
+      }
     }
 
     // A small binary chunked into t:file packets (§7.7.6) is reassembled here
@@ -894,6 +904,9 @@ class XprsIngest {
   // check is a curve operation on this isolate: the second time it is a set
   // lookup (docs/performance.md 8.12, cache the read that does not change).
   static final Set<String> _bound = {};
+
+  /// When each node of another mesh was last filed in the people record.
+  static final Map<String, int> _foreignNoted = {};
 
   /// Claims to an issued callsign refused because another key holds it.
   static int impostorClaims = 0;
