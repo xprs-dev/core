@@ -181,6 +181,31 @@ class XprsIdentity {
   String toString() => '$type:$value (${evidence.name})';
 }
 
+/// Who holds an issued callsign: the key, when this station first heard it
+/// claim the callsign, and when it last heard it use it.
+class XprsLease {
+  XprsLease(this.holder, this.sinceMs, this.lastMs);
+  final String holder;
+  int sinceMs;
+  int lastMs;
+}
+
+/// What became of a key's claim to an issued callsign.
+enum XprsClaim {
+  /// Not an issued callsign: a key's own, by arithmetic, and not leased.
+  derived,
+
+  /// The callsign was free (never claimed here, or its holder silent for a
+  /// year) and is this key's now.
+  taken,
+
+  /// This key holds it already.
+  held,
+
+  /// Another key holds it and was active within the year: an impostor.
+  refused,
+}
+
 class XprsPeople {
   XprsPeople._();
   static final XprsPeople instance = XprsPeople._();
@@ -278,6 +303,20 @@ class XprsPeople {
         final holder = r['holder'] as String;
         _by.putIfAbsent(holder, () => []).add(id);
         _index.putIfAbsent(_k(id.type, id.value), () => {}).add(holder);
+      }
+      // Who holds each issued callsign, since when and until when (6.4.2).
+      db.execute(
+        'CREATE TABLE IF NOT EXISTS leases('
+        'callsign TEXT PRIMARY KEY, holder TEXT NOT NULL,'
+        'since_ms INTEGER NOT NULL, last_ms INTEGER NOT NULL)',
+      );
+      _leases.clear();
+      for (final r in db.select(
+          'SELECT callsign,holder,since_ms,last_ms FROM leases '
+          'ORDER BY last_ms DESC LIMIT ?',
+          [maxRows])) {
+        _leases[r['callsign'] as String] = XprsLease(r['holder'] as String,
+            r['since_ms'] as int, r['last_ms'] as int);
       }
       _saidTs.clear();
       for (final r in db.select(
@@ -728,6 +767,101 @@ class XprsPeople {
     return hs.isEmpty ? null : hs.first;
   }
 
+  // ── Who holds an issued callsign (XPRS.md 6.4.2) ────────────────────────
+  //
+  // An issued callsign has no arithmetic tie to a key, so nothing in the
+  // format stops a second key from announcing it. The rule that settles it:
+  //
+  //   A callsign belongs to ONE key, for a year after that key was last
+  //   active under it. While that lease runs, any other key using the
+  //   callsign is an impostor. After a year of silence the callsign is
+  //   free, and the next key to claim it holds it.
+  //
+  // Every time here is when THIS STATION heard something, on its own clock.
+  // The date a packet carries (`ts:`) is whatever its author wrote: a forger
+  // can date a packet to before the real holder ever spoke, and counted, that
+  // would buy seniority with a lie. A packet dated last year and first heard
+  // today is a day old here.
+
+  /// How long a callsign stays its holder's after the holder was last heard.
+  static const Duration leaseFor = Duration(days: 365);
+
+  /// How much later an activity must be to be written to the store again.
+  static const int _leaseStepMs = 24 * 60 * 60 * 1000;
+
+  final Map<String, XprsLease> _leases = {};
+  final Map<String, int> _leaseSaved = {};
+
+  int leasesTaken = 0, leasesRefused = 0, leasesExpired = 0;
+
+  static String _licence(String callsign) =>
+      XprsIdType.normalise(XprsIdType.licence, callsign);
+
+  /// The key [npub] claims the issued callsign [callsign], in an identity
+  /// packet it signed and this station heard NOW. Returns what became of
+  /// the claim. A callsign a key derives is not leased: [XprsClaim.derived].
+  XprsClaim claimLicence(String npub, String callsign) {
+    if (callType(callsign) != XprsIdType.licence) return XprsClaim.derived;
+    final c = _licence(callsign);
+    final who = npub.trim();
+    if (c.isEmpty || who.isEmpty) return XprsClaim.refused;
+    final now = nowMs();
+    final held = _leases[c];
+    if (held != null && held.holder == who) {
+      _touchLease(c, held, now);
+      return XprsClaim.held;
+    }
+    if (held != null && now - held.lastMs <= leaseFor.inMilliseconds) {
+      leasesRefused++;
+      return XprsClaim.refused;
+    }
+    if (held != null) leasesExpired++;
+    final lease = XprsLease(who, now, now);
+    _leases[c] = lease;
+    _saveLease(c, lease);
+    leasesTaken++;
+    return XprsClaim.taken;
+  }
+
+  /// The key that holds [callsign] now, or null when nobody does (never
+  /// claimed here, or its holder has been silent for [leaseFor]).
+  String? leaseHolder(String callsign) {
+    final l = _leases[_licence(callsign)];
+    if (l == null || nowMs() - l.lastMs > leaseFor.inMilliseconds) return null;
+    return l.holder;
+  }
+
+  /// The lease on [callsign] as it stands, live or lapsed, or null.
+  XprsLease? leaseOf(String callsign) => _leases[_licence(callsign)];
+
+  /// The holder of [callsign] was heard using it (a packet of theirs
+  /// verified): the year starts again. Nothing for anybody else's key.
+  void licenceActive(String callsign, String npub) {
+    final c = _licence(callsign);
+    final l = _leases[c];
+    if (l == null || l.holder != npub.trim()) return;
+    _touchLease(c, l, nowMs());
+  }
+
+  void _touchLease(String c, XprsLease l, int now) {
+    if (now <= l.lastMs) return;
+    // A holder back after its lease lapsed, with nobody having taken the
+    // callsign meanwhile, holds it afresh from now.
+    if (now - l.lastMs > leaseFor.inMilliseconds) l.sinceMs = now;
+    l.lastMs = now;
+    // Memory has the time; the store gets it once a day at most.
+    if (now - (_leaseSaved[c] ?? 0) >= _leaseStepMs) _saveLease(c, l);
+  }
+
+  void _saveLease(String c, XprsLease l) {
+    _leaseSaved[c] = l.lastMs;
+    _write(
+        'INSERT INTO leases(callsign,holder,since_ms,last_ms) VALUES(?,?,?,?) '
+        'ON CONFLICT(callsign) DO UPDATE SET holder=excluded.holder, '
+        'since_ms=excluded.since_ms, last_ms=excluded.last_ms',
+        [c, l.holder, l.sinceMs, l.lastMs]);
+  }
+
   /// Every person whose key SIGNED for the issued callsign [callsign]
   /// (6.4.2), the first to do so first. Any of them may sign as it; none
   /// outranks another. Empty for a callsign a key derives: that has one
@@ -788,6 +922,9 @@ class XprsPeople {
     _index.clear();
     _saidTs.clear();
     _seenSince.clear();
+    _leases.clear();
+    _leaseSaved.clear();
+    leasesTaken = leasesRefused = leasesExpired = 0;
     noted = evicted = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;
   }

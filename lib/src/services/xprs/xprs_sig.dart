@@ -127,37 +127,65 @@ Uint8List? xprsProfilePubXonly() {
   return _ownPub = XprsCrypto.publicKeyXOnly(d);
 }
 
-/// Every other key that signed for the callsign in a packet's `f:`, beside
-/// the one a caller's resolver gave. Set by the owner of the people record.
+/// The key that HOLDS the issued callsign in a packet's `f:`, when a caller's
+/// resolver gave another or none. Set by the owner of the people record.
 ///
-/// An issued callsign has no arithmetic tie to any key, so two stations may
-/// each bind `CT1ABC` to a key of their own and BOTH verify (XPRS.md 6.4.2).
-/// A resolver returns one key; keeping only the first heard meant whoever
-/// spoke first held the callsign on this device and the other's genuine
-/// packets were dropped as forged. A packet from an issued callsign is good
-/// when it verifies against ANY key that signed for that callsign. For a
-/// callsign a key derives (`X1` to `X5`) there is exactly one key and this
-/// returns nothing.
+/// An issued callsign has no arithmetic tie to any key (XPRS.md 6.4.2), so
+/// it is held by lease: one key, for a year after that key was last active
+/// under it (XprsPeople.claimLicence). A packet from an issued callsign is
+/// good only under its holder's key; any other key using the callsign is an
+/// impostor, however old the date it writes on its packets. For a callsign a
+/// key derives (`X1` to `X5`) this returns nothing: arithmetic decides.
 List<Uint8List> Function(String callsign)? xprsAlternateKeys;
+
+/// A packet from [callsign] verified under [pubXonly]: the holder of an
+/// issued callsign was heard using it, and its year starts again. Called
+/// for a fresh verdict only, not for one remembered.
+void Function(String callsign, Uint8List pubXonly)? xprsVerifiedAs;
 
 /// Check the `sig:` on [p] against [pubXonly], the signer's 32-byte x-only key.
 ///
 /// Pass a null key for a signer whose key is not held: the result is
 /// [XprsSigState.unverified] rather than a guess. When the key given does
-/// not verify the packet, or none was given, the other keys held for the
-/// callsign in `f:` are tried ([xprsAlternateKeys], issued callsigns only).
+/// not verify the packet, or none was given, the key that holds the callsign
+/// in `f:` is tried ([xprsAlternateKeys], issued callsigns only).
 XprsSigState xprsVerify(XprsPacket p, Uint8List? pubXonly) {
   final first = _verifyOne(p, pubXonly);
-  if (first == XprsSigState.verified || first == XprsSigState.unsigned) {
+  if (first == XprsSigState.unsigned) return first;
+  if (first == XprsSigState.verified) {
+    if (pubXonly != null) _heard(p, pubXonly);
     return first;
   }
   final others = xprsAlternateKeys?.call(p['f'] ?? '');
   if (others == null || others.isEmpty) return first;
   for (final k in others) {
     if (pubXonly != null && _sameBytes(k, pubXonly)) continue;
-    if (_verifyOne(p, k) == XprsSigState.verified) return XprsSigState.verified;
+    if (_verifyOne(p, k) == XprsSigState.verified) {
+      _heard(p, k);
+      return XprsSigState.verified;
+    }
   }
   return first;
+}
+
+/// Tell the people record a callsign was heard under its key, once per
+/// packet (the verdict is remembered, this is not).
+final Set<String> _heardIds = {};
+void _heard(XprsPacket p, Uint8List key) {
+  final hook = xprsVerifiedAs;
+  final f = p['f'];
+  if (hook == null || f == null || f.isEmpty) return;
+  // Only an issued callsign is leased; skip the rest before any work.
+  if (f.length >= 2 &&
+      (f.codeUnitAt(0) | 0x20) == 0x78 /* x */ &&
+      f.codeUnitAt(1) >= 0x31 &&
+      f.codeUnitAt(1) <= 0x35) {
+    return;
+  }
+  final id = '${p['f']}|${p['sig']}';
+  if (!_heardIds.add(id)) return;
+  if (_heardIds.length > 512) _heardIds.remove(_heardIds.first);
+  hook(f, key);
 }
 
 bool _sameBytes(Uint8List a, Uint8List b) {

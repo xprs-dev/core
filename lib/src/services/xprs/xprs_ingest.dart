@@ -895,6 +895,10 @@ class XprsIngest {
   // lookup (docs/performance.md 8.12, cache the read that does not change).
   static final Set<String> _bound = {};
 
+  /// Claims to an issued callsign refused because another key holds it.
+  static int impostorClaims = 0;
+  static int _lastImpostorLogMs = 0;
+
   static void _bindIdentity(String callsign, XprsPacket p) {
     final hook = onIdentity;
     final npub = p['k'];
@@ -917,6 +921,21 @@ class XprsIngest {
         LogService.instance.add(
           'XPRS: identity from $callsign does not sign for its own key',
         );
+        return;
+      }
+      // An issued callsign is held by lease (6.4.2): the first key this
+      // station heard claim it holds it for a year after it was last active.
+      // Another key claiming it meanwhile is an impostor: not bound, and its
+      // packets under that callsign will not verify.
+      if (XprsPeople.instance.claimLicence(npub, callsign) ==
+          XprsClaim.refused) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - _lastImpostorLogMs > 60000) {
+          _lastImpostorLogMs = now;
+          LogService.instance.add('XPRS: $callsign is held by another key; '
+              'a second key claiming it is not believed (6.4.2)');
+        }
+        impostorClaims++;
         return;
       }
       hook(callsign, hex);

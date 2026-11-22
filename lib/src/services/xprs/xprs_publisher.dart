@@ -1574,6 +1574,11 @@ class XprsPublisher {
     String two(int n) => n.toString().padLeft(2, '0');
     final ts = '${now.year}-${two(now.month)}-${two(now.day)}_'
         '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
+    // This station never hears its own identity packet: it claims its own
+    // issued callsigns here, as it does everybody else's on hearing theirs.
+    for (final c in profile.heldLicences) {
+      XprsPeople.instance.claimLicence(profile.npub, c);
+    }
     final sets = <StatedIdentities>[
       if (profile.heldLicences.isNotEmpty)
         StatedIdentities(XprsIdType.licence, profile.heldLicences),

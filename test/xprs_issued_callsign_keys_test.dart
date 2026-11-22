@@ -1,7 +1,9 @@
-// XPRS.md 6.4.2: an issued callsign has no arithmetic tie to any key, so two
-// stations may each bind one to a key of their own, and both verify. A
-// packet from an issued callsign is good under ANY key that signed for it;
-// the first key heard does not hold the callsign.
+// XPRS.md 6.4.2: an issued callsign has no arithmetic tie to any key, so it
+// is held by lease. One key holds it for a year after that key was last
+// active under it; any other key using the callsign meanwhile is an
+// impostor; after a year of silence the callsign is free. Every time is
+// when THIS station heard, never the date a packet carries.
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
@@ -17,16 +19,15 @@ final _a = BigInt.parse(
 final _b = BigInt.parse(
     '1f2a9c1d7e5b4a6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e',
     radix: 16);
-final _c = BigInt.parse(
-    '2f2a9c1d7e5b4a6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e',
-    radix: 16);
 
 Uint8List _pub(BigInt d) => XprsCrypto.publicKeyXOnly(d);
 String _npub(BigInt d) => NostrCrypto.encodeNpub(HEX.encode(_pub(d)));
 
-XprsPacket _msg(String from, BigInt key, String text) => xprsSign(
-    XprsPacket.parse('t:message f:$from ts:2026-11-22_10:00:00 m:$text')!,
-    key);
+XprsPacket _msg(String from, BigInt key, String text,
+        {String ts = '2026-11-22_10:00:00'}) =>
+    xprsSign(XprsPacket.parse('t:message f:$from ts:$ts m:$text')!, key);
+
+const _day = 24 * 60 * 60 * 1000;
 
 void main() {
   final people = XprsPeople.instance;
@@ -36,76 +37,115 @@ void main() {
     people.debugReset();
     now = 1795300000000;
     people.nowMs = () => now;
-    // The hook as RnsService wires it: every key that signed for the
-    // callsign, from the record.
-    xprsAlternateKeys = (call) => [
-          for (final npub in people.signersOfLicence(call))
-            Uint8List.fromList(HEX.decode(NostrCrypto.decodeNpub(npub))),
-        ];
+    // The hooks as RnsService wires them.
+    xprsAlternateKeys = (call) {
+      final npub = people.leaseHolder(call);
+      return npub == null
+          ? const []
+          : [Uint8List.fromList(HEX.decode(NostrCrypto.decodeNpub(npub)))];
+    };
+    xprsVerifiedAs = (call, key) =>
+        people.licenceActive(call, NostrCrypto.encodeNpub(HEX.encode(key)));
   });
   tearDown(() {
     xprsAlternateKeys = null;
+    xprsVerifiedAs = null;
+    people.close();
     people.debugReset();
   });
 
-  test('two keys bound one issued callsign: a packet from either verifies',
+  test('the first key heard claiming a callsign holds it; a second is refused',
       () {
-    people.claim(_npub(_a), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.signed);
-    now += 60000;
-    people.claim(_npub(_b), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.signed);
-    expect(people.signersOfLicence('CT1ABC'), [_npub(_a), _npub(_b)],
-        reason: 'the first to sign first; neither outranks the other');
-    expect(people.contested(XprsIdType.licence, 'CT1ABC'), isTrue);
+    expect(people.claimLicence(_npub(_a), 'CT1ABC'), XprsClaim.taken);
+    expect(people.claimLicence(_npub(_a), 'ct1abc-9'), XprsClaim.held,
+        reason: 'a device suffix is the same callsign (3.1)');
+    now += 30 * _day;
+    expect(people.claimLicence(_npub(_b), 'CT1ABC'), XprsClaim.refused);
+    expect(people.leaseHolder('CT1ABC'), _npub(_a));
+    expect(people.leasesRefused, 1);
+  });
 
-    // A resolver gives one key, the first heard.
-    final first = _pub(_a);
-    expect(xprsVerify(_msg('CT1ABC', _a, 'from the first'), first),
-        XprsSigState.verified);
-    expect(xprsVerify(_msg('CT1ABC', _b, 'from the second'), first),
+  test('a packet verifies under the holder\'s key and under no other', () {
+    people.claimLicence(_npub(_a), 'CT1ABC');
+    people.claimLicence(_npub(_b), 'CT1ABC'); // refused
+    expect(xprsVerify(_msg('CT1ABC', _a, 'the holder'), null),
         XprsSigState.verified,
-        reason: 'it was dropped as forged while only the first key was kept');
-    // And with a device suffix, which is the same callsign (3.1).
-    expect(xprsVerify(_msg('CT1ABC-9', _b, 'mobile'), first),
-        XprsSigState.verified);
-  });
-
-  test('a key that never signed for the callsign is still a forgery', () {
-    people.claim(_npub(_a), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.signed);
-    expect(xprsVerify(_msg('CT1ABC', _c, 'not theirs'), _pub(_a)),
+        reason: 'no key from the caller: the holder\'s is used');
+    expect(xprsVerify(_msg('CT1ABC', _b, 'an impostor'), _pub(_a)),
         XprsSigState.forged);
-    // A callsign somebody was only SEEN beside is not one they signed for.
-    people.note(_npub(_c), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.observed);
-    expect(people.signersOfLicence('CT1ABC'), [_npub(_a)]);
-    expect(xprsVerify(_msg('CT1ABC', _c, 'still not'), _pub(_a)),
-        XprsSigState.forged);
+    // Even when a caller hands over the impostor's own key, the packet is
+    // "verified" only as that key's, which is the caller's business; the
+    // resolver never hands it over (pubkeyForCallsign gives the holder).
+    expect(xprsVerify(_msg('CT1ABC', _b, 'an impostor'), null),
+        XprsSigState.unverified);
   });
 
-  test('no key from this run, but the record holds one: verified', () {
-    // After a restart the resolver's own table is empty.
-    people.claim(_npub(_b), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.signed);
-    expect(xprsVerify(_msg('CT1ABC', _b, 'after a restart'), null),
+  test('a date written in a packet buys nothing: only hearing counts', () {
+    // The real holder is heard today.
+    people.claimLicence(_npub(_a), 'CT1ABC');
+    final since = people.leaseOf('CT1ABC')!.sinceMs;
+    expect(since, now);
+    // A forger then airs packets dated two years back, to look older.
+    now += _day;
+    final old = _msg('CT1ABC', _b, 'I was here first', ts: '2024-01-01_00:00:00');
+    expect(people.claimLicence(_npub(_b), 'CT1ABC'), XprsClaim.refused);
+    expect(xprsVerify(old, _pub(_a)), XprsSigState.forged);
+    expect(people.leaseHolder('CT1ABC'), _npub(_a));
+    expect(people.leaseOf('CT1ABC')!.sinceMs, since,
+        reason: 'the holder\'s seniority is when this station heard it');
+  });
+
+  test('a year after the holder was last active the callsign is free', () {
+    people.claimLicence(_npub(_a), 'CT1ABC');
+    // Active for two months: a verified packet starts the year again.
+    now += 60 * _day;
+    expect(xprsVerify(_msg('CT1ABC', _a, 'still here'), null),
         XprsSigState.verified);
-    expect(xprsVerify(_msg('CT1ABC', _c, 'a stranger'), null),
-        XprsSigState.unverified,
-        reason: 'no key given and none matched: not known, not forged');
+    expect(people.leaseOf('CT1ABC')!.lastMs, now);
+    // 364 days later it is still theirs.
+    now += 364 * _day;
+    expect(people.leaseHolder('CT1ABC'), _npub(_a));
+    expect(people.claimLicence(_npub(_b), 'CT1ABC'), XprsClaim.refused);
+    // Two more days of silence and it is free; the next claim takes it.
+    now += 2 * _day;
+    expect(people.leaseHolder('CT1ABC'), isNull);
+    expect(people.claimLicence(_npub(_b), 'CT1ABC'), XprsClaim.taken);
+    expect(people.leaseHolder('CT1ABC'), _npub(_b));
+    expect(people.leaseOf('CT1ABC')!.sinceMs, now);
+    // The old holder is the impostor now.
+    expect(people.claimLicence(_npub(_a), 'CT1ABC'), XprsClaim.refused);
+    expect(people.leasesExpired, 1);
   });
 
-  test('a derived callsign has one key, and nothing else is tried', () {
-    expect(people.signersOfLicence('X1QZ3N'), isEmpty);
-    people.claim(_npub(_b), XprsIdType.callsign, 'X1QZ3N',
-        evidence: XprsIdEvidence.signed);
-    expect(xprsVerify(_msg('X1QZ3N', _b, 'x'), _pub(_a)), XprsSigState.forged);
+  test('an impostor\'s packets do not keep anybody\'s lease alive', () {
+    people.claimLicence(_npub(_a), 'CT1ABC');
+    final last = people.leaseOf('CT1ABC')!.lastMs;
+    now += 10 * _day;
+    xprsVerify(_msg('CT1ABC', _b, 'noise'), null);
+    people.licenceActive('CT1ABC', _npub(_b));
+    expect(people.leaseOf('CT1ABC')!.lastMs, last);
   });
 
-  test('an unsigned packet stays unsigned', () {
-    people.claim(_npub(_a), XprsIdType.licence, 'CT1ABC',
-        evidence: XprsIdEvidence.signed);
-    final p = XprsPacket.parse('t:message f:CT1ABC ts:2026-11-22_10:00:00 m:x')!;
-    expect(xprsVerify(p, _pub(_a)), XprsSigState.unsigned);
+  test('a derived callsign is not leased: arithmetic decides it', () {
+    expect(people.claimLicence(_npub(_a), 'X1QZ3N'), XprsClaim.derived);
+    expect(people.leaseHolder('X1QZ3N'), isNull);
+  });
+
+  test('the lease is kept in people.zx and read back after a restart', () {
+    final tmp = Directory.systemTemp.createTempSync('xprslease');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    final path = '${tmp.path}/people.zx';
+    people.init(path);
+    people.claimLicence(_npub(_a), 'CT1ABC');
+    final since = now;
+    people.close();
+    people.debugReset();
+    people.nowMs = () => now;
+    now += 5 * _day;
+    people.init(path);
+    expect(people.leaseHolder('CT1ABC'), _npub(_a));
+    expect(people.leaseOf('CT1ABC')!.sinceMs, since);
+    expect(people.claimLicence(_npub(_b), 'CT1ABC'), XprsClaim.refused,
+        reason: 'a restart does not free a callsign');
   });
 }

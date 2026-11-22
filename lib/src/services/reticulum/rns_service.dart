@@ -42,7 +42,12 @@ import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_self.dart';
 import '../xprs/xprs_sig.dart'
-    show xprsAlternateKeys, xprsProfilePubXonly, xprsVerify, XprsSigState;
+    show
+        xprsAlternateKeys,
+        xprsProfilePubXonly,
+        xprsVerifiedAs,
+        xprsVerify,
+        XprsSigState;
 import '../receive/packet_gateway.dart';
 import '../receive/core_state.dart';
 import '../receive/wapp_delivery.dart';
@@ -127,18 +132,25 @@ class RnsService {
         return null;
       }
     };
-    // An issued callsign may be bound by more than one key, and a packet
-    // from it is good under any of them (6.4.2, xprs_sig.dart).
+    // An issued callsign is held by lease (6.4.2, XprsPeople.claimLicence):
+    // a packet from it is good only under its holder's key, and a verified
+    // packet from the holder starts its year again.
     xprsAlternateKeys = (callsign) {
-      final signers = XprsPeople.instance.signersOfLicence(callsign);
-      if (signers.isEmpty) return const [];
-      final out = <Uint8List>[];
-      for (final npub in signers) {
-        try {
-          out.add(Uint8List.fromList(HEX.decode(NostrCrypto.decodeNpub(npub))));
-        } catch (_) {/* not a key */}
+      final hex = pubkeyForCallsign(callsign);
+      if (hex == null || XprsPeople.callType(callsign) != XprsIdType.licence) {
+        return const [];
       }
-      return out;
+      try {
+        return [Uint8List.fromList(HEX.decode(hex))];
+      } catch (_) {
+        return const [];
+      }
+    };
+    xprsVerifiedAs = (callsign, key) {
+      try {
+        XprsPeople.instance.licenceActive(
+            callsign, NostrCrypto.encodeNpub(HEX.encode(key)));
+      } catch (_) {/* not a key */}
     };
     // Closed groups verify the same way and from the same map: section 26 is
     // built entirely on signatures, so an act nobody can check must not move a
@@ -609,20 +621,30 @@ class RnsService {
   /// bindings alone.
   String? pubkeyForCallsign(String callsign) {
     final c = callsign.trim();
+    if (c.isEmpty) return null;
+    if (XprsPeople.callType(c) == XprsIdType.licence) {
+      // An issued callsign: the key that holds its lease, and no other. Not
+      // this run's table: whoever spoke first this run is not thereby the
+      // holder.
+      final npub = XprsPeople.instance.leaseHolder(c);
+      if (npub == null) return null;
+      final memo = _leaseKeyHex[npub];
+      if (memo != null) return memo;
+      try {
+        final hex = NostrCrypto.decodeNpub(npub);
+        if (hex.length != 64) return null;
+        if (_leaseKeyHex.length >= 256) {
+          _leaseKeyHex.remove(_leaseKeyHex.keys.first);
+        }
+        return _leaseKeyHex[npub] = hex;
+      } catch (_) {
+        return null;
+      }
+    }
     final held = _callPub[c];
     if (held != null) return held;
-    if (c.isEmpty) return null;
-    final String? npub;
-    if (XprsPeople.callType(c) == XprsIdType.callsign) {
-      npub = XprsPeople.instance
-          .personWith(XprsIdType.callsign, c, min: XprsIdEvidence.derived);
-    } else {
-      // An issued callsign: the first key that signed for it. It is only
-      // the first to be tried; a packet verifies against any key that
-      // signed for the callsign (xprsAlternateKeys, 6.4.2).
-      final signers = XprsPeople.instance.signersOfLicence(c);
-      npub = signers.isEmpty ? null : signers.first;
-    }
+    final npub = XprsPeople.instance
+        .personWith(XprsIdType.callsign, c, min: XprsIdEvidence.derived);
     if (npub == null) return null;
     try {
       final hex = NostrCrypto.decodeNpub(npub);
@@ -633,6 +655,10 @@ class RnsService {
       return null;
     }
   }
+
+  /// npub -> key hex, for the holders of issued callsigns: one bech32
+  /// decode a holder, not one a packet. Bounded.
+  final Map<String, String> _leaseKeyHex = {};
 
   /// Hand the packet archive the base callsigns we follow — the middle tier of
   /// XPRS.md 12, and the only reason a phone with "public archiver" off keeps
@@ -676,7 +702,7 @@ class RnsService {
 
   /// The bech32 npub for [callsign] if we've learned its key, else null.
   String? npubForCallsign(String callsign) {
-    final h = _callPub[callsign.trim()];
+    final h = pubkeyForCallsign(callsign);
     if (h == null) return null;
     try {
       return NostrCrypto.encodeNpub(h);

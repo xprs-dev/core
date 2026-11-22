@@ -83,7 +83,7 @@ void main() {
   });
 
   test('after a restart a callsign\'s key is answered from the record: a '
-      'derived one by arithmetic, an issued one by who signed for it', () {
+      'derived one by arithmetic, an issued one by who holds its lease', () {
     final rns = RnsService.instance;
     final kp = NostrCrypto.generateKeyPair();
     final call = 'X1${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
@@ -98,9 +98,11 @@ void main() {
     expect(rns.pubkeyForCallsign(call), kp.publicKeyHex);
     expect(rns.pubkeyForCallsign('$call-2'), kp.publicKeyHex,
         reason: 'a device suffix is the same person (3.1)');
-    expect(rns.pubkeyForCallsign('CT1ZZZ'), kp.publicKeyHex,
-        reason: 'the first key that signed for it; any that did verifies '
-            '(6.4.2, xprs_issued_callsign_keys_test)');
+    expect(rns.pubkeyForCallsign('CT1ZZZ'), isNull,
+        reason: 'signing for an issued callsign is not holding it');
+    // It holds the lease (6.4.2, xprs_issued_callsign_keys_test).
+    people.claimLicence(npub, 'CT1ZZZ');
+    expect(rns.pubkeyForCallsign('CT1ZZZ'), kp.publicKeyHex);
     // An issued callsign somebody was only seen beside is not theirs.
     people.note(npub, XprsIdType.licence, 'CT9SEEN',
         evidence: XprsIdEvidence.observed);
