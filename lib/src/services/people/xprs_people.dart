@@ -185,6 +185,9 @@ class XprsIdentity {
 /// claim the callsign, and when it last heard it use it.
 class XprsLease {
   XprsLease(this.holder, this.sinceMs, this.lastMs);
+
+  /// The callsign, where a list of leases needs it said ([ownLeases]).
+  String callsign = '';
   final String holder;
   int sinceMs;
   int lastMs;
@@ -316,6 +319,27 @@ class XprsPeople {
           'ORDER BY last_ms DESC LIMIT ?',
           [maxRows])) {
         _leases[r['callsign'] as String] = XprsLease(r['holder'] as String,
+            r['since_ms'] as int, r['last_ms'] as int);
+      }
+      // What each archiver said of who holds an issued callsign. Kept: a
+      // station that restarted would otherwise know nothing again until
+      // its archivers' directories came round, and that gap is the one an
+      // impostor needs.
+      db.execute(
+        'CREATE TABLE IF NOT EXISTS witness('
+        'callsign TEXT NOT NULL, archiver TEXT NOT NULL,'
+        'holder TEXT NOT NULL, since_ms INTEGER NOT NULL,'
+        'last_ms INTEGER NOT NULL, PRIMARY KEY(callsign, archiver))',
+      );
+      _witness.clear();
+      final said = db.select(
+          'SELECT callsign,archiver,holder,since_ms,last_ms FROM witness '
+          'ORDER BY last_ms DESC LIMIT ?',
+          [maxRows]).toList();
+      for (final r in said.reversed) {
+        final by = _witness.putIfAbsent(r['callsign'] as String, () => {});
+        if (by.length >= _witnessPerCall) continue;
+        by[r['archiver'] as String] = XprsLease(r['holder'] as String,
             r['since_ms'] as int, r['last_ms'] as int);
       }
       _saidTs.clear();
@@ -807,13 +831,16 @@ class XprsPeople {
     if (c.isEmpty || who.isEmpty) return XprsClaim.refused;
     final now = nowMs();
     final held = _leases[c];
+    // Somebody else holds it by what this station heard or by what its
+    // archivers agree they heard first: this key is the impostor.
+    final holder = leaseHolder(c);
+    if (holder != null && holder != who) {
+      leasesRefused++;
+      return XprsClaim.refused;
+    }
     if (held != null && held.holder == who) {
       _touchLease(c, held, now);
       return XprsClaim.held;
-    }
-    if (held != null && now - held.lastMs <= leaseFor.inMilliseconds) {
-      leasesRefused++;
-      return XprsClaim.refused;
     }
     if (held != null) leasesExpired++;
     final lease = XprsLease(who, now, now);
@@ -823,12 +850,133 @@ class XprsPeople {
     return XprsClaim.taken;
   }
 
-  /// The key that holds [callsign] now, or null when nobody does (never
-  /// claimed here, or its holder has been silent for [leaseFor]).
+  /// The key that holds [callsign] now, or null when nobody does.
+  ///
+  /// This station's own observation, unless the archivers it relies on
+  /// AGREE on a holder they heard before this station heard anybody
+  /// ([agreedHolder]). A station that was not there takes the word of the
+  /// ones that were; a station that was there first is not talked out of it.
   String? leaseHolder(String callsign) {
-    final l = _leases[_licence(callsign)];
-    if (l == null || nowMs() - l.lastMs > leaseFor.inMilliseconds) return null;
-    return l.holder;
+    final c = _licence(callsign);
+    final now = nowMs();
+    final own = _leases[c];
+    final live = own != null && now - own.lastMs <= leaseFor.inMilliseconds;
+    final agreed = agreedHolder(c);
+    if (agreed != null &&
+        (!live || (agreed.holder != own.holder && agreed.sinceMs < own.sinceMs))) {
+      return agreed.holder;
+    }
+    return live ? own.holder : null;
+  }
+
+  // ── What archivers witnessed (the agreement between stations) ───────────
+  //
+  // A fresh station has heard nothing, and a history replay teaches it
+  // nothing here: a replayed packet is only as old as its own word. So who
+  // held a callsign before this station arrived is learned from the
+  // archivers that were there, in their directory (XprsDirectory keyLine):
+  // the key each heard holding the callsign, and when it first and last
+  // heard it.
+  //
+  // One archiver may lie. A holder is taken from testimony only when MOST of
+  // the archivers that say anything about the callsign name the same key
+  // (with one archiver, its word: it is the one this station chose). Among
+  // those that agree, the holder's seniority is the MEDIAN of their first
+  // hearings, so a single early date does not move it.
+
+  /// callsign -> archiver -> what it said.
+  final Map<String, Map<String, XprsLease>> _witness = {};
+  static const int _witnessCalls = 2048;
+  static const int _witnessPerCall = 8;
+
+  int witnessed = 0;
+
+  /// [archiver] says, in its directory, that it heard [npub] holding
+  /// [callsign] from [sinceMs] to [lastMs] (its own clock). A time in the
+  /// future, or an order that cannot be, is not testimony.
+  void witness(String archiver, String callsign, String npub,
+      {required int sinceMs, required int lastMs}) {
+    if (callType(callsign) != XprsIdType.licence) return;
+    final c = _licence(callsign);
+    final a = archiver.trim().toUpperCase().split('-').first;
+    final who = npub.trim();
+    final now = nowMs();
+    const skew = 24 * 60 * 60 * 1000;
+    if (c.isEmpty || a.isEmpty || !who.startsWith('npub1')) return;
+    if (sinceMs <= 0 || sinceMs > lastMs + skew || lastMs > now + skew) return;
+    var by = _witness.remove(c); // re-insert: touched now
+    by ??= {};
+    if (_witness.length >= _witnessCalls) {
+      final gone = _witness.keys.first;
+      _witness.remove(gone);
+      _write('DELETE FROM witness WHERE callsign=?', [gone]);
+    }
+    _witness[c] = by;
+    if (!by.containsKey(a) && by.length >= _witnessPerCall) {
+      final gone = by.keys.first;
+      by.remove(gone);
+      _write('DELETE FROM witness WHERE callsign=? AND archiver=?', [c, gone]);
+    }
+    final was = by[a];
+    by[a] = XprsLease(who, sinceMs, lastMs);
+    witnessed++;
+    // The same words again are not written again: a directory is read
+    // every time it changes, and most of its lines have not.
+    if (was != null &&
+        was.holder == who &&
+        was.sinceMs == sinceMs &&
+        was.lastMs == lastMs) {
+      return;
+    }
+    _write(
+        'INSERT INTO witness(callsign,archiver,holder,since_ms,last_ms) '
+        'VALUES(?,?,?,?,?) ON CONFLICT(callsign,archiver) DO UPDATE SET '
+        'holder=excluded.holder, since_ms=excluded.since_ms, '
+        'last_ms=excluded.last_ms',
+        [c, a, who, sinceMs, lastMs]);
+  }
+
+  /// The holder the archivers agree on for [callsign], with the median of
+  /// their first hearings as its seniority, or null: nobody said anything,
+  /// what they said has lapsed, or they do not agree.
+  XprsLease? agreedHolder(String callsign) {
+    final by = _witness[_licence(callsign)];
+    if (by == null || by.isEmpty) return null;
+    final now = nowMs();
+    final live = [
+      for (final l in by.values)
+        if (now - l.lastMs <= leaseFor.inMilliseconds) l
+    ];
+    if (live.isEmpty) return null;
+    final votes = <String, List<XprsLease>>{};
+    for (final l in live) {
+      votes.putIfAbsent(l.holder, () => []).add(l);
+    }
+    String? best;
+    for (final e in votes.entries) {
+      if (best == null || e.value.length > votes[best]!.length) best = e.key;
+    }
+    final said = votes[best]!;
+    // Most of those who spoke: a tie is no agreement.
+    if (said.length * 2 <= live.length) return null;
+    final firsts = [for (final l in said) l.sinceMs]..sort();
+    final lasts = [for (final l in said) l.lastMs]..sort();
+    return XprsLease(best!, firsts[firsts.length ~/ 2], lasts.last);
+  }
+
+  /// What THIS station heard itself, for its own directory: the live leases,
+  /// newest activity first. Never what an archiver told it: testimony
+  /// repeated as testimony would let one voice count many times.
+  List<XprsLease> ownLeases({int max = 512}) {
+    final now = nowMs();
+    final out = <XprsLease>[];
+    for (final e in _leases.entries) {
+      if (now - e.value.lastMs > leaseFor.inMilliseconds) continue;
+      out.add(XprsLease(e.value.holder, e.value.sinceMs, e.value.lastMs)
+        ..callsign = e.key);
+    }
+    out.sort((a, b) => b.lastMs.compareTo(a.lastMs));
+    return out.length > max ? out.sublist(0, max) : out;
   }
 
   /// The lease on [callsign] as it stands, live or lapsed, or null.
@@ -924,6 +1072,8 @@ class XprsPeople {
     _seenSince.clear();
     _leases.clear();
     _leaseSaved.clear();
+    _witness.clear();
+    witnessed = 0;
     leasesTaken = leasesRefused = leasesExpired = 0;
     noted = evicted = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;

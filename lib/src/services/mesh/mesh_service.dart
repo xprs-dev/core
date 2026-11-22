@@ -1878,6 +1878,11 @@ class MeshService {
   /// (12.9), wired to this device's file store, lanes and preferences.
   void _wireDirectory(MediaArchive mediaArchive) {
     XprsDirectoryAnnouncer.instance
+      // Who holds each issued callsign, as this station heard it (6.4.2).
+      ..holders = (() => [
+            for (final l in XprsPeople.instance.ownLeases())
+              XprsHolderLine(l.callsign, l.holder, l.sinceMs, l.lastMs),
+          ])
       ..isPublic =
           (() => PreferencesService.instanceSync?.xprsPublicArchiver ?? false)
       ..entries = (() => XprsArchive.instance.directoryEntries())
@@ -1941,6 +1946,13 @@ class MeshService {
       XprsGroupRanking.instance.noteIndex(src.archiver, src.sha);
     }
     XprsDirectoryConsumer.instance
+      // What an archiver heard of who holds an issued callsign (6.4.2).
+      ..onHolders = ((archiver, held) {
+        for (final h in held) {
+          XprsPeople.instance.witness(archiver, h.call, h.npub,
+              sinceMs: h.sinceMs, lastMs: h.lastMs);
+        }
+      })
       ..onIndex = XprsGroupRanking.instance.noteIndex
       ..named = _readFrom
       ..fetchText = ((archiver, sha) => _fetchListing(archiver, sha,

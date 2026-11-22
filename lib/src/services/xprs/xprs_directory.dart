@@ -63,6 +63,16 @@ class XprsDirectoryEntry {
   String toString() => '$call ${xprsNowTs(tsMs)}';
 }
 
+/// One holder line: the key an archiver heard holding an issued callsign,
+/// and when it first and last heard it do so.
+class XprsHolderLine {
+  const XprsHolderLine(this.call, this.npub, this.sinceMs, this.lastMs);
+  final String call;
+  final String npub;
+  final int sinceMs;
+  final int lastMs;
+}
+
 class XprsDirectory {
   XprsDirectory._();
 
@@ -82,6 +92,31 @@ class XprsDirectory {
     return null;
   }
 
+  /// The line that says who holds an issued callsign (6.4.2), as this
+  /// archiver witnessed it: the word `XKEY1`, the callsign, the npub, when
+  /// it first heard that key hold it and when it last did. An older reader
+  /// skips the line, as it skips [indexLine].
+  static const String keyLine = 'XKEY1';
+
+  /// Holder lines a listing carries, and a reader takes, at most.
+  static const int maxHolders = 512;
+
+  /// The holders a listing names. Lines that do not parse are skipped.
+  static List<XprsHolderLine> holdersIn(String text) {
+    final out = <XprsHolderLine>[];
+    for (final raw in const LineSplitter().convert(text)) {
+      final line = raw.trim();
+      if (!line.startsWith('$keyLine ')) continue;
+      final f = line.split(RegExp(r'\s+'));
+      if (f.length != 5) continue;
+      final since = xprsParseTs(f[3]), last = xprsParseTs(f[4]);
+      if (since == null || last == null || !f[2].startsWith('npub1')) continue;
+      out.add(XprsHolderLine(f[1].toUpperCase(), f[2], since, last));
+      if (out.length >= maxHolders) break;
+    }
+    return out;
+  }
+
   /// The largest listing a consumer reads: ten thousand callsigns are about
   /// 280 kB (12.9), so a megabyte is a bound nobody honest reaches, and a
   /// file past it is not a directory.
@@ -92,7 +127,7 @@ class XprsDirectory {
   /// [indexRef]: the `file:` value of this archiver's groups index
   /// (12.9.7), named on a line an older reader skips.
   static String compose(Iterable<XprsDirectoryEntry> entries,
-      {String? indexRef}) {
+      {String? indexRef, Iterable<XprsHolderLine> holders = const []}) {
     final best = <String, int>{};
     for (final e in entries) {
       final c = e.call.trim().toUpperCase();
@@ -104,6 +139,17 @@ class XprsDirectory {
     final b = StringBuffer('$magic\n');
     if (indexRef != null && indexRef.isNotEmpty) {
       b.write('$indexLine file:$indexRef\n');
+    }
+    // Who holds each issued callsign, sorted. The last hearing is written
+    // to the day: to the second it would change the listing, and so its
+    // hash, every time a holder spoke, and an unchanged directory is what
+    // costs a reader nothing (12.9).
+    const day = 24 * 60 * 60 * 1000;
+    final hs = holders.take(maxHolders).toList()
+      ..sort((x, y) => x.call.compareTo(y.call));
+    for (final h in hs) {
+      b.write('$keyLine ${h.call} ${h.npub} ${xprsNowTs(h.sinceMs)} '
+          '${xprsNowTs(h.lastMs - h.lastMs % day)}\n');
     }
     for (final c in calls) {
       b.write('$c ${xprsNowTs(best[c]!)}\n');
@@ -206,6 +252,10 @@ class XprsDirectoryAnnouncer {
   /// Asked when the listing is composed; the host keeps the file.
   String? Function()? indexRef;
 
+  /// Who holds each issued callsign, as THIS station heard it (6.4.2):
+  /// its own observations only, never what another archiver told it.
+  List<XprsHolderLine> Function()? holders;
+
   /// Air a signed wire on the bearers, and leave a copy with the archivers.
   Future<void> Function(String wire)? air;
   void Function(String wire)? deposit;
@@ -230,7 +280,7 @@ class XprsDirectoryAnnouncer {
     final self = (selfCallsign?.call() ?? '').trim().toUpperCase();
     if (self.isEmpty) return null;
     final text = XprsDirectory.compose(entries?.call() ?? const [],
-        indexRef: indexRef?.call());
+        indexRef: indexRef?.call(), holders: holders?.call() ?? const []);
     final sha = XprsDirectory.shaOf(text);
     if (sha == _lastSha) {
       unchanged++;
@@ -305,6 +355,10 @@ class XprsDirectoryConsumer {
   /// The listing named the archiver's groups index (12.9.7).
   void Function(String archiver, String shaHex)? onIndex;
 
+  /// The listing said who holds issued callsigns (6.4.2): the archiver's
+  /// testimony, for a station that has heard nothing of its own.
+  void Function(String archiver, List<XprsHolderLine> holders)? onHolders;
+
   /// (archiver, digest) pairs already fetched. Bounded; a restart forgets,
   /// which costs one re-fetch of an unchanged file per archiver.
   final Map<String, int> _seen = {};
@@ -371,6 +425,8 @@ class XprsDirectoryConsumer {
         (store ?? _defaultStore)(from, entries);
         final idx = XprsDirectory.indexShaIn(text);
         if (idx != null) onIndex?.call(from, idx);
+        final held = XprsDirectory.holdersIn(text);
+        if (held.isNotEmpty) onHolders?.call(from, held);
         LogService.instance.add(
             'XPRS: directory of $from read (${entries.length} callsign(s)) — 12.9');
       } catch (e) {
