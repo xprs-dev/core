@@ -67,6 +67,10 @@ class XprsGroupDeposit {
   int? _startedMs;
   bool _busy = false;
 
+  /// How long the groups are left alone after a look that found nothing due.
+  static const Duration idleLook = Duration(hours: 1);
+  int _nextLookMs = 0;
+
   static String _key(String group, String archiver) =>
       // `2`: the first version read the acts from the archive alone, which
       // may have let them go, and marked such a group as handed over.
@@ -86,8 +90,18 @@ class XprsGroupDeposit {
     final t = now();
     _startedMs ??= t;
     if (t - _startedMs! < settle.inMilliseconds) return 0;
+    // Nothing was due on the last full look: the answer cannot change until
+    // a record is a week old or an act is made ([changed]), so the groups
+    // are not walked again every minute for the life of the process
+    // (performance.md 8.7: a question re-asked after the answer stopped
+    // changing). An hour, because an archiver that could not be named may
+    // have announced itself since.
+    if (t < _nextLookMs) return 0;
     final to = targets();
-    if (to.isEmpty) return 0;
+    if (to.isEmpty) {
+      _nextLookMs = t + idleLook.inMilliseconds;
+      return 0;
+    }
     _busy = true;
     try {
       for (final g in groups?.call() ?? const <String>[]) {
@@ -118,6 +132,7 @@ class XprsGroupDeposit {
         }
         if (total > 0) return total;
       }
+      _nextLookMs = t + idleLook.inMilliseconds;
       return 0;
     } finally {
       _busy = false;
@@ -129,6 +144,7 @@ class XprsGroupDeposit {
   void changed(String group) {
     final st = store;
     if (st == null) return;
+    _nextLookMs = 0;
     for (final a in targets()) {
       st.setInt(_key(group.trim().toUpperCase(), a), 0);
     }
@@ -145,5 +161,6 @@ class XprsGroupDeposit {
     packets = 0;
     _startedMs = null;
     _busy = false;
+    _nextLookMs = 0;
   }
 }

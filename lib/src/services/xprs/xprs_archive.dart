@@ -430,7 +430,14 @@ class XprsArchive {
   /// that was tapped then did not open, and Android offered to close the
   /// app (performance.md 8.1, 8.7). The same rows now go in slices of
   /// [flushSlice]; what a caller needs written NOW still calls [flush].
+  ///
+  /// The size of a slice follows what the last one cost: every slice is a
+  /// commit, and a commit is a generation appended to the file (see "Stores
+  /// on zx"), so a machine that writes sixty rows in a tenth of a second is
+  /// not made to commit ten times.
   static const int flushSlice = 6;
+  static const int flushSliceMax = 48;
+  int _sliceRows = flushSlice;
   bool _slicing = false;
 
   /// Slices written by the periodic flush, for the diagnostic line.
@@ -444,9 +451,19 @@ class XprsArchive {
         flush();
         return;
       }
+      final sw = Stopwatch();
       while (_db != null && _pending.isNotEmpty) {
-        flush(max: flushSlice);
+        sw
+          ..reset()
+          ..start();
+        flush(max: _sliceRows);
         slices++;
+        final ms = sw.elapsedMilliseconds;
+        if (ms < 50 && _sliceRows < flushSliceMax) {
+          _sliceRows *= 2;
+        } else if (ms > 120 && _sliceRows > 3) {
+          _sliceRows = (_sliceRows ~/ 2).clamp(3, flushSliceMax);
+        }
         await Future<void>.delayed(const Duration(milliseconds: 40));
       }
     } finally {
@@ -1583,7 +1600,11 @@ class XprsArchive {
         (from == null || from.trim().isEmpty) &&
         to != null &&
         types != null &&
-        types.isNotEmpty) {
+        types.isNotEmpty &&
+        // A page of a few hundred rows is kept; a thousand-row ask is not a
+        // standing question, and twelve of those would be megabytes of
+        // packets held for nobody (performance.md 8.7).
+        lim <= _roomRowsMax) {
       final tos = [for (final d in to) d.trim().isEmpty ? '' : _base(d)]..sort();
       final ts = [...types]..sort();
       roomKey = '${room ?? ''}|${ts.join(',')}|${tos.join(',')}|$lim';
@@ -1792,7 +1813,8 @@ class XprsArchive {
   // identifier (the primary key). Any deletion drops what is kept, and the
   // next ask scans again.
   final Map<String, _RoomRows> _rooms = {};
-  static const int _roomsMax = 24;
+  static const int _roomsMax = 12;
+  static const int _roomRowsMax = 250;
 
   /// Room asks answered from memory, and those that scanned.
   int roomHits = 0;

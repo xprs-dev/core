@@ -15,6 +15,18 @@ library;
 /// `wfd:<ip>:<port>`, `tcp:<host>:<port>`, `tcps#<n>:<ip>:<port>`, `udp`, and
 /// (forward-looking) `lora*`, `radio`/`aprs`/`kiss`.
 String rnsIfaceKind(String via) {
+  // Asked for every announce and every datagram, more than once each, and
+  // a node has a handful of interface labels: the answer is kept.
+  final had = _kindMemo[via];
+  if (had != null) return had;
+  final kind = _ifaceKind(via);
+  if (_kindMemo.length >= 64) _kindMemo.remove(_kindMemo.keys.first);
+  return _kindMemo[via] = kind;
+}
+
+final Map<String, String> _kindMemo = {};
+
+String _ifaceKind(String via) {
   final v = via.trim().toLowerCase();
   if (v.isEmpty) return '';
   if (v.startsWith('ble')) return 'ble';

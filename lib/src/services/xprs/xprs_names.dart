@@ -109,18 +109,29 @@ class XprsNames {
   static String? _personOfKey(String query) {
     final q = query.trim().toLowerCase();
     if (!q.startsWith('npub1') || q.length < 60 || q.length > 70) return null;
+    // A search box asks again on every keystroke and every refresh: the
+    // decode, the callsign arithmetic and the remembering are done once
+    // for a key, not once per ask (performance.md 8.13).
+    if (q == _lastKey) return _lastCall;
     try {
       final hex = NostrCrypto.decodeNpub(q);
       if (hex.length != 64) return null;
       final call = 'X1${NostrCrypto.deriveCallsign(hex)}';
       learnKey(call, hex);
+      _lastKey = q;
+      _lastCall = call;
       return call;
     } catch (_) {
       return null;
     }
   }
 
+  static String _lastKey = '';
+  static String? _lastCall;
+
   static void debugReset() {
+    _lastKey = '';
+    _lastCall = null;
     _askedAtMs = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;
     poke = () => XprsCatchup.instance.askNames();

@@ -564,13 +564,26 @@ class MeshService {
         // whichever of the two carried it.
         XprsBridge.instance.relayable = _relayable;
         XprsBridge.instance.air = airOnLane;
+        // Asked for every packet heard on the LAN, so the answer is kept
+        // half a minute: the monitor builds a map of everything it knows of
+        // a station to give it (performance.md 8: count per packet).
+        final hearsMemo = <String, (int, bool)>{};
         XprsBridge.instance.hearsOn = (call, lane) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          final key = '$call|$lane';
+          final had = hearsMemo[key];
+          if (had != null && now - had.$1 < 30000) return had.$2;
           final st = XprsMonitor.instance.stationJson(call);
-          if (st == null) return false;
-          final last = st['lastDirectMs'] is int ? st['lastDirectMs'] as int : 0;
-          final on = st['bearers'] is List ? st['bearers'] as List : const [];
-          return on.contains(lane) &&
-              DateTime.now().millisecondsSinceEpoch - last < 10 * 60 * 1000;
+          final last = st != null && st['lastDirectMs'] is int
+              ? st['lastDirectMs'] as int
+              : 0;
+          final on = st != null && st['bearers'] is List
+              ? st['bearers'] as List
+              : const [];
+          final yes = on.contains(lane) && now - last < 10 * 60 * 1000;
+          if (hearsMemo.length >= 16) hearsMemo.remove(hearsMemo.keys.first);
+          hearsMemo[key] = (now, yes);
+          return yes;
         };
         XprsIngest.onAnswerPing = (wire, bearer) {
           unawaited(XprsPublisher.instance

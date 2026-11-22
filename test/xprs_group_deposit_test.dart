@@ -68,6 +68,10 @@ void main() {
     expect(sent.where((s) => s.$1 == 'X3TWO'), isEmpty);
     expect(sent.length, 4);
     named = {'X3ARC', 'X3TWO'};
+    await minutes(5);
+    expect(sent.where((s) => s.$1 == 'X3TWO'), isEmpty,
+        reason: 'nothing was due: the groups are left alone for an hour');
+    clock += XprsGroupDeposit.idleLook.inMilliseconds;
     await minutes(2);
     expect(sent.where((s) => s.$1 == 'X3TWO').length, 4);
   });
