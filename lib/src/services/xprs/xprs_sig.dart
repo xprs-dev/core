@@ -127,11 +127,48 @@ Uint8List? xprsProfilePubXonly() {
   return _ownPub = XprsCrypto.publicKeyXOnly(d);
 }
 
+/// Every other key that signed for the callsign in a packet's `f:`, beside
+/// the one a caller's resolver gave. Set by the owner of the people record.
+///
+/// An issued callsign has no arithmetic tie to any key, so two stations may
+/// each bind `CT1ABC` to a key of their own and BOTH verify (XPRS.md 6.4.2).
+/// A resolver returns one key; keeping only the first heard meant whoever
+/// spoke first held the callsign on this device and the other's genuine
+/// packets were dropped as forged. A packet from an issued callsign is good
+/// when it verifies against ANY key that signed for that callsign. For a
+/// callsign a key derives (`X1` to `X5`) there is exactly one key and this
+/// returns nothing.
+List<Uint8List> Function(String callsign)? xprsAlternateKeys;
+
 /// Check the `sig:` on [p] against [pubXonly], the signer's 32-byte x-only key.
 ///
 /// Pass a null key for a signer whose key is not held: the result is
-/// [XprsSigState.unverified] rather than a guess.
+/// [XprsSigState.unverified] rather than a guess. When the key given does
+/// not verify the packet, or none was given, the other keys held for the
+/// callsign in `f:` are tried ([xprsAlternateKeys], issued callsigns only).
 XprsSigState xprsVerify(XprsPacket p, Uint8List? pubXonly) {
+  final first = _verifyOne(p, pubXonly);
+  if (first == XprsSigState.verified || first == XprsSigState.unsigned) {
+    return first;
+  }
+  final others = xprsAlternateKeys?.call(p['f'] ?? '');
+  if (others == null || others.isEmpty) return first;
+  for (final k in others) {
+    if (pubXonly != null && _sameBytes(k, pubXonly)) continue;
+    if (_verifyOne(p, k) == XprsSigState.verified) return XprsSigState.verified;
+  }
+  return first;
+}
+
+bool _sameBytes(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+XprsSigState _verifyOne(XprsPacket p, Uint8List? pubXonly) {
   final s = p['sig'];
   if (s == null) return XprsSigState.unsigned;
   if (pubXonly == null) return XprsSigState.unverified;

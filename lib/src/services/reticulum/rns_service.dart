@@ -42,7 +42,7 @@ import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_groups.dart';
 import '../xprs/xprs_self.dart';
 import '../xprs/xprs_sig.dart'
-    show xprsProfilePubXonly, xprsVerify, XprsSigState;
+    show xprsAlternateKeys, xprsProfilePubXonly, xprsVerify, XprsSigState;
 import '../receive/packet_gateway.dart';
 import '../receive/core_state.dart';
 import '../receive/wapp_delivery.dart';
@@ -126,6 +126,19 @@ class RnsService {
       } catch (_) {
         return null;
       }
+    };
+    // An issued callsign may be bound by more than one key, and a packet
+    // from it is good under any of them (6.4.2, xprs_sig.dart).
+    xprsAlternateKeys = (callsign) {
+      final signers = XprsPeople.instance.signersOfLicence(callsign);
+      if (signers.isEmpty) return const [];
+      final out = <Uint8List>[];
+      for (final npub in signers) {
+        try {
+          out.add(Uint8List.fromList(HEX.decode(NostrCrypto.decodeNpub(npub))));
+        } catch (_) {/* not a key */}
+      }
+      return out;
     };
     // Closed groups verify the same way and from the same map: section 26 is
     // built entirely on signatures, so an act nobody can check must not move a
@@ -598,9 +611,18 @@ class RnsService {
     final c = callsign.trim();
     final held = _callPub[c];
     if (held != null) return held;
-    if (c.isEmpty || XprsPeople.callType(c) != XprsIdType.callsign) return null;
-    final npub = XprsPeople.instance.personWith(XprsIdType.callsign, c,
-        min: XprsIdEvidence.derived);
+    if (c.isEmpty) return null;
+    final String? npub;
+    if (XprsPeople.callType(c) == XprsIdType.callsign) {
+      npub = XprsPeople.instance
+          .personWith(XprsIdType.callsign, c, min: XprsIdEvidence.derived);
+    } else {
+      // An issued callsign: the first key that signed for it. It is only
+      // the first to be tried; a packet verifies against any key that
+      // signed for the callsign (xprsAlternateKeys, 6.4.2).
+      final signers = XprsPeople.instance.signersOfLicence(c);
+      npub = signers.isEmpty ? null : signers.first;
+    }
     if (npub == null) return null;
     try {
       final hex = NostrCrypto.decodeNpub(npub);

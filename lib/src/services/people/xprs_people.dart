@@ -728,6 +728,30 @@ class XprsPeople {
     return hs.isEmpty ? null : hs.first;
   }
 
+  /// Every person whose key SIGNED for the issued callsign [callsign]
+  /// (6.4.2), the first to do so first. Any of them may sign as it; none
+  /// outranks another. Empty for a callsign a key derives: that has one
+  /// key, by arithmetic.
+  List<String> signersOfLicence(String callsign) {
+    if (callType(callsign) != XprsIdType.licence) return const [];
+    final v = XprsIdType.normalise(XprsIdType.licence, callsign);
+    final hs = _index[_k(XprsIdType.licence, v)];
+    if (hs == null) return const [];
+    final rows = <(String, int)>[];
+    for (final h in hs) {
+      if (isUnclaimed(h)) continue;
+      for (final e in _by[h] ?? const <XprsIdentity>[]) {
+        if (e.type == XprsIdType.licence &&
+            e.value == v &&
+            e.evidence.index >= XprsIdEvidence.signed.index) {
+          rows.add((h, e.firstMs));
+        }
+      }
+    }
+    rows.sort((a, b) => a.$2.compareTo(b.$2));
+    return [for (final r in rows) r.$1];
+  }
+
   /// More than one key holds [type]:[value] (6.4.2: an issued callsign has
   /// no arithmetic tie to any key, so two may announce it and both verify).
   bool contested(String type, String value) =>

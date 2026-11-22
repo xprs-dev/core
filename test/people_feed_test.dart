@@ -82,8 +82,8 @@ void main() {
     expect(people.personWith(XprsIdType.meshtastic, 'MTA1B2C3D4'), npub);
   });
 
-  test('after a restart a derived callsign\'s key is answered from the '
-      'record; an issued one is not', () {
+  test('after a restart a callsign\'s key is answered from the record: a '
+      'derived one by arithmetic, an issued one by who signed for it', () {
     final rns = RnsService.instance;
     final kp = NostrCrypto.generateKeyPair();
     final call = 'X1${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
@@ -98,8 +98,13 @@ void main() {
     expect(rns.pubkeyForCallsign(call), kp.publicKeyHex);
     expect(rns.pubkeyForCallsign('$call-2'), kp.publicKeyHex,
         reason: 'a device suffix is the same person (3.1)');
-    expect(rns.pubkeyForCallsign('CT1ZZZ'), isNull,
-        reason: 'no arithmetic ties an issued callsign to a key (6.4.2)');
+    expect(rns.pubkeyForCallsign('CT1ZZZ'), kp.publicKeyHex,
+        reason: 'the first key that signed for it; any that did verifies '
+            '(6.4.2, xprs_issued_callsign_keys_test)');
+    // An issued callsign somebody was only seen beside is not theirs.
+    people.note(npub, XprsIdType.licence, 'CT9SEEN',
+        evidence: XprsIdEvidence.observed);
+    expect(rns.pubkeyForCallsign('CT9SEEN'), isNull);
     // A callsign only OBSERVED beside a key is not proof of it.
     final other = NostrCrypto.generateKeyPair();
     people.note(NostrCrypto.encodeNpub(other.publicKeyHex),
