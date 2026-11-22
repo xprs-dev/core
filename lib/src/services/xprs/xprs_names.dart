@@ -15,6 +15,8 @@
  */
 library;
 
+import 'package:reticulum/reticulum.dart';
+import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_catchup.dart';
 import 'xprs_group_act.dart' show xprsGroupNickShown;
@@ -66,6 +68,17 @@ class XprsNames {
     }
     final n = limit.clamp(1, 200);
     final me = self.trim().toUpperCase().split('-').first;
+    // A person's key, typed or pasted, IS that person: their callsign is
+    // arithmetic on it (3), so nothing has to have been heard. What lets
+    // somebody write to a person no station here has met (12.7.1): the key
+    // is learned from the query itself, and the row is theirs to tap.
+    final byKey = _personOfKey(query);
+    if (byKey != null) {
+      if (byKey == me || (kind.isNotEmpty && kind != 'user')) return const [];
+      return [
+        {'call': byKey, 'nick': '', 'kind': 'user', 'ts': nowMs() ~/ 1000},
+      ];
+    }
     // A prefix narrows in the store; a station has none (X2, X3, X4, a
     // licence), so its page is read wider and narrowed here.
     final prefix = switch (kind) { 'group' => 'X5', 'user' => 'X1', _ => null };
@@ -87,9 +100,31 @@ class XprsNames {
     return out;
   }
 
+  /// Where a key typed into Search is remembered for its callsign.
+  static void Function(String call, String keyHex) learnKey =
+      (call, hex) => RnsService.instance.recordCallsignPubkey(call, hex);
+
+  /// The callsign of the person whose `npub1...` [query] is, with the key
+  /// remembered for it; null when [query] is not a key.
+  static String? _personOfKey(String query) {
+    final q = query.trim().toLowerCase();
+    if (!q.startsWith('npub1') || q.length < 60 || q.length > 70) return null;
+    try {
+      final hex = NostrCrypto.decodeNpub(q);
+      if (hex.length != 64) return null;
+      final call = 'X1${NostrCrypto.deriveCallsign(hex)}';
+      learnKey(call, hex);
+      return call;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static void debugReset() {
     _askedAtMs = 0;
     nowMs = () => DateTime.now().millisecondsSinceEpoch;
     poke = () => XprsCatchup.instance.askNames();
+    learnKey =
+        (call, hex) => RnsService.instance.recordCallsignPubkey(call, hex);
   }
 }
