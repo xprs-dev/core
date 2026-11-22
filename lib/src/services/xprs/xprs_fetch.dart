@@ -115,15 +115,20 @@ class XprsFetch {
   /// Not skipped in earshot: a station in the room is asked `q:identity`
   /// directly as well, but one that has not answered is exactly why the key
   /// is still missing. One page is enough; the newest binding is the one.
-  bool requestKey(String call, {String reason = ''}) =>
-      _request(call, _kIdentity, reason: reason);
+  ///
+  /// [first]: stations to ask before the archivers, in order (the carriers
+  /// of the sealed packet that needs the key).
+  bool requestKey(String call,
+          {String reason = '', List<String> first = const []}) =>
+      _request(call, _kIdentity, reason: reason, first: first);
 
   static const String _kMessage = 'message';
   static const String _kIdentity = 'identity';
   static String _keyOf(String kind, String call) =>
       kind == _kMessage ? call : '$kind:$call';
 
-  bool _request(String call, String kind, {String reason = ''}) {
+  bool _request(String call, String kind,
+      {String reason = '', List<String> first = const []}) {
     final c = _base(call);
     final self = _base(selfCallsign?.call() ?? XprsArchive.instance.selfCallsign);
     if (c.isEmpty || self.isEmpty || c == self || !xprsAddressesStation(c)) {
@@ -146,6 +151,9 @@ class XprsFetch {
       candidates.add(b);
     }
 
+    for (final a in first.take(3)) {
+      if (xprsAddressesStation(a)) add(a);
+    }
     final good = _lastGood[c];
     if (good != null) add(good);
     for (final a in archivers?.call() ??

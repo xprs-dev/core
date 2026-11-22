@@ -709,7 +709,12 @@ class MeshCourier {
           sealed: true,
           edit: id,
           ts: xprsParseTs(p['ts']));
-      if (v.ok) openedLate++;
+      if (v.ok) {
+        openedLate++;
+        _noteDelivered(e.f.id);
+        _noteDelivered(id);
+        _acknowledge(p, e.via);
+      }
     }
     LogService.instance.add(
         'Courier: key for $c arrived, ${mine.length} held message(s) opened');
@@ -834,7 +839,12 @@ class MeshCourier {
       // no t:identity from us and sends none our way (stations relay nothing
       // onto Reticulum). The archivers keep every binding (12.12.1), so ask
       // them as the send path does.
-      XprsFetch.instance.requestKey(f.from, reason: 'sealed message from them');
+      // First whoever CARRIED it here (its `via:`, nearest first): a station
+      // that kept a letter keeps its author's identity with it, and is in
+      // reach by construction, where the archivers may not be.
+      XprsFetch.instance.requestKey(f.from,
+          reason: 'sealed message from them',
+          first: xprsVia(p).reversed.toList());
       // Held until the key comes, and opened then; the reader is told only
       // when the grace ran out with no key (see [_holdForKey]).
       if (!notice) {
@@ -1069,6 +1079,13 @@ class MeshCourier {
     // completed the set left its siblings unknown, so every replay re-opened a
     // set that could never close and the 64-set table churned for ever
     // (`42 set(s) incomplete`, climbing, in the field).
+    // A notice that a sealed letter waits for its key is not the letter.
+    // Acknowledging it released every holder's copy of words nobody had
+    // read: the station that kept the letter for months dropped it the
+    // moment its reader arrived (seen 2026-11-22, a C3 holding a letter for
+    // a phone that did not have the author's key yet). It is acknowledged
+    // when it opens ([keyLearned]); until then the holders keep it.
+    if (notice) return true;
     _noteDelivered(f.id);
     for (final partId in partIds) {
       _noteDelivered(partId);

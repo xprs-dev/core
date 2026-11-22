@@ -709,3 +709,10 @@ its holder" need.
   scans for these whatever index exists: do not add another polled query
   that filters on `wire` or on several types without going through it.
   `tool/room_time.dart <archive.zx>` times the page's questions on a real file.
+- `XprsFetch.requestKey(call, first: [...])`: ask named stations before the
+  archivers. The carriers in a packet's `via:` are in reach by construction;
+  use this whenever the thing needed is likely to be where the packet came
+  from.
+- A placeholder is not a delivery (`MeshCourier.deliverXprs(notice: true)`):
+  nothing that stands in for content may acknowledge it, or the holders
+  release what nobody read.

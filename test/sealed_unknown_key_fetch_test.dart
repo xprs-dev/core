@@ -49,4 +49,21 @@ void main() {
     expect(c.waitingForKey, had + 1,
         reason: 'told to the reader, and still to be opened when the key comes');
   });
+
+  test('the stations that carried a sealed message are asked for its key first', () {
+    final sent = <String>[];
+    final fetch = XprsFetch.instance
+      ..autoTick = false
+      ..selfCallsign = (() => 'X1ME')
+      ..archivers = (() => ['X3ARC'])
+      ..send = ((w) async => sent.add(w));
+    final wire = 't:message f:X1FARA d:X1ME ts:2026-11-22_16:00:00 '
+        'x:${base64Url.encode(List.filled(48, 5)).replaceAll('=', '')} '
+        'via:X3FIRST,X3LAST';
+    final f = MeshFrame.parse(Uint8List.fromList(utf8.encode(wire)))!;
+    MeshCourier.instance.deliverXprs(f, via: 'lan');
+    expect(sent.where((w) => w.contains('only:X1FARA')).first,
+        contains('d:X3LAST'),
+        reason: 'the nearest carrier holds the letter, and its author with it');
+  });
 }
