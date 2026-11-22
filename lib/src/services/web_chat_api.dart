@@ -786,6 +786,16 @@ class WebChatApi {
           'state': roster != null && roster.closed ? 'closed' : 'open',
           'verified': roster?.verified ?? false,
           if (_groupNick(group) != null) 'name': _groupNick(group),
+          // The groups this one lists as part of itself (10.2), from its
+          // cached roster: what lets the page draw its folders. Each is a
+          // group of its own, asked for by its own callsign.
+          if (roster != null &&
+              roster.roles.values.contains(XprsRole.sub))
+            'subs': [
+              for (final e in roster.roles.entries)
+                if (e.value == XprsRole.sub)
+                  {'g': e.key, 'name': _groupNick(e.key) ?? e.key},
+            ].take(maxSubs).toList(),
           // The asker's place in it, from the record this station holds:
           // what lets the page offer Join, Leave or the moderator's menu.
           if (asker != null && roster != null) ...{
@@ -811,6 +821,9 @@ class WebChatApi {
       },
     });
   }
+
+  /// How many folders of one group a reply lists.
+  static const int maxSubs = 64;
 
   /// A group's name as its own `t:identity` gave it (6.3.2), shown with
   /// spaces; null when none was heard.

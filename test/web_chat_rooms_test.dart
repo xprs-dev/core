@@ -292,6 +292,15 @@ void main() {
     expect((h.json['rows'] as List).map((r) => r['wire']).toList(), [member]);
     expect(h.json['group'], {'state': 'open', 'verified': true});
 
+    // The group lists two folders (10.2): the page is told, to draw them.
+    groups.offer(xprsSign(
+        XprsPacket.parse(
+            't:moderate f:X5REMO d:X5REMO ts:${ts(-8)} grant:X5K2M9,X5T4WD role:sub')!,
+        d));
+    final tree = await a.handle('GET', '/api/xprs/history', {'room': 'X5REMO'}, '', peer: lan);
+    expect(((tree.json['group'] as Map)['subs'] as List).map((x) => x['g']).toSet(),
+        {'X5K2M9', 'X5T4WD'});
+
     // The group invites Carol; her page sees it and her acceptance, signed
     // by her, goes out through this station like a post to the group.
     final inv = xprsSign(XprsPacket.parse('t:moderate f:X5REMO d:X5REMO ts:${ts(-3)} grant:X1CARO')!, d);

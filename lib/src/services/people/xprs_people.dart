@@ -84,6 +84,18 @@ abstract final class XprsIdType {
     lxmf,
   ];
 
+  /// The kinds a person types in themselves, in the order a form offers
+  /// them. A radio address (`ble`, `wlan`) is not among them: a machine
+  /// fills that in from what it hears, a person does not copy one out
+  /// (decided 2026-11-22).
+  static const List<String> typed = [
+    email,
+    meshtastic,
+    meshcore,
+    reticulum,
+    lxmf,
+  ];
+
   /// How far a kind is worth telling when its owner has not chosen: a
   /// board's radio address only helps somebody in range of it.
   static String defaultScope(String type) =>
