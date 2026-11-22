@@ -614,7 +614,109 @@ class MeshCourier {
   int _held = 0;
   int _joined = 0;
 
-  bool deliverXprs(MeshFrame f, {required String via, int depth = 0}) {
+  // ── A sealed message that arrived before its sender's key ───────────────
+  //
+  // A person's first message to somebody new is sealed to the reader and
+  // opens only against the SENDER's key (9.2), which the reader may not hold
+  // yet. It used to be shown at once as "waiting for the key", the key was
+  // asked for, and when the key came nothing opened the message: it stayed
+  // unreadable for good (reported 2026-11-22). It is held here instead and
+  // delivered the moment the key is learned ([keyLearned]). Only when no key
+  // has come within [keyGrace] is the reader told a sealed message is
+  // waiting; that one still opens later, as a correction of the notice.
+  // Held in memory, bounded: not delivered means not acknowledged, so the
+  // sender's and every carrier's copy stays and is offered again.
+
+  /// How long a sealed message waits for its sender's key before the reader
+  /// is told one is waiting.
+  static Duration keyGrace = const Duration(seconds: 45);
+  static const int _keyWaitMax = 64;
+  static const int _keyWaitPerSender = 8;
+  static const int _keyWaitForMs = 24 * 3600 * 1000;
+  final List<_KeyWaiting> _keyWait = [];
+  Timer? _keyGraceTimer;
+
+  /// Sealed messages held for a key (for the diagnostic line and tests).
+  int get waitingForKey => _keyWait.length;
+  static int openedLate = 0;
+
+  void _holdForKey(MeshFrame f, String via) {
+    final from = f.from.trim().toUpperCase();
+    if (_keyWait.any((e) => e.f.id == f.id)) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _keyWait.removeWhere((e) => now - e.atMs > _keyWaitForMs);
+    if (_keyWait.where((e) => e.from == from).length >= _keyWaitPerSender ||
+        _keyWait.length >= _keyWaitMax) {
+      _keyWait.removeAt(_keyWait.indexWhere(
+          (e) => e.from == from || _keyWait.length >= _keyWaitMax));
+    }
+    _keyWait.add(_KeyWaiting(f, via, from, now));
+    LogService.instance.add('Courier: sealed message from $from held until '
+        'its key arrives (${_keyWait.length} waiting)');
+    _keyGraceTimer ??= Timer(keyGrace + const Duration(seconds: 1), _keyGraceUp);
+  }
+
+  /// The grace is over for some: tell the reader a sealed message waits.
+  void _keyGraceUp() {
+    _keyGraceTimer = null;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final e in List.of(_keyWait)) {
+      if (e.shown || now - e.atMs < keyGrace.inMilliseconds) continue;
+      if (_npubForCallsign(e.from).isNotEmpty) {
+        keyLearned(e.from); // it came by a way that did not say so
+        continue;
+      }
+      e.shown = true;
+      deliverXprs(e.f, via: e.via, notice: true);
+    }
+    if (_keyWait.any((e) => !e.shown)) {
+      _keyGraceTimer = Timer(keyGrace, _keyGraceUp);
+    }
+  }
+
+  /// [call]'s key is known now: open what was held for it.
+  void keyLearned(String call) {
+    if (_keyWait.isEmpty) return;
+    final c = call.trim().toUpperCase().split('-').first;
+    if (_npubForCallsign(c).isEmpty) return; // not where this reads it yet
+    final mine = [
+      for (final e in _keyWait)
+        if (e.from.split('-').first == c) e,
+    ];
+    if (mine.isEmpty) return;
+    _keyWait.removeWhere(mine.contains);
+    for (final e in mine) {
+      if (!e.shown) {
+        deliverXprs(e.f, via: e.via);
+        continue;
+      }
+      // The notice is on the screen under the message's own identifier: the
+      // words go out as its correction (7.8.1), so they take its place.
+      final p = e.f.packet;
+      if (p == null || p.has('n')) continue;
+      final read = xprsReadBody(p, senderKeyHex: _npubForCallsign(e.from));
+      if (read.privacy != XprsPrivacy.sealed || !read.readable) continue;
+      final id = xprsIdentifier(p);
+      final v = WappDelivery.instance.deliverMessage(
+          call: e.f.from,
+          content: read.clear ?? '',
+          bearer: e.via,
+          id: '${id}k',
+          sig: XprsSigState.verified.name,
+          file: p['file'] ?? '',
+          size: p['size'] ?? '',
+          name: p['name'] ?? '',
+          sealed: true,
+          edit: id,
+          ts: xprsParseTs(p['ts']));
+      if (v.ok) openedLate++;
+    }
+    LogService.instance.add(
+        'Courier: key for $c arrived, ${mine.length} held message(s) opened');
+  }
+
+  bool deliverXprs(MeshFrame f,
+      {required String via, int depth = 0, bool notice = false}) {
     var p = f.packet!;
     // Cheapest possible first (docs/performance.md 4.2). Everything below is a
     // curve operation or a store write, and this method is reached twice for
@@ -721,9 +823,6 @@ class MeshCourier {
       // benign and self-correcting — their `t:identity` (9.3) has not been heard
       // yet, and it is re-announced every 30 minutes (18.1).
       MeshCourierCounters.ingestSealedUnreadable++;
-      LogService.instance.add(
-          'Courier: sealed packet from ${f.from} we cannot open — shown as '
-          'unreadable, not dropped');
       // Section 18.1: ask them for the binding instead of waiting up to thirty
       // minutes for the next announcement. This is the receiving half of the
       // same remedy the sender uses when it cannot seal -- and it is the half
@@ -736,6 +835,15 @@ class MeshCourier {
       // onto Reticulum). The archivers keep every binding (12.12.1), so ask
       // them as the send path does.
       XprsFetch.instance.requestKey(f.from, reason: 'sealed message from them');
+      // Held until the key comes, and opened then; the reader is told only
+      // when the grace ran out with no key (see [_holdForKey]).
+      if (!notice) {
+        _holdForKey(f, via);
+        return false;
+      }
+      LogService.instance.add(
+          'Courier: sealed packet from ${f.from} still without its key — '
+          'shown as waiting');
       body = '[sealed message — waiting for ${f.from}\'s key to open it]';
     }
     // SECTION 6.6: A PARTIAL MESSAGE IS NEVER DISPLAYED.
@@ -1264,4 +1372,16 @@ class CarriedWire {
   final Uint8List bytes;
   final String to;
   final bool sealed;
+}
+
+/// A sealed message held for its sender's key ([MeshCourier._holdForKey]).
+class _KeyWaiting {
+  _KeyWaiting(this.f, this.via, this.from, this.atMs);
+  final MeshFrame f;
+  final String via;
+  final String from;
+  final int atMs;
+
+  /// The reader has been told it is waiting.
+  bool shown = false;
 }

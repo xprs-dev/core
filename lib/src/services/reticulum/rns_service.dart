@@ -586,7 +586,9 @@ class RnsService {
     if (onlyIfUnknown && (_callPub[c]?.isNotEmpty ?? false)) return;
     final hex = FollowSet.toHex(key); // accepts hex / npub / base64url
     if (hex != null) {
+      final fresh = _callPub[c] != hex;
       _callPub[c] = hex;
+
       // The people record learns it too, as what it is: the key's own
       // callsign by arithmetic, or else a pairing this station was told of.
       // (A verified identity packet has already claimed it as signed, in
@@ -619,6 +621,9 @@ class RnsService {
           XprsGroupKeys.instance.rememberGroupKey(c, NostrCrypto.encodeNpub(hex));
         } catch (_) {}
       }
+      // Whoever held something for this key (a sealed message that came
+      // before it) opens it now, whichever way the key arrived.
+      if (fresh) XprsIngest.onKeyLearned?.call(c);
       // Learning a followed callsign's key may unblock fetching its profile.
       _maybeFetchFollowedProfile(c);
       // ...and it is what a message waiting in the outbox for this person
@@ -1198,7 +1203,11 @@ class RnsService {
     return {
       'hops': best.hops,
       'via': best.via,
-      'kind': rnsIfaceKind(best.via),
+      // Relayed onto our network from elsewhere is the internet's way.
+      'kind': rnsIfaceKind(best.via) == 'lan' &&
+              !rnsArrivedLocally(best.via, best.hops - 1)
+          ? 'internet'
+          : rnsIfaceKind(best.via),
       'relayer': r == null ? '' : _bareUpper(_observed[r]?.callsign ?? ''),
       'ageMs': DateTime.now().millisecondsSinceEpoch - best.lastSeenMs,
     };
@@ -1462,8 +1471,9 @@ class RnsService {
         nostrPubHex: n.nostrPubHex ?? '',
         identityHex: n.identityHex,
         services: n.services,
-        announceBearer: rnsIfaceBearer(
-            n.localVia.isNotEmpty ? n.localVia : n.via),
+        announceBearer: n.localVia.isNotEmpty
+            ? rnsIfaceBearer(n.localVia)
+            : rnsIfaceBearer(n.via, wireHops: n.hops - 1),
         announceFresh: true,
         firstSeenMs: n.firstSeenMs,
         lastSeenMs: n.lastSeenMs,
@@ -2457,7 +2467,7 @@ class RnsService {
     n.lastSeenMs = now;
     n.hops = wireHops + 1;
     n.via = via;
-    if (rnsIfaceIsLocal(rnsIfaceKind(via))) {
+    if (rnsArrivedLocally(via, wireHops)) {
       n.localVia = via;
       n.lastLocalMs = now;
     }
@@ -2795,7 +2805,11 @@ class RnsService {
         'local': n.lastLocalMs > 0 &&
             DateTime.now().millisecondsSinceEpoch - n.lastLocalMs <=
                 _onlineWindowMs,
-        'ifaceKind': rnsIfaceKind(n.localVia.isNotEmpty ? n.localVia : n.via),
+        'ifaceKind': n.localVia.isNotEmpty
+            ? rnsIfaceKind(n.localVia)
+            : (rnsArrivedLocally(n.via, n.hops - 1)
+                ? rnsIfaceKind(n.via)
+                : 'internet'),
         // Every relayer/hub this node is currently reachable through.
         'relayers': n.relayers.toList(),
         // NomadNet/LXMF messaging handles: the announced display name and the
@@ -5506,8 +5520,8 @@ class RnsService {
   /// made a message from the board on the bench -- over Bluetooth, ESP-NOW,
   /// LoRa or the LAN -- announce itself to the reader as "Reticulum".
   void _deliverWappDatagram(String tag, String from, Uint8List payload,
-      {String via = ''}) {
-    final bearer = rnsIfaceBearer(via);
+      {String via = '', int wireHops = 0}) {
+    final bearer = rnsIfaceBearer(via, wireHops: wireHops);
     // Core tap for XPRS off the hub lane: archived under the mailbox-
     // declaration rule (docs/XPRS.md sections 13.12 and 12.3), never shown
     // as an air sighting. The wapp inbox below still gets its copy.
@@ -6054,7 +6068,7 @@ class RnsService {
       return;
     }
     stationLaneIn++;
-    _deliverWappDatagram('xprs', '', plain, via: via);
+    _deliverWappDatagram('xprs', '', plain, via: via, wireHops: p.hops);
   }
 
   /// Pull store-and-forwarded wapp datagrams a peer holds for us from its
@@ -6228,7 +6242,8 @@ class RnsService {
                 _noteWappStation(ann.identity, payload);
               }
             }
-            _deliverWappDatagram(tag, ann.identity.hexHash, payload, via: via);
+            _deliverWappDatagram(tag, ann.identity.hexHash, payload,
+                via: via, wireHops: hops);
           }
         }
       } catch (_) {}

@@ -600,6 +600,7 @@ class MeshService {
         // the plaintext of a sealed 1:1 is kept nowhere: the courier holds it
         // and offers it again the moment a door opens.
         MeshCourier.instance.listenForDoors();
+        XprsIngest.onKeyLearned = MeshCourier.instance.keyLearned;
         // Poll every station in reach once a minute, off the native heartbeat
         // so it survives a pocket (docs/performance.md section 8.2).
         XprsCatchup.instance.start(cs);

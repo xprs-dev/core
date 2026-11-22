@@ -690,3 +690,11 @@ its holder" need.
 - `RnsService._dmDecoded`: a result keyed by a content hash is computed once
   (verify, decrypt), including the failure. Same rule for anything polled:
   the poll may repeat, the work on an unchanged item may not.
+- `rnsArrivedLocally(via, wireHops)` and `rnsIfaceBearer(via, wireHops:)`
+  (`rns_iface_kind.dart`): whether something came from nearby is the
+  interface AND the hop count. Never name a bearer or call a node local from
+  the interface label alone.
+- `MeshCourier.keyLearned` / `XprsIngest.onKeyLearned`: the one hook for
+  "this callsign's key is known now", fired from the identity packet and from
+  `RnsService.recordCallsignPubkey`. Anything that waits for a key listens
+  there instead of polling.

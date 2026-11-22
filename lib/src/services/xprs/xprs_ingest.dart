@@ -71,6 +71,10 @@ class XprsIngest {
   /// the catch-up poller advances its watermark on these (12.10.1).
   static void Function(XprsPacket p)? onResult;
 
+  /// A callsign's key was just bound from its verified `t:identity`: whoever
+  /// held something that needed it (a sealed message from them) opens it.
+  static void Function(String callsign)? onKeyLearned;
+
   /// Set by RnsService, which owns the callsign→key map, so a `t:identity`
   /// heard on any bearer lands in the same place a key learned from an
   /// announce does. Same reasoning as [XprsArchive.keyResolver]: this file
@@ -966,6 +970,8 @@ class XprsIngest {
       // And a group act it signed before we held its key (26.3.1: a member's
       // acceptance is signed by the member).
       XprsGroups.instance.keyLearned(callsign);
+      // And a sealed message from them that arrived before their key.
+      onKeyLearned?.call(callsign);
       if (_bound.length >= 256) _bound.remove(_bound.first);
       _bound.add(pair);
     } catch (_) {

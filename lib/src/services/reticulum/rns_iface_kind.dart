@@ -43,6 +43,23 @@ String rnsIfaceKind(String via) {
 bool rnsIfaceIsLocal(String kind) =>
     kind == 'lan' || kind == 'ble' || kind == 'lora' || kind == 'radio';
 
+/// Did something that arrived on [via] after [wireHops] forwards (0: sent by
+/// the neighbour itself) come from nearby?
+///
+/// The interface alone does not say. A Reticulum node on the home network
+/// that also has an uplink forwards the whole internet onto the LAN, and a
+/// station twenty-three hops away then arrives "on the LAN" (seen on the
+/// phone, 2026-11-22: far stations listed as Local, messages from outside
+/// people marked LAN). On an IP network only the neighbour's own packets
+/// are local. A radio carries only what radios relayed, so a relayed packet
+/// there is still local.
+bool rnsArrivedLocally(String via, int wireHops) {
+  final kind = rnsIfaceKind(via);
+  if (!rnsIfaceIsLocal(kind)) return false;
+  if (wireHops <= 0) return true;
+  return kind != 'lan' || via.trim().toLowerCase().startsWith('espnow');
+}
+
 /// True when a `tcp…`/`udp…` label carries an RFC1918 / link-local / loopback
 /// address. Parsed out of the label rather than the socket, because the label
 /// is all the observed registry keeps.
@@ -88,9 +105,11 @@ bool _isPrivateHost(String via) {
 /// came off a hub in another country both used to be labelled "Reticulum",
 /// because the Reticulum lane is where they were handed over — not where they
 /// travelled. This says where they travelled.
-String rnsIfaceBearer(String via) {
+String rnsIfaceBearer(String via, {int wireHops = 0}) {
   final v = via.trim().toLowerCase();
   if (v.isEmpty) return 'rns';
+  // Forwarded onto our network from elsewhere: it crossed Reticulum.
+  if (wireHops > 0 && !rnsArrivedLocally(v, wireHops)) return 'rns';
   // Bearers whose own name is the answer, before the coarse kinds below fold
   // them together (espnow/wifi are `lan`-kind, vhf/uhf/hf are `radio`-kind).
   for (final b in const ['espnow', 'wifi', 'vhf', 'uhf', 'hf']) {
