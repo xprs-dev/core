@@ -334,6 +334,13 @@ class XprsArchive {
   int _delete(ZxSqlDb db, String sql, [List<Object?> params = const []]) {
     final gone = db.select('$sql RETURNING type, toc, tier, length(wire) b', params);
     for (final r in gone) {
+      // A kept room that could hold this row is found again by a scan. The
+      // housekeeping that runs with every flush removes presence rows,
+      // which are in no room, and must not cost every room its answer.
+      if (_rooms.isNotEmpty) {
+        _rooms.removeWhere((_, h) =>
+            h.types.contains(r['type']) && h.to.contains(r['toc']));
+      }
       _bump(r['type'] as String, r['toc'] as String, r['tier'] as int, -1,
           -((r['b'] as num?)?.toInt() ?? 0));
     }
@@ -349,6 +356,7 @@ class XprsArchive {
     _flushTimer = null;
     _db?.dispose();
     _db = null;
+    _rooms.clear();
     _served.clear();
   }
 
@@ -515,6 +523,7 @@ class XprsArchive {
           ]).first;
           final tierNow = res['tier'] as int;
           final bytes = (res['b'] as num).toInt();
+          if (_rooms.isNotEmpty) _roomsNote(p, id, toWire);
           if (res['heard'] == 1) {
             _bump(p.type, toWire, tierNow, 1, bytes);
             if (onFiled != null) filed.add((p, id, sig));
@@ -1513,6 +1522,51 @@ class XprsArchive {
   }) {
     final db = _db;
     if (db == null) return const [];
+    // A room's newest rows, asked for again and again by every page that is
+    // open on it: answered from what the last ask found plus what was filed
+    // since ([_rooms]).
+    final lim = limit.clamp(1, 1000);
+    String? roomKey;
+    // (With no room: the newest undirected rows of some types, the page's
+    // other standing question, and as much of a scan: an index by type is
+    // not used for it, measured.)
+    if (id == null &&
+        sinceMs == null &&
+        untilMs == null &&
+        !ownOnly &&
+        only == null &&
+        rankFor == null &&
+        fromKind == null &&
+        mailFor == null &&
+        (from == null || from.trim().isEmpty) &&
+        to != null &&
+        types != null &&
+        types.isNotEmpty) {
+      final tos = [for (final d in to) d.trim().isEmpty ? '' : _base(d)]..sort();
+      final ts = [...types]..sort();
+      roomKey = '${room ?? ''}|${ts.join(',')}|${tos.join(',')}|$lim';
+      final held = _rooms[roomKey];
+      if (held != null) {
+        roomHits++;
+        if (held.fresh.isNotEmpty) {
+          final ids = held.fresh.toList();
+          held.fresh.clear();
+          final got = db.select(
+              'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
+              'FROM packets WHERE id IN (${List.filled(ids.length, '?').join(',')}) '
+              'LIMIT ?',
+              [...ids, ids.length]);
+          final byId = {for (final r in held.rows) r.$2['id']: r};
+          for (final r in got) {
+            byId[r['id']] = (r['pts'] as int, _rowOf(r));
+          }
+          held.rows = byId.values.toList()
+            ..sort((a, b) => b.$1.compareTo(a.$1));
+          if (held.rows.length > lim) held.rows.length = lim;
+        }
+        return [for (final r in held.rows) Map.of(r.$2)];
+      }
+    }
     final where = StringBuffer('1=1');
     final args = <Object?>[];
     if (id != null && id.trim().isNotEmpty) {
@@ -1639,31 +1693,87 @@ class XprsArchive {
         ..add(me)
         ..add(me);
     }
-    args.add(limit.clamp(1, 1000));
+    args.add(lim);
     final rows = db.select(
         'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
         'FROM packets WHERE $where ORDER BY $order LIMIT ?',
         args);
-    return [
-      for (final r in rows)
-        {
-          'id': r['id'],
-          'ts': (r['pts'] as int) ~/ 1000,
-          'heardTs': (r['ts'] as int) ~/ 1000,
-          'bearer': r['bearer'],
-          'rssi': r['rssi'],
-          'from': r['fromc'],
-          'to': r['toc'],
-          'type': r['type'],
-          'mine': (r['mine'] as int) != 0,
-          'own': (r['own'] as int) != 0,
-          'sig': XprsSigState.values[(r['sig'] as int)].name,
-          'heard': r['heard'],
-          'wire': r['wire'],
-          ..._reachOf(r['wire'] as String, r['bearer'] as String? ?? '',
-              (r['own'] as int) != 0),
-        }
-    ];
+    if (roomKey != null) {
+      roomScans++;
+      if (_rooms.length >= _roomsMax) _rooms.remove(_rooms.keys.first);
+      _rooms[roomKey] = _RoomRows(
+          room ?? '',
+          types!.toSet(),
+          {for (final d in to!) d.trim().isEmpty ? '' : _base(d)},
+          [for (final r in rows) (r['pts'] as int, _rowOf(r))]);
+    }
+    return [for (final r in rows) _rowOf(r)];
+  }
+
+  static Map<String, dynamic> _rowOf(Map<String, Object?> r) => {
+        'id': r['id'],
+        'ts': (r['pts'] as int) ~/ 1000,
+        'heardTs': (r['ts'] as int) ~/ 1000,
+        'bearer': r['bearer'],
+        'rssi': r['rssi'],
+        'from': r['fromc'],
+        'to': r['toc'],
+        'type': r['type'],
+        'mine': (r['mine'] as int) != 0,
+        'own': (r['own'] as int) != 0,
+        'sig': XprsSigState.values[(r['sig'] as int)].name,
+        'heard': r['heard'],
+        'wire': r['wire'],
+        ..._reachOf(r['wire'] as String, r['bearer'] as String? ?? '',
+            (r['own'] as int) != 0),
+      };
+
+  /// Tool seams (tool/room_time.dart): a statement, and the row count.
+  void debugExec(String sql) => _db?.execute(sql);
+  int debugCount() =>
+      (_db?.select('SELECT COUNT(*) n FROM packets').first['n'] as int?) ?? 0;
+
+  /// Test seam: a deletion as the archive's own housekeeping makes one.
+  int debugDelete(String sql) => _db == null ? 0 : _delete(_db!, sql);
+
+  // ── A room's newest rows, kept between asks ─────────────────────────────
+  //
+  // The room test reads each row's wire (its `scope:` is nowhere else), so
+  // "the newest fifty of the Local room" walked every undirected row the
+  // station holds: 2.5 to 17 seconds on a station with a 120 MB archive,
+  // on the one isolate, for every page poll of every visitor. A new
+  // visitor's key lookup queued behind it and timed out (measured on the
+  // Pi, 2026-11-22; performance.md 8: a verdict is computed once).
+  //
+  // The first ask of a room scans; its answer is kept, and a row filed
+  // afterwards that belongs to the room is added on the next ask by its
+  // identifier (the primary key). Any deletion drops what is kept, and the
+  // next ask scans again.
+  final Map<String, _RoomRows> _rooms = {};
+  static const int _roomsMax = 24;
+
+  /// Room asks answered from memory, and those that scanned.
+  int roomHits = 0;
+  int roomScans = 0;
+
+  static String _roomOf(XprsPacket p) {
+    final s = (p['scope'] ?? '').trim();
+    return s == 'local' || s == 'regional' ? s : 'global';
+  }
+
+  void _roomsNote(XprsPacket p, String id, String toc) {
+    final room = _roomOf(p);
+    for (final e in _rooms.entries.toList()) {
+      final h = e.value;
+      if ((h.room.isNotEmpty && h.room != room) ||
+          !h.types.contains(p.type) ||
+          !h.to.contains(toc)) {
+        continue;
+      }
+      h.fresh.add(id);
+      // Too far behind to patch: scan again when somebody asks.
+      if (h.fresh.length > 400) _rooms.remove(e.key);
+    }
   }
 
   /// XPRS.md 9.11 for a stored row: its scope, normalised as the live delivery
@@ -1721,4 +1831,17 @@ class XprsArchive {
       'dropped': dropped,
     };
   }
+}
+
+/// What one room ask found, and the identifiers filed since
+/// ([XprsArchive._rooms]).
+class _RoomRows {
+  _RoomRows(this.room, this.types, this.to, this.rows);
+  final String room;
+  final Set<String> types;
+  final Set<String> to;
+
+  /// `(pts, row)`, newest first.
+  List<(int, Map<String, dynamic>)> rows;
+  final Set<String> fresh = {};
 }

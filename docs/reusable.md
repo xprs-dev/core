@@ -698,3 +698,14 @@ its holder" need.
   "this callsign's key is known now", fired from the identity packet and from
   `RnsService.recordCallsignPubkey`. Anything that waits for a key listens
   there instead of polling.
+- `XprsGroupDeposit` (`xprs_group_deposit.dart`): a group's record handed to
+  this station's archivers (10.9.2), one group and one archiver a turn, each
+  pair once a week, due again after a new act. The pattern for anything that
+  must reach a station that is not an addressee: injected seams, driven from
+  the minute sweep, a per-pair mark in the key-value store.
+- `XprsArchive.query` keeps the answer to a standing question (the newest
+  undirected rows of some types, in a room or not) and patches it with what
+  was filed since (`_rooms`, `roomHits`/`roomScans`). The archive engine
+  scans for these whatever index exists: do not add another polled query
+  that filters on `wire` or on several types without going through it.
+  `tool/room_time.dart <archive.zx>` times the page's questions on a real file.

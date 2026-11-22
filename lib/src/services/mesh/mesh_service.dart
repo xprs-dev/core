@@ -72,6 +72,7 @@ import '../xprs/xprs_fetch.dart';
 import '../xprs/xprs_forwarder.dart';
 import 'mesh_transfer_scheduler.dart';
 import '../xprs/xprs_lan.dart';
+import '../xprs/xprs_group_deposit.dart';
 import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_sig.dart';
@@ -812,6 +813,37 @@ class MeshService {
         // reach the recipient, and the receipt that tells it to stop. The
         // logic is in XprsMailbox (core, testable against a virtual air); what
         // belongs here is only the wiring to this device's lanes and stores.
+        XprsGroupDeposit.instance
+          ..store = PreferencesService.instanceSync?.store
+          ..archivers =
+              (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
+          ..groups = (() {
+            final me = NostrCrypto.bareCallsign(tableCallsign).toUpperCase();
+            return [
+              for (final g in XprsGroups.instance.known)
+                if (XprsGroupKeys.instance.holdsKey(g) ||
+                    XprsGroups.instance.rosterOf(g).roles[me] == XprsRole.mod)
+                  g,
+            ];
+          })
+          ..record = ((g) => [
+                for (final t in const ['identity', 'moderate'])
+                  for (final r in XprsArchive.instance
+                      .query(types: [t], only: g, limit: t == 'identity' ? 4 : 64)
+                      .reversed)
+                    if (r['wire'] is String) r['wire'] as String,
+              ])
+          ..send = ((call, wire) async {
+            final hex = RnsService.instance.lxmfDestForCallsign(call);
+            if (hex.isEmpty) return false;
+            // Handed to the lane, not awaited to a confirmation: a datagram
+            // has none to give. Spaced, so a record is not one burst.
+            await Future<void>.delayed(const Duration(milliseconds: 200));
+            unawaited(RnsService.instance
+                .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)))
+                .catchError((_) => false));
+            return true;
+          });
         XprsMailbox.instance
           ..selfCallsign = (() => NostrCrypto.bareCallsign(tableCallsign))
           ..archivers =
@@ -1014,6 +1046,9 @@ class MeshService {
       // its recipients speak, it simply gains a path to them, and without this
       // minute it would hold their mail for ever while they sat online.
       unawaited(XprsMailbox.instance.sweepHeld());
+      // A group's record to this station's archivers (10.9.2): one group
+      // and one archiver a minute at most, each pair once a week.
+      unawaited(XprsGroupDeposit.instance.tick());
       // A public archiver's directory (12.9): recomposed every ten minutes
       // (the announcer's own gate), announced only when it changed.
       unawaited(XprsDirectoryAnnouncer.instance.tick());

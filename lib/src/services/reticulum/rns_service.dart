@@ -5551,6 +5551,10 @@ class RnsService {
       }
       return;
     }
+    // The core took an XPRS wire above. A station with no wapp reading the
+    // lane (a server) has lost nothing, and said "LOST" for every packet it
+    // was handed: half its log.
+    if (tag == 'xprs' && !WappMailbox.instance.isOpen) return;
     final kept = WappMailbox.instance.put(tag, from, payload, via: bearer);
     if (!kept) {
       LogService.instance.add(

@@ -17,6 +17,7 @@
 /// transmit unsigned, which the spec permits and the log states.
 library;
 
+import 'xprs_group_deposit.dart';
 import '../people/xprs_people.dart';
 import '../../profile/iwi_profile.dart';
 import 'xprs_self.dart';
@@ -311,6 +312,11 @@ class _ReticulumBearer implements XprsBearer {
       }
     }
     if (dest.isNotEmpty && !xprsAddressesStation(dest)) {
+      // A new act: the record is due at the archivers again, so one that
+      // misses this packet is brought up to date on a later turn.
+      if (p != null && p.type == 'moderate') {
+        XprsGroupDeposit.instance.changed(dest);
+      }
       return await _sendToMembers(dest, bytes,
           named: XprsPublisher.namedInAct(p));
     }
@@ -401,6 +407,10 @@ class _ReticulumBearer implements XprsBearer {
       targets.remove(g);
     }
     targets.addAll(named);
+    // And this station's archivers (10.9.2): the station that keeps a group
+    // for everybody else is no member of it, so it was never addressed and
+    // learned the record only by overhearing a radio copy.
+    targets.addAll(XprsGroupDeposit.instance.targets());
     targets.remove(group);
     targets.remove(me);
     // The people an act NAMES may never have heard the group announce itself:
