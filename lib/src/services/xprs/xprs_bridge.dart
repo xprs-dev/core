@@ -200,7 +200,7 @@ class XprsBridge {
       skippedLocal++;
       return;
     }
-    if (policy.archivers) unawaited(_toArchivers(out, id));
+    if (policy.archivers) unawaited(_toArchivers(out, id, _lane(bearer)));
   }
 
   /// The monitor's bearer vocabulary: `ble5` and `ble` are one lane.
@@ -231,7 +231,15 @@ class XprsBridge {
   /// Directed over Reticulum, the way [XprsForwarder] hands over held mail: a
   /// named station's LXMF destination, not a broadcast. An archiver we cannot
   /// name is skipped rather than shouted at.
-  Future<void> _toArchivers(String wire, String id) async {
+  /// Is [call] heard directly on [lane] now? Set by the core (the monitor's
+  /// table); null answers no.
+  bool Function(String call, String lane)? hearsOn;
+
+  /// Packets not offered to an archiver because it sits on the very network
+  /// they arrived on, and heard them itself.
+  static int archiverHeardIt = 0;
+
+  Future<void> _toArchivers(String wire, String id, String lane) async {
     final archivers =
         PreferencesService.instanceSync?.xprsNamedArchivers ?? const <String>[];
     if (archivers.isEmpty) return;
@@ -243,6 +251,14 @@ class XprsBridge {
       if (call.isEmpty) continue;
       // It came through them already, so sending it back is a loop (§13.2).
       if (via.contains(call)) continue;
+      // A LAN is one broadcast: an archiver heard on it has this packet
+      // already. Offering it anyway cost a signed, encrypted message per
+      // packet heard, around one a second on a busy bench (measured on the
+      // phone, 2026-11-22; performance.md 8: count operations per packet).
+      if (lane == 'lan' && (hearsOn?.call(call, 'lan') ?? false)) {
+        archiverHeardIt++;
+        continue;
+      }
       final key = 'archiver:$call|$id';
       if (_sent.containsKey(key)) continue;
       final hex = RnsService.instance.lxmfDestForCallsign(call);

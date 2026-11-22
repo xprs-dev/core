@@ -562,6 +562,14 @@ class MeshService {
         // whichever of the two carried it.
         XprsBridge.instance.relayable = _relayable;
         XprsBridge.instance.air = airOnLane;
+        XprsBridge.instance.hearsOn = (call, lane) {
+          final st = XprsMonitor.instance.stationJson(call);
+          if (st == null) return false;
+          final last = st['lastDirectMs'] is int ? st['lastDirectMs'] as int : 0;
+          final on = st['bearers'] is List ? st['bearers'] as List : const [];
+          return on.contains(lane) &&
+              DateTime.now().millisecondsSinceEpoch - last < 10 * 60 * 1000;
+        };
         XprsIngest.onAnswerPing = (wire, bearer) {
           unawaited(XprsPublisher.instance
               .publishWire(wire, verbatim: true, prefer: bearer));

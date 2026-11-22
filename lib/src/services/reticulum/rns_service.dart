@@ -7663,8 +7663,11 @@ class RnsService {
       // Handed to the radio with nothing acknowledging it. Saying "delivered"
       // here is what let a reply vanish: no retry was queued, and both ends
       // believed it had arrived.
-      LxmfDelivery.sentUnconfirmed =>
-        'RNS/lxmf: one packet to $who, unacknowledged — retrying until it is',
+      // (A wapp datagram is not retried: [_queueLxmfRetry] says so.)
+      LxmfDelivery.sentUnconfirmed => fields != null &&
+              fields.containsKey(_kWappLxmfField)
+          ? 'RNS/lxmf: one packet to $who, unacknowledged'
+          : 'RNS/lxmf: one packet to $who, unacknowledged — retrying until it is',
       LxmfDelivery.failed =>
         'RNS/lxmf: no direct link to $who — held for relay pickup',
     });
