@@ -106,12 +106,26 @@ abstract final class XprsIdType {
         return _hex.hasMatch(hex) ? hex : '';
       case ble:
       case wlan:
-        final m = v.toUpperCase().replaceAll('-', ':');
-        return _mac.hasMatch(m) ? m : '';
+        // However a person writes it: AA:BB:.., aa-bb-.., aabb.ccdd.eeff or
+        // twelve digits in a row (what a board prints on its label).
+        final digits = v.toUpperCase().replaceAll(RegExp(r'[:\-. ]'), '');
+        if (!_macDigits.hasMatch(digits)) return '';
+        return [
+          for (var i = 0; i < 12; i += 2) digits.substring(i, i + 2),
+        ].join(':');
       case meshtastic:
       case meshcore:
-        final up = v.toUpperCase();
-        return _foreign.hasMatch(up) ? up : '';
+        // The name it has here (MT/MC and eight digits), or the node's own
+        // number as its network shows it: `!a1b2c3d4`, or the eight digits.
+        var up = v.toUpperCase();
+        if (up.startsWith('!')) up = up.substring(1);
+        if (_nodeDigits.hasMatch(up)) {
+          up = '${type == meshtastic ? 'MT' : 'MC'}$up';
+        }
+        return _foreign.hasMatch(up) &&
+                up.startsWith(type == meshtastic ? 'MT' : 'MC')
+            ? up
+            : '';
       case email:
         final e = v.toLowerCase();
         return e.contains('@') && !e.contains(' ') ? e : '';
@@ -121,7 +135,8 @@ abstract final class XprsIdType {
   }
 
   static final RegExp _hex = RegExp(r'^[0-9a-f]{16,64}$');
-  static final RegExp _mac = RegExp(r'^([0-9A-F]{2}:){5}[0-9A-F]{2}$');
+  static final RegExp _macDigits = RegExp(r'^[0-9A-F]{12}$');
+  static final RegExp _nodeDigits = RegExp(r'^[0-9A-F]{8}$');
   static final RegExp _foreign = RegExp(r'^M[TC][0-9A-F]{8}$');
 }
 
@@ -545,6 +560,24 @@ class XprsPeople {
       }
     }
     return false;
+  }
+
+  /// [type]:[value] turned out not to be [callsign]'s (the device at that
+  /// address proved it is somebody else): taken off every holder that has
+  /// both. How many were removed.
+  int disown(String callsign, String type, String value) {
+    final c = XprsIdType.normalise(callType(callsign), callsign);
+    final v = XprsIdType.normalise(type, value);
+    if (c.isEmpty || v.isEmpty) return 0;
+    var n = 0;
+    for (final h in List.of(_index[_k(type, v)] ?? const <String>{})) {
+      final list = _by[h] ?? const <XprsIdentity>[];
+      final names = isUnclaimed(h)
+          ? h == unclaimed(callType(callsign), c)
+          : list.any((e) => e.type == callType(callsign) && e.value == c);
+      if (names && remove(h, type, v)) n++;
+    }
+    return n;
   }
 
   /// The key [npub] proved it is who the keyless record [type]:[value] was

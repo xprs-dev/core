@@ -64,6 +64,12 @@ class StationRoutes {
 
   static String _bare(String c) => c.toUpperCase().split('-').first;
 
+  /// A bearer that measures what it hears.
+  static bool _radio(String bearer) {
+    final b = bearer.toLowerCase();
+    return b.startsWith('ble') || b.startsWith('bluetooth') || b.startsWith('lora');
+  }
+
   Map<String, dynamic> _hop(String from, String to, String bearer, String know,
           {int? ageS, int? rssi}) =>
       {
@@ -95,7 +101,11 @@ class StationRoutes {
         if (b == null || '$b'.isEmpty) continue;
         routes.add([
           _hop(me, to, '$b', 'heard',
-              ageS: (now - direct) ~/ 1000, rssi: h['rssi'] is int ? h['rssi'] as int : null)
+              ageS: (now - direct) ~/ 1000,
+              // A signal strength is a radio's. The station's one figure
+              // was printed on every line, "LAN · -46 dBm" (seen on the
+              // phone, 2026-11-22).
+              rssi: _radio('$b') && h['rssi'] is int ? h['rssi'] as int : null)
         ]);
       }
     }

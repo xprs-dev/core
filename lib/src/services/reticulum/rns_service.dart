@@ -5968,6 +5968,32 @@ class RnsService {
   void dropStationRequests(String call) =>
       _apiClients.remove(_bareUpper(call))?.close();
 
+  /// The device at [id] proved it is not station [call] (its visit proof
+  /// named another callsign): the link to it is closed and the address
+  /// leaves [call]'s record, so the next [stationRequests] takes the next
+  /// one [call] is known by. An address reaches a callsign's record from an
+  /// announce that names it, which is a claim (see [_notePerson]); the proof
+  /// is what decides. Remembered for this run, because the same announce
+  /// would file it again within the hour.
+  void stationIsNot(String call, RnsIdentity id) {
+    final c = _bareUpper(call);
+    final h = id.hexHash;
+    dropStationRequests(c);
+    if (_apiStation[c]?.hexHash == h) _apiStation.remove(c);
+    if (_wappStation[c]?.hexHash == h) _wappStation.remove(c);
+    if (_notStation.length >= _notStationMax) {
+      _notStation.remove(_notStation.first);
+    }
+    _notStation.add('$c|$h');
+    final n = XprsPeople.instance.disown(c, XprsIdType.reticulum, h);
+    LogService.instance.add('RNS: ${h.substring(0, 8)} is not $c'
+        '${n > 0 ? ' (off its record)' : ''}');
+  }
+
+  /// `CALL|identity hash` pairs a proof contradicted ([stationIsNot]).
+  final Set<String> _notStation = <String>{};
+  static const int _notStationMax = 256;
+
   /// Links open to our API now (for the station's status).
   int get apiLinks => _requests?.openLinks ?? 0;
 
@@ -6394,6 +6420,7 @@ class RnsService {
   RnsIdentity? _identityOfCall(String c) {
     for (final hash
         in XprsPeople.instance.reachCall(c, XprsIdType.reticulum)) {
+      if (_notStation.isNotEmpty && _notStation.contains('$c|$hash')) continue;
       final id = _identityByHash(hash);
       if (id != null) return id;
     }
@@ -9476,19 +9503,54 @@ class RnsService {
     for (final ev in collected) {
       final id = ev.id;
       if (id == null || !seen.add(id)) continue;
+      // An event's id is the hash of its content: what it verifies and
+      // decrypts to never changes. The poll asks for everything held, every
+      // minute (the Mail wapp, since 0), so without this every stored
+      // message cost a Schnorr check, a key agreement and a bech32 encode
+      // again each minute, in one loop on the main isolate: about a second
+      // of frozen screen a minute with eighteen messages (measured on the
+      // C61, 2026-11-22; performance.md 8.15 and 8.7).
+      final key = '$pub|$id';
+      if (_dmDecoded.containsKey(key)) {
+        final held = _dmDecoded[key];
+        if (held != null) out.add(held);
+        continue;
+      }
+      // The first time, one event a turn of the event loop, so a frame can
+      // be drawn between two of them.
+      await Future<void>.delayed(Duration.zero);
+      void miss() {
+        if (_dmDecoded.length >= _dmDecodedMax) {
+          _dmDecoded.remove(_dmDecoded.keys.first);
+        }
+        _dmDecoded[key] = null; // a forgery or not for us: not asked again
+      }
+
       // Verify the kind-4 BIP-340 signature: the author claim (ev.pubkey, which
       // we map to a callsign + show as verified) is only trustworthy if signed.
       // Drop forgeries rather than deliver them.
-      if (!ev.verify()) continue;
+      if (!ev.verify()) {
+        miss();
+        continue;
+      }
       final authorX = _hexToBytes(ev.pubkey);
-      if (authorX == null || authorX.length != 32) continue;
+      if (authorX == null || authorX.length != 32) {
+        miss();
+        continue;
+      }
       final pt = XprsCrypto.nip04Decrypt(d, authorX, ev.content);
-      if (pt == null) continue;
+      if (pt == null) {
+        miss();
+        continue;
+      }
       var mid = '';
       for (final t in ev.tags) {
         if (t.length >= 2 && t[0] == 'd') mid = t[1];
       }
-      out.add({
+      if (_dmDecoded.length >= _dmDecodedMax) {
+        _dmDecoded.remove(_dmDecoded.keys.first);
+      }
+      out.add(_dmDecoded[key] = {
         'id': id,
         // base64url (the wapp's pk-store format) so the wapp can map author→callsign
         'from': base64Url.encode(authorX).replaceAll('=', ''),
@@ -9503,6 +9565,16 @@ class RnsService {
     }
     return out;
   }
+
+  /// `<our key>|<event id>` -> what the event decoded to, or null when it
+  /// did not verify or was not for us ([relayDmFetch]). Bounded, oldest out.
+  final Map<String, Map<String, dynamic>?> _dmDecoded = {};
+  static const int _dmDecodedMax = 512;
+
+  /// How many direct messages have been verified and decrypted, for a test
+  /// that the same one is not done twice.
+  @visibleForTesting
+  int get dmDecodedCount => _dmDecoded.length;
 
   /// Recipient-authorized delete of our received DMs [ids] from [relayDestsHex]
   /// (+ the local store). Signs sha256(ids.join(',')) with the profile key so a

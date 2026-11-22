@@ -195,4 +195,47 @@ void main() {
     p.note(_joao, XprsIdType.reticulum, _rns, evidence: XprsIdEvidence.observed);
     expect(p.of(_joao).single.savedMs, now, reason: 'an hour on, one write');
   });
+
+  // Found typing one on the phone (2026-11-22): twelve digits in a row, as a
+  // board's label prints them, were refused.
+  test('an address or node number is taken the way people write it', () {
+    const mac = 'AA:BB:CC:DD:EE:FF';
+    for (final typed in [
+      'aabbccddeeff',
+      'aa-bb-cc-dd-ee-ff',
+      'aabb.ccdd.eeff',
+      ' AA:BB:CC:DD:EE:FF ',
+    ]) {
+      expect(XprsIdType.normalise(XprsIdType.ble, typed), mac, reason: typed);
+    }
+    expect(XprsIdType.normalise(XprsIdType.wlan, 'aabbccddeef'), '');
+    expect(XprsIdType.normalise(XprsIdType.wlan, 'aabbccddeeffgg'), '');
+    expect(XprsIdType.normalise(XprsIdType.meshtastic, '!a1b2c3d4'),
+        'MTA1B2C3D4');
+    expect(XprsIdType.normalise(XprsIdType.meshtastic, 'a1b2c3d4'),
+        'MTA1B2C3D4');
+    expect(XprsIdType.normalise(XprsIdType.meshcore, 'a1b2c3d4'),
+        'MCA1B2C3D4');
+    expect(XprsIdType.normalise(XprsIdType.meshtastic, 'MTA1B2C3D4'),
+        'MTA1B2C3D4');
+    expect(XprsIdType.normalise(XprsIdType.meshcore, 'MTA1B2C3D4'), '',
+        reason: 'a node of the other network');
+  });
+
+  test('an address that proved to be another station leaves the record', () {
+    const other = 'ffeeddccbbaa99887766554433221100';
+    p.noteForCall('X3SQS6', XprsIdType.reticulum, _rns,
+        evidence: XprsIdEvidence.observed);
+    p.noteForCall('X3SQS6', XprsIdType.reticulum, other,
+        evidence: XprsIdEvidence.observed);
+    p.noteForCall('X3PTZM', XprsIdType.reticulum, _rns,
+        evidence: XprsIdEvidence.observed);
+    expect(p.reachCall('X3SQS6', XprsIdType.reticulum), hasLength(2));
+
+    expect(p.disown('X3SQS6', XprsIdType.reticulum, _rns), 1);
+    expect(p.reachCall('X3SQS6', XprsIdType.reticulum), [other]);
+    expect(p.reachCall('X3PTZM', XprsIdType.reticulum), [_rns],
+        reason: 'whoever else holds it keeps it');
+    expect(p.disown('X3SQS6', XprsIdType.reticulum, _rns), 0);
+  });
 }

@@ -74,12 +74,28 @@ class StationVisits {
     });
   }
 
+  /// How many addresses of one callsign a visit tries when the device at
+  /// each proves to be another station.
+  static const int otherTries = 3;
+
   Future<StationVisit?> _visit(String c) async {
+    // A callsign's address comes from an announce that names it, and that
+    // is a claim: the device there may prove to be another station (seen on
+    // the phone, 2026-11-22: X3SQS6 "could not be verified" on every tap,
+    // the same wrong address asked each time). That address is struck off
+    // and the next one the callsign is known by is tried.
+    for (var i = 0; ; i++) {
+      final (v, other) = await _visitOnce(c);
+      if (v != null || !other || i + 1 >= otherTries) return v;
+    }
+  }
+
+  Future<(StationVisit?, bool)> _visitOnce(String c) async {
     final rns = RnsService.instance;
     var link = rns.stationRequests(c);
     if (link == null) {
       _fault[c] = 'unknown';
-      return null;
+      return (null, false);
     }
     final t0 = DateTime.now().millisecondsSinceEpoch;
     var up = await link.open(timeout: const Duration(seconds: 20));
@@ -96,7 +112,7 @@ class StationVisits {
       _fault[c] = 'unreached';
       LogService.instance.add('visit: $c: no link');
       rns.dropStationRequests(c);
-      return null;
+      return (null, false);
     }
     final nonce = _nonce();
     final proof = await link.request('/xprs/prove', nonce,
@@ -108,8 +124,13 @@ class StationVisits {
       proof == null ? unreached++ : refused++;
       _fault[c] = fault;
       LogService.instance.add(proof == null ? 'visit: $c: link up, no proof' : 'visit: $c refused: $fault');
-      rns.dropStationRequests(c);
-      return null;
+      if (fault.startsWith(stationProofOther)) {
+        rns.stationIsNot(c, link.peer);
+        return (null, true);
+      } else {
+        rns.dropStationRequests(c);
+      }
+      return (null, false);
     }
     opened++;
     _fault.remove(c);
@@ -120,7 +141,7 @@ class StationVisits {
       ..lastUsedMs = DateTime.now().millisecondsSinceEpoch;
     _open[c] = v;
     _sweep ??= Timer(idle, _closeIdle);
-    return v;
+    return (v, false);
   }
 
   void _closeIdle() {

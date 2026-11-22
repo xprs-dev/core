@@ -39,6 +39,9 @@ void main() {
     expect(hops(a).single, containsPair('bearer', 'ble'));
     expect(hops(a).single, containsPair('reach', 'local'));
     expect(hops(a, 1).single, containsPair('bearer', 'lan'));
+    // The signal is the radio's, not the cable's.
+    expect(hops(a).single, containsPair('rssi', -70));
+    expect((hops(a, 1).single as Map).containsKey('rssi'), isFalse);
     expect((a['routes'] as List).every((x) => x['sure'] == true), isTrue);
   });
 

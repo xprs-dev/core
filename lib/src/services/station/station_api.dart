@@ -188,6 +188,10 @@ class StationCollection {
   }
 }
 
+/// How [stationProofFault] begins when the device that answered is another
+/// station than the one asked for: the address was wrong, not the station.
+const String stationProofOther = 'the identity is not';
+
 /// Why a station's proof was refused, or null when it holds: its callsign
 /// derives from the key in `identity`, both wires are signed with that key,
 /// and the session names this link and our nonce. A relay or a gateway in
@@ -199,7 +203,7 @@ String? stationProofFault(Object? proof, String call, String nonce, String linkH
   final sess = XprsPacket.parse('${proof['session'] ?? ''}');
   if (id == null || sess == null) return 'the station sent no proof';
   String bare(String? f) => (f ?? '').toUpperCase().split('-').first;
-  if (bare(id['f']) != c) return 'the identity is not $c';
+  if (bare(id['f']) != c) return '$stationProofOther $c';
   final npub = id['k'];
   if (npub == null) return 'the identity carries no key';
   final String keyHex;

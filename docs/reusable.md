@@ -675,3 +675,18 @@ at most every 30 minutes. The replay enters through the receive door and
 `XprsDirectoryConsumer.offer` reads it like a heard one. The same shape
 (one type, one station, a short window) fits any "latest record of X from
 its holder" need.
+
+## Found on the phone, 2026-11-22
+
+- `XprsPeople.disown(callsign, type, value)`: take an identity off a callsign's
+  record when proof contradicts it. `RnsService.stationIsNot(call, identity)`
+  uses it after a visit proof names another station, and `StationVisits`
+  then tries the next address (`stationProofOther` is how that fault begins).
+  Reuse the pattern wherever a claimed address can be tested: the test
+  decides, and the wrong claim is removed instead of being asked again.
+- `XprsIdType.normalise` takes an address or node number the way people write
+  it (`aabbccddeeff`, `aa-bb-..`, `!a1b2c3d4`). Validate typed identities
+  through it; do not add a second parser in a screen.
+- `RnsService._dmDecoded`: a result keyed by a content hash is computed once
+  (verify, decrypt), including the failure. Same rule for anything polled:
+  the poll may repeat, the work on an unchanged item may not.
