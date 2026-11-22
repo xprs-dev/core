@@ -235,3 +235,34 @@ XprsSigState _verifyOne(XprsPacket p, Uint8List? pubXonly) {
 }
 
 final Map<String, XprsSigState> _verdicts = {};
+
+/// Work out the verdict for [p] under [pubXonly] on the crypto worker, so a
+/// later [xprsVerify] for the same packet is a lookup. For work that can
+/// wait a moment and comes in bulk (the archive's periodic write): what must
+/// be known now still calls [xprsVerify]. Completes when the verdict is
+/// remembered, or at once when there is nothing to do or the worker shed it.
+Future<void> xprsWarmVerdict(XprsPacket p, Uint8List? pubXonly) async {
+  final s = p['sig'];
+  if (s == null || pubXonly == null || p.has('n')) return;
+  final sig = XprsCrypto.b85decode(s);
+  if (sig == null || (sig.length != 48 && sig.length != 64)) return;
+  final digest = xprsSignedDigest(p);
+  final memo = '${HEX.encode(digest)}|$s|${HEX.encode(pubXonly)}';
+  if (_verdicts.containsKey(memo)) return;
+  final Uint8List over;
+  if (sig.length == 48) {
+    over = digest;
+  } else {
+    final id = xprsNostrEventId(p, pubXonly);
+    if (id == null) return;
+    over = id;
+  }
+  final good = await RnsCrypto.xprsVerify(pubXonly, over, sig);
+  if (good == null) return; // shed: checked inline when it is needed
+  xprsWarmed++;
+  if (_verdicts.length >= 512) _verdicts.remove(_verdicts.keys.first);
+  _verdicts[memo] = good ? XprsSigState.verified : XprsSigState.forged;
+}
+
+/// Verdicts worked out off the main isolate (for the diagnostic line).
+int xprsWarmed = 0;

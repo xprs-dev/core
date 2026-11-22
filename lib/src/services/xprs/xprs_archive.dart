@@ -453,6 +453,17 @@ class XprsArchive {
       }
       final sw = Stopwatch();
       while (_db != null && _pending.isNotEmpty) {
+        // The signatures of this slice, checked on the crypto worker first:
+        // on a phone a first check is tens of milliseconds of pure-Dart
+        // curve arithmetic each, and that, more than the rows, was the
+        // freeze. What the worker sheds is checked inline, as before.
+        final n = _sliceRows < _pending.length ? _sliceRows : _pending.length;
+        await Future.wait([
+          for (final e in _pending.take(n))
+            if (e.p.has('sig'))
+              xprsWarmVerdict(e.p, keyResolver?.call(_base(e.p['f'] ?? ''))),
+        ]);
+        if (_db == null) break;
         sw
           ..reset()
           ..start();
