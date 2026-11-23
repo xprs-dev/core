@@ -23,6 +23,13 @@
  * enough for that to cost nothing that shows) and a slow timer is named by
  * that place: `timer from MeshService._startSweep (mesh_service.dart:1104)`.
  *
+ * Anything else (a `then`, a stream listener, an await) has no creation of
+ * its own to record, and recording where every callback is registered would
+ * cost a stack trace per await. So it is done for a while only: a slow
+ * callback that could not be named turns on [deepFor] of recording, at most
+ * once per [deepEvery], and the next slow one is named by the place that
+ * registered it: `callback from XprsFoo._onReply (xprs_foo.dart:88)`.
+ *
  * Cost: two clock reads per callback, and a line only for a slow one, at
  * most [maxPerMinute] a minute. A callback inside another (a synchronous
  * stream event) is timed too and marked "inside": the innermost slow one is
@@ -56,6 +63,16 @@ class StallWatch {
   int _minute = -1;
   int _lines = 0;
 
+  /// How long registration sites are recorded after an unnamed slow
+  /// callback, and how seldom that may start.
+  final Duration deepFor = const Duration(minutes: 5);
+  final Duration deepEvery = const Duration(minutes: 30);
+  int _deepUntilMs = 0;
+  int _deepLastMs = -1 << 40;
+  final Expando<StackTrace> _sites = Expando<StackTrace>('stall-watch-site');
+
+  bool get _deep => _clock.elapsedMilliseconds < _deepUntilMs;
+
   /// Callbacks timed, and how many crossed the threshold (status).
   int timed = 0;
   int slow = 0;
@@ -87,8 +104,26 @@ class StallWatch {
             }
           });
         },
+        registerCallback: <R>(Zone self, ZoneDelegate parent, Zone zone,
+            R Function() f) {
+          final r = parent.registerCallback<R>(zone, f);
+          if (_deep) _sites[r] = StackTrace.current;
+          return r;
+        },
+        registerUnaryCallback: <R, T>(Zone self, ZoneDelegate parent,
+            Zone zone, R Function(T) f) {
+          final r = parent.registerUnaryCallback<R, T>(zone, f);
+          if (_deep) _sites[r] = StackTrace.current;
+          return r;
+        },
+        registerBinaryCallback: <R, T1, T2>(Zone self, ZoneDelegate parent,
+            Zone zone, R Function(T1, T2) f) {
+          final r = parent.registerBinaryCallback<R, T1, T2>(zone, f);
+          if (_deep) _sites[r] = StackTrace.current;
+          return r;
+        },
         run: <R>(Zone self, ZoneDelegate parent, Zone zone, R Function() f) {
-          final site = _takeSite();
+          final site = _takeSite() ?? _sites[f];
           final t0 = _enter();
           try {
             return parent.run<R>(zone, f);
@@ -98,7 +133,7 @@ class StallWatch {
         },
         runUnary: <R, T>(Zone self, ZoneDelegate parent, Zone zone,
             R Function(T) f, T arg) {
-          final site = _takeSite();
+          final site = _takeSite() ?? _sites[f];
           final t0 = _enter();
           try {
             return parent.runUnary<R, T>(zone, f, arg);
@@ -108,7 +143,7 @@ class StallWatch {
         },
         runBinary: <R, T1, T2>(Zone self, ZoneDelegate parent, Zone zone,
             R Function(T1, T2) f, T1 a1, T2 a2) {
-          final site = _takeSite();
+          final site = _takeSite() ?? _sites[f];
           final t0 = _enter();
           try {
             return parent.runBinary<R, T1, T2>(zone, f, a1, a2);
@@ -151,8 +186,22 @@ class StallWatch {
       _minute = minute;
       _lines = 0;
     }
+    // Unnamed: record where callbacks come from for a while, so the next
+    // one is named.
+    var deepNote = '';
+    final nowMs = _clock.elapsedMilliseconds;
+    if (site == null && !_deep && nowMs - _deepLastMs >= deepEvery.inMilliseconds) {
+      _deepLastMs = nowMs;
+      _deepUntilMs = nowMs + deepFor.inMilliseconds;
+      deepNote = '; recording where callbacks come from for '
+          '${deepFor.inMinutes} min to name the next one';
+    }
     if (++_lines > maxPerMinute) return;
-    var name = site != null ? 'timer from ${_siteOf(site)}' : '$f';
+    var name = site == null
+        ? '$f$deepNote'
+        : _isTimerSite(site)
+            ? 'timer from ${_siteOf(site)}'
+            : 'callback from ${_siteOf(site)}';
     if (name.length > 200) name = '${name.substring(0, 200)}...';
     const where = '';
     try {
@@ -161,6 +210,9 @@ class StallWatch {
       // A report that throws must not take the callback's result with it.
     }
   }
+
+  /// A site taken at a timer's creation, not at a callback's registration.
+  static bool _isTimerSite(StackTrace st) => '$st'.contains('dart:async/timer.dart');
 
   static final RegExp _frame = RegExp(r'^#\d+\s+(.+?) \((.+?)\)$');
 

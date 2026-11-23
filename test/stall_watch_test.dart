@@ -75,4 +75,22 @@ void main() {
     expect(lines.single, contains('timer from '));
     expect(lines.single, contains('stall_watch_test.dart'));
   });
+
+  test('an unnamed slow callback turns on recording, and the next is named', () async {
+    final lines = <String>[];
+    final w = StallWatch(report: lines.add, thresholdMs: 40);
+    await runZoned(() async {
+      final c = StreamController<int>();
+      final sub = c.stream.listen((_) => _busy(60)); // anonymous: no name
+      c.add(1);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(lines.join(' | '), contains('recording where callbacks come from'));
+      // Registered while recording: named by the place that registered it.
+      await Future<void>.value(1).then((_) => _busy(60));
+      await sub.cancel();
+      await c.close();
+    }, zoneSpecification: w.spec);
+    expect(lines.last, contains('callback from '), reason: lines.join(' | '));
+    expect(lines.last, contains('stall_watch_test.dart'));
+  });
 }
