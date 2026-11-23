@@ -92,7 +92,8 @@ void main() {
     expect(a.countOf(), a.debugCount());
     expect(a.messagesTo('X5GRUP'), 5);
     // This isolate removes rows itself (a group forgotten)...
-    expect(a.forgetGroup('X5GRUP'), 5);
+    a.forgetGroup('X5GRUP');
+    await a.flushNow();
     expect(a.countOf(), a.debugCount());
     // ...and the thread then adds more: the table must carry both.
     a.admit(signed('d:X5GRUP m:after', alice), bearer: 'lan');
@@ -110,5 +111,25 @@ void main() {
     a.admit(signed('d:X5ROOM m:three', alice), bearer: 'lan');
     await a.flushNow();
     expect(a.messagesTo('X5ROOM'), 3);
+  });
+
+  test('declarations and visitors are written by the thread, not here', () async {
+    a.selfCallsign = 'X3SELF';
+    final decl = xprsSign(
+        XprsPacket.parse('t:mailbox f:X1ALIC ts:2026-11-23_11:00:00 hold:X3SELF')!,
+        alice);
+    final fake = xprsSign(
+        XprsPacket.parse('t:mailbox f:X1ALIC ts:2026-11-23_11:00:01 hold:X3SELF,X3MALL')!,
+        mallory);
+    expect(a.recordMailboxDecl(decl), isTrue, reason: 'it names us');
+    a.recordMailboxDecl(fake);
+    a.noteServed('X1VISI');
+    expect(a.servesVisitor('X1VISI'), isTrue, reason: 'known here at once');
+    await a.flushNow();
+    expect(a.hasActiveDecl('X1ALIC'), isTrue);
+    expect(a.holdersFor('X1ALIC'), isNot(contains('X3MALL')),
+        reason: 'the forged declaration was refused by the thread');
+    expect(a.servedVisitors().map((v) => v.call), contains('X1VISI'));
+    a.selfCallsign = '';
   });
 }

@@ -164,6 +164,20 @@ class XprsArchive {
   /// This instance IS the writer thread's archive (see [openWriter]).
   bool _isWriter = false;
 
+  /// Writes other than rows, for the writer thread's next batch (see [_op]):
+  /// a declaration, a visitor, a shelf change, a group forgotten.
+  final List<List<Object?>> _ops = [];
+
+  /// Visitors' "last seen", newest per callsign: sent with the next batch,
+  /// never on their own (one per page request would be a stream).
+  final Map<String, int> _touched = {};
+
+  /// Keys the queued operations need (a declaration's author).
+  final Map<String, Uint8List> _opKeys = {};
+
+  /// Writes go to the thread rather than to the file from here.
+  bool get _queues => !_isWriter && (_writer?.alive ?? false);
+
   /// The batch now with the writer thread, still findable by [pendingWire].
   List<_Pending> _handed = const [];
   Future<void>? _handing;
@@ -437,6 +451,13 @@ class XprsArchive {
     _gen++;
     _writer?.close();
     _writer = null;
+    final ops = [..._ops, for (final e in _touched.entries) ['touch', e.key, e.value]];
+    _ops.clear();
+    _touched.clear();
+    for (final op in ops) {
+      _runOp(op);
+    }
+    _opKeys.clear();
     _handed = const [];
     _handing = null;
     _flushTimer?.cancel();
@@ -886,11 +907,18 @@ class XprsArchive {
     final batch = List.of(_pending);
     _pending.clear();
     _handed = batch;
+    final ops = <List<Object?>>[
+      ..._ops,
+      for (final e in _touched.entries) ['touch', e.key, e.value],
+    ];
+    _ops.clear();
+    _touched.clear();
     // Everything the thread needs, as data: the wires, and the keys this
     // isolate holds for their authors (a map lookup each, done here because
     // the key store lives here).
     final rows = <Object>[];
-    final keys = <String, Uint8List>{};
+    final keys = <String, Uint8List>{..._opKeys};
+    _opKeys.clear();
     final alts = <String, List<Uint8List>>{};
     final asked = <String>{};
     for (final e in batch) {
@@ -915,6 +943,7 @@ class XprsArchive {
     }
     final reply = await w.write({
       'rows': rows,
+      'ops': ops,
       'keys': keys,
       'alts': alts,
       'self': selfCallsign,
@@ -935,6 +964,9 @@ class XprsArchive {
         dropped++;
       }
       _writerGone('ended with a batch in hand');
+      for (final op in ops) {
+        _runOp(op);
+      }
       return;
     }
     final err = reply['error'];
@@ -945,7 +977,7 @@ class XprsArchive {
     }
     _apply(reply);
     // More arrived while it wrote: on, without waiting for the timer.
-    if (_pending.length >= _flushEarlyAt) {
+    if (_pending.length >= _flushEarlyAt || _ops.isNotEmpty) {
       unawaited(Future<void>(() => flushInSlices()));
     }
   }
@@ -1068,6 +1100,46 @@ class XprsArchive {
     return null;
   }
 
+  /// Queue a write for the writer thread and send it soon. The main isolate
+  /// never writes the file while the thread does: zx makes a second writer
+  /// WAIT for the lock, and that wait is a sleep on the isolate that draws
+  /// (measured on the C61 with 1.14.0-beta.5: 1.9 s every twenty seconds,
+  /// each heard `t:mailbox` waiting out the thread's transaction).
+  void _op(List<Object?> op) {
+    _ops.add(op);
+    if (_handing != null) return; // the batch out now sends it when back
+    unawaited(Future<void>(() => flushInSlices()));
+  }
+
+  /// One queued write, wherever it runs: on the writer thread, or here when
+  /// there is no thread (then the methods below write directly).
+  void _runOp(List<Object?> op) {
+    try {
+      switch (op[0]) {
+        case 'decl':
+          final p = XprsPacket.parse(op[1] as String);
+          if (p != null) recordMailboxDecl(p, nowMs: op[2] as int?);
+        case 'served':
+          noteServed(op[1] as String, nowMs: op[2] as int?);
+        case 'touch':
+          _db?.execute('UPDATE served_visitors SET last=? WHERE call=?',
+              [op[2], op[1]]);
+        case 'unserved':
+          forgetServed(op[1] as String);
+        case 'retier':
+          retier(
+              promoted: {...(op[1] as List).cast<String>()},
+              demoted: {...(op[2] as List).cast<String>()});
+        case 'forgetGroup':
+          forgetGroup(op[1] as String);
+        case 'purge':
+          purgeModerated(op[1] as String, op[2] as String);
+      }
+    } catch (e) {
+      LogService.instance.add('XPRS archive: ${op[0]} failed: $e');
+    }
+  }
+
   /// Rows written per transaction on the writer thread: the file lock is
   /// held for one of these, so this isolate's own occasional writes never
   /// wait long for it.
@@ -1162,6 +1234,11 @@ class XprsArchive {
         flush(max: writerSlice);
         final d = sw.elapsedMilliseconds - t;
         if (d > slowest) slowest = d;
+      }
+      // After the rows, as the main isolate would have: forgetting a group
+      // deletes what was queued for it too.
+      for (final op in (b['ops'] as List? ?? const [])) {
+        _runOp((op as List).cast<Object?>());
       }
       final t = sw.elapsedMilliseconds;
       _prune(db);
@@ -1271,6 +1348,10 @@ class XprsArchive {
     final db = _db;
     final g = _base(group);
     if (db == null || g.isEmpty || !_idRe.hasMatch(target)) return;
+    if (_queues) {
+      _op(['purge', group, target]);
+      return;
+    }
     try {
       // A restart replays every act: the first time did the work, so later
       // ones are one primary-key lookup instead of a walk of the group's rows.
@@ -1737,6 +1818,10 @@ class XprsArchive {
   void retier({Set<String> promoted = const {}, Set<String> demoted = const {}}) {
     final db = _db;
     if (db == null) return;
+    if (_queues) {
+      _op(['retier', promoted.toList(), demoted.toList()]);
+      return;
+    }
     try {
       void move(String sql, String c, int from, int to) {
         for (final r in db.select(
@@ -1798,6 +1883,12 @@ class XprsArchive {
     if (db == null) return 0;
     final g = _base(group.trim().toUpperCase());
     if (g.isEmpty) return 0;
+    if (_queues) {
+      // On the thread, after the rows queued before it: 0 here, the rows go
+      // with the next batch.
+      _op(['forgetGroup', g]);
+      return 0;
+    }
     flush(); // anything still queued would be written back after the delete
     return db.transaction(() {
       final n = _delete(db, 'DELETE FROM packets WHERE toc = ?', [g]) +
@@ -1826,6 +1917,17 @@ class XprsArchive {
     if (db == null || p.type != 'mailbox') return false;
     final fromc = _base(p['f'] ?? '');
     if (fromc.isEmpty) return false;
+    if (_queues) {
+      // The signature is checked, and the row written, on the writer thread.
+      // The answer here is read from the packet: a forged declaration that
+      // claims to name us is admitted to the spool only to be dropped there
+      // as forged, the way every forged packet is (flush).
+      final k = keyResolver?.call(fromc);
+      if (k != null) _opKeys[fromc] = k;
+      _op(['decl', p.encode(), nowMs ?? DateTime.now().millisecondsSinceEpoch]);
+      if ((p['remove'] ?? '') == 'mailbox') return (p['r'] ?? '').trim().isNotEmpty;
+      return _holdPos(p) >= 0;
+    }
     final state = xprsVerify(p, keyResolver?.call(fromc));
     if (state != XprsSigState.verified) return false;
 
@@ -1836,18 +1938,7 @@ class XprsArchive {
           'DELETE FROM mailbox_decl WHERE id=? AND fromc=?', [r, fromc]);
       return true;
     }
-    final hold = (p['hold'] ?? '')
-        .split(',')
-        .map(_base)
-        .where((c) => c.isNotEmpty)
-        .toList();
-    // Us under any name: the person, or the device's X3 -- the archiver a
-    // station that chose this one names (DeviceIdentity).
-    var pos = -1;
-    for (var i = 0; i < hold.length && pos < 0; i++) {
-      final h = hold[i].toUpperCase();
-      if (h == _selfBase.toUpperCase() || selfAlsoKnownAs.contains(h)) pos = i;
-    }
+    final pos = _holdPos(p);
     // A declaration NOT naming us is still recorded (pos -1): section 12.8.1
     // routes held mail by "who holds for X", and an archiver that only
     // remembered its own appointments could never answer it. The return
@@ -1951,11 +2042,32 @@ class XprsArchive {
 
   /// This station offered itself as [call]'s mailbox (WebChatApi
   /// `/api/session`, `offer`), or [call] came back: insert, or refresh `last`.
+  /// Where this station stands in a declaration's `hold:` list, under any
+  /// name it answers to (the person, or the device's X3: DeviceIdentity),
+  /// or -1.
+  int _holdPos(XprsPacket p) {
+    final hold = (p['hold'] ?? '')
+        .split(',')
+        .map(_base)
+        .where((c) => c.isNotEmpty)
+        .toList();
+    for (var i = 0; i < hold.length; i++) {
+      final h = hold[i].toUpperCase();
+      if (h == _selfBase.toUpperCase() || selfAlsoKnownAs.contains(h)) return i;
+    }
+    return -1;
+  }
+
   void noteServed(String call, {int? nowMs}) {
     final db = _db;
     final c = _base(call);
     if (db == null || c.isEmpty) return;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    if (_queues) {
+      _served.add(c);
+      _op(['served', c, now]);
+      return;
+    }
     db.execute(
         'INSERT INTO served_visitors(call,since,last) VALUES(?,?,?) '
         'ON CONFLICT(call) DO UPDATE SET last=excluded.last',
@@ -1969,6 +2081,10 @@ class XprsArchive {
   void touchServed(String call, {int? nowMs}) {
     final c = _base(call);
     if (!_served.contains(c)) return;
+    if (_queues) {
+      _touched[c] = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+      return;
+    }
     _db?.execute('UPDATE served_visitors SET last=? WHERE call=?',
         [nowMs ?? DateTime.now().millisecondsSinceEpoch, c]);
   }
@@ -1998,6 +2114,12 @@ class XprsArchive {
   /// else, or the operator said so). Its archived mail stays where it is.
   void forgetServed(String call) {
     final c = _base(call);
+    if (_queues) {
+      _served.remove(c);
+      _touched.remove(c);
+      _op(['unserved', c]);
+      return;
+    }
     _db?.execute('DELETE FROM served_visitors WHERE call=?', [c]);
     _served.remove(c);
   }
