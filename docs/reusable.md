@@ -745,3 +745,21 @@ on the next statement. Counters both sides write are stored as additions
 (`_countsDelta`). Reuse this shape for any other store whose periodic write
 shows up as a stall; the web build keeps an inline path behind a
 conditional export (`xprs_archive_writer.dart`).
+
+## StoreWorker: a store's writes on a thread of their own
+
+`lib/src/storage/store_worker.dart` (`startStoreWorker(path, secret,
+factory)`): a long-lived isolate opens the same zx file through a static
+factory that returns a `StoreWorkerTarget`, and runs named operations in
+order (`post` without waiting, `call` with an answer). The main isolate
+keeps reading the file directly. First users: the observed-node cache
+(`ObservedStore.openForWorker`); the archive writer predates it and has
+the same shape. Reach for it whenever a store's periodic write shows up in
+`perf: main isolate held ... by timer from ...`.
+
+## StallWatch: name what holds an isolate
+
+`lib/src/platform/stall_watch.dart`: a zone that times every callback and
+logs any that holds the isolate 250 ms or more, naming a timer by where it
+was created. On in the app and the server. Read its lines before changing
+anything for a pause.

@@ -11,7 +11,10 @@
  */
 
 
+import 'dart:async';
+
 import '../../storage/store_db.dart';
+import '../../storage/store_worker.dart';
 
 import '../log_service.dart';
 import '../../platform/fs.dart';
@@ -23,14 +26,42 @@ class ObservedStore {
 
   bool get isOpen => _db != null;
 
+  /// The store's own thread (store_worker.dart), when it runs: the batch
+  /// write and the counts go there. Measured on the C61 (2026-11-23, the
+  /// stall watch): 1.8 to 2.1 s of the main isolate every twenty seconds,
+  /// the observed-node flush of a phone hearing the whole Reticulum network.
+  StoreWorker? _worker;
+
+  /// Start the thread. Until it answers, and where there is none (the web),
+  /// the work is done here as before.
+  Future<void> startWorker() async {
+    if (_worker != null || _db == null) return;
+    final w = await startStoreWorker(path, storeSecretFor(path), openForWorker,
+        name: 'observed-store');
+    if (_db == null) {
+      w?.close();
+      return;
+    }
+    _worker = w;
+  }
+
+  /// The worker's side: the same file, the same methods.
+  static StoreWorkerTarget? openForWorker(String path, String? secret) {
+    final st = ObservedStore(path);
+    return st._open(secret: secret, worker: true) ? _ObservedTarget(st) : null;
+  }
+
   /// Open (and create/migrate) the database. Returns true on success.
-  bool open() {
+  bool open() => _open();
+
+  bool _open({String? secret, bool worker = false}) {
     if (_db != null) return true;
     try {
       // The store opener creates the file but not parent dirs.
       final parent = fs.file(path).parent;
       if (!parent.existsSync()) parent.createSync(recursive: true);
-      final db = openStoreDb(path);
+      final db =
+          worker ? openStoreDbWithSecret(path, secret) : openStoreDb(path);
       db.execute('''
         CREATE TABLE IF NOT EXISTS nodes(
           id         TEXT PRIMARY KEY,
@@ -82,6 +113,15 @@ class ObservedStore {
   /// id, pubkey, callsign, services (csv), xprs (0/1), hops, via,
   /// firstSeen, lastSeen. first_seen is preserved across updates.
   void upsertMany(Iterable<Map<String, Object?>> rows) {
+    final w = _worker;
+    if (w != null && w.alive) {
+      w.post('upsert', rows.toList());
+      return;
+    }
+    _upsertHere(rows);
+  }
+
+  void _upsertHere(Iterable<Map<String, Object?>> rows) {
     final db = _db;
     if (db == null) return;
     ZxSqlDbStatement? stmt;
@@ -238,6 +278,17 @@ class ObservedStore {
     }
   }
 
+  /// [stats], counted on the store's thread when it runs (three of its five
+  /// counts read every row), here otherwise.
+  Future<Map<String, dynamic>> statsSoon() async {
+    final w = _worker;
+    if (w != null && w.alive) {
+      final r = await w.call('stats', null);
+      if (r is Map) return r.cast<String, dynamic>();
+    }
+    return stats();
+  }
+
   /// Summary counts over everything ever persisted: total nodes, how many are
   /// XPRS software, the earliest first-seen, and recent activity.
   Map<String, dynamic> stats() {
@@ -274,9 +325,35 @@ class ObservedStore {
   }
 
   void close() {
+    _worker?.close();
+    _worker = null;
     try {
       _db?.dispose();
     } catch (_) {}
     _db = null;
   }
+}
+
+/// The observed store on its own thread: the batch write and the counts.
+class _ObservedTarget implements StoreWorkerTarget {
+  _ObservedTarget(this.st);
+  final ObservedStore st;
+
+  @override
+  Object? handle(String op, Object? arg) {
+    switch (op) {
+      case 'upsert':
+        st._upsertHere([
+          for (final r in (arg as List? ?? const []))
+            (r as Map).cast<String, Object?>(),
+        ]);
+        return null;
+      case 'stats':
+        return st.stats();
+    }
+    return null;
+  }
+
+  @override
+  void close() => st.close();
 }

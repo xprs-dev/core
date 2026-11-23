@@ -2348,7 +2348,9 @@ class RnsService {
       if (rows.isNotEmpty) st.upsertMany(rows);
       _obDirty.clear();
     }
-    _obStats = st.stats();
+    // Counted where the rows are written (its own thread when it runs): the
+    // status screens read the last answer.
+    unawaited(st.statsSoon().then((s) => _obStats = s));
   }
 
   // Note: the observed registry is NOT hydrated from disk on boot. Cache entries
@@ -4995,7 +4997,9 @@ class RnsService {
             _firstSeenByHex.addAll(st.loadFirstSeen());
             // Known peers at once, without waiting for their announces.
             _seedPeersFromStore();
-            _obStats = st.stats();
+            // The batch write and the counts on the store's own thread.
+            unawaited(st.startWorker());
+            unawaited(st.statsSoon().then((s) => _obStats = s));
             _obFlushTimer = Timer.periodic(
               const Duration(seconds: 20),
               (_) => _flushObserved(),
