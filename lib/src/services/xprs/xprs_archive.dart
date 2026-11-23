@@ -79,6 +79,16 @@ class XprsArchive {
   /// True while the rows are written on the archive's own thread.
   bool get writesOffThread => _writer?.alive ?? false;
 
+  /// The index by type is in the file and type-filtered asks use it.
+  bool get typeIndexReady => _typeIndex;
+
+  /// How this connection would run [sql] (tests: is an index used here, after
+  /// another isolate made it).
+  String debugPlan(String sql, [List<Object?> args = const []]) => [
+        for (final r in _db?.select('EXPLAIN QUERY PLAN $sql', args) ?? const [])
+          '${r['detail']}',
+      ].join('; ');
+
   /// The stored packet whose §5 identifier is [id], or null when the spool
   /// holds none. This is how the core answers a read receipt for a message too
   /// old to be in [XprsReceipt]'s live pocket: the packet is resolved from the
@@ -182,6 +192,15 @@ class XprsArchive {
   List<_Pending> _handed = const [];
   Future<void>? _handing;
 
+  /// `idx_pk_type(type, pts)` is in the file. It is built ONCE in the
+  /// archive's life, by the writer thread (a spool of observations takes
+  /// seconds), and stays in the file: a later start only looks it up. Until
+  /// it exists a type-filtered ask is answered as before.
+  bool _typeIndex = false;
+
+  /// Set on the writer thread when it built the index, for [_apply].
+  bool _typeIndexBuilt = false;
+
   /// Bumped by every [init] and [close]: a reply from the thread of a store
   /// that has since been closed is not applied to the next one.
   int _gen = 0;
@@ -201,6 +220,9 @@ class XprsArchive {
     writerBatches = writerRows = writerMs = writerSlowest = 0;
     return out;
   }
+
+  static const String _typeIndexSql =
+      'CREATE INDEX IF NOT EXISTS idx_pk_type ON packets(type, pts)';
 
   static const int _pendingMax = 512;
   static const int _flushEarlyAt = 64;
@@ -241,6 +263,15 @@ class XprsArchive {
       db.execute(
           'CREATE INDEX IF NOT EXISTS idx_pk_from ON packets(fromc, pts)');
       db.execute('CREATE INDEX IF NOT EXISTS idx_pk_to ON packets(toc, pts)');
+      // By type: a lookup, never a build, here. Without a writer thread (the
+      // web, tests) the store is small and it is built now, once.
+      _typeIndex = db
+          .select("SELECT 1 FROM zx_schema WHERE name = 'idx_pk_type'")
+          .isNotEmpty;
+      if (!_typeIndex && !offThreadWrites) {
+        db.execute(_typeIndexSql);
+        _typeIndex = true;
+      }
       db.execute('''
         CREATE TABLE IF NOT EXISTS mailbox_decl(
           id    TEXT PRIMARY KEY,
@@ -333,6 +364,9 @@ class XprsArchive {
           _writer = w;
           if (w != null) {
             LogService.instance.add('XPRS archive: writes on its own thread');
+            // Once in the file's life: the thread builds it, this isolate
+            // goes on drawing.
+            if (!_typeIndex) _op(const ['typeIndex']);
           }
         }));
       }
@@ -496,7 +530,9 @@ class XprsArchive {
     if (_db == null) return;
     if (kXprsNeverArchived.contains(p.type)) return;
     if ((p['f'] ?? '').trim().isEmpty) return;
-    if (_pending.length >= _pendingMax) {
+    // While the thread has a batch (the once-only index build is seconds),
+    // more is held rather than dropped.
+    if (_pending.length >= (_handing != null ? _pendingMax * 8 : _pendingMax)) {
       _pending.removeAt(0);
       dropped++;
     }
@@ -1050,6 +1086,7 @@ class XprsArchive {
       }
     }
     if (r['names'] == true) CoreState.instance.changed(CoreState.names);
+    if (r['typeIndex'] == true) _typeIndex = true;
     final stored = r['stored'] as List? ?? const [];
     if (stored.isNotEmpty) CoreState.instance.changed(CoreState.archive);
     final hook = onFiled;
@@ -1153,6 +1190,16 @@ class XprsArchive {
           forgetGroup(op[1] as String);
         case 'purge':
           purgeModerated(op[1] as String, op[2] as String);
+        case 'typeIndex':
+          // Only the thread builds it; were the thread gone, the next start
+          // asks again rather than this isolate taking the seconds.
+          final db = _db;
+          if (!_isWriter || db == null) return;
+          final sw = Stopwatch()..start();
+          db.execute(_typeIndexSql);
+          _typeIndexBuilt = true;
+          LogService.instance.add('XPRS archive: index by type built once, '
+              'in ${sw.elapsedMilliseconds} ms');
       }
     } catch (e) {
       LogService.instance.add('XPRS archive: ${op[0]} failed: $e');
@@ -1279,6 +1326,7 @@ class XprsArchive {
       'gone': _gone.toList(),
       'held': _heldDelta,
       'names': _namesChanged,
+      'typeIndex': _typeIndexBuilt,
       'logs': logs,
       'ms': sw.elapsedMilliseconds,
       'slowest': slowest,
@@ -2254,8 +2302,8 @@ class XprsArchive {
     final lim = limit.clamp(1, 1000);
     String? roomKey;
     // (With no room: the newest undirected rows of some types, the page's
-    // other standing question, and as much of a scan: an index by type is
-    // not used for it, measured.)
+    // other standing question: one idx_pk_type range per type, below, once
+    // the index exists.)
     if (id == null &&
         sinceMs == null &&
         untilMs == null &&
@@ -2367,10 +2415,28 @@ class XprsArchive {
       where.write(' AND toc IN (${List.filled(to.length, '?').join(',')})');
       args.addAll(to.map((d) => d.trim().isEmpty ? '' : _base(d)));
     }
+    // ONE LOOKUP PER TYPE, when nothing narrower applies. A spool is mostly
+    // observations, so `type IN (talk)` over the window walked every one of
+    // them, and an ask that found nothing walked the whole window (2.5 s per
+    // inline history request on the Pi's server, 2026-11-23). On
+    // idx_pk_type(type, pts) each type is a range read newest first.
+    // An author, a callsign, our own names or a group room already have
+    // their own index; undirected traffic (toc = '') is most of the file.
+    final byType = _typeIndex &&
+        types != null &&
+        types.isNotEmpty &&
+        types.length <= 8 &&
+        rankFor == null &&
+        !ownOnly &&
+        (only == null || only.trim().isEmpty) &&
+        (id == null || id.trim().isEmpty) &&
+        (from == null || from.trim().isEmpty) &&
+        fromKind == null &&
+        (to == null || to.every((d) => d.trim().isEmpty));
     // A caller that only reads conversations (message + reaction) must not
     // have its window eaten by the observation chatter, which outnumbers
     // everything else on a busy bench.
-    if (types != null && types.isNotEmpty) {
+    if (types != null && types.isNotEmpty && !byType) {
       where.write(' AND type IN (${List.filled(types.length, '?').join(',')})');
       args.addAll(types);
     }
@@ -2456,11 +2522,17 @@ class XprsArchive {
         ..add(me)
         ..add(me);
     }
-    args.add(lim);
-    final rows = db.select(
-        'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
-        'FROM packets WHERE $where ORDER BY $order LIMIT ?',
-        args);
+    final List<Map<String, Object?>> rows;
+    if (byType) {
+      rows = _byIndexRows(
+          db, where, args, [for (final t in {...types}) ('type = ?', [t])], lim);
+    } else {
+      args.add(lim);
+      rows = db.select(
+          'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
+          'FROM packets WHERE $where ORDER BY $order LIMIT ?',
+          args);
+    }
     if (roomKey != null) {
       roomScans++;
       if (_rooms.length >= _roomsMax) _rooms.remove(_rooms.keys.first);
@@ -2476,6 +2548,10 @@ class XprsArchive {
   /// [where] narrowed by each of [halves] in turn, every one an indexed
   /// range, merged newest first: what an OR across columns cannot be.
   List<Map<String, dynamic>> _byIndex(ZxSqlDb db, StringBuffer where,
+          List<Object?> args, List<(String, List<Object?>)> halves, int lim) =>
+      [for (final r in _byIndexRows(db, where, args, halves, lim)) _rowOf(r)];
+
+  List<Map<String, Object?>> _byIndexRows(ZxSqlDb db, StringBuffer where,
       List<Object?> args, List<(String, List<Object?>)> halves, int lim) {
     const cols =
         'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
@@ -2490,7 +2566,8 @@ class XprsArchive {
     }
     final rows = byId.values.toList()
       ..sort((a, b) => (b['pts'] as int).compareTo(a['pts'] as int));
-    return [for (final r in rows.take(lim)) _rowOf(r)];
+    if (rows.length > lim) rows.length = lim;
+    return rows;
   }
 
   static Map<String, dynamic> _rowOf(Map<String, Object?> r) => {
