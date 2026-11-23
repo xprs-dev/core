@@ -302,6 +302,10 @@ class WebChatApi {
       required List<String> types,
       required int limit})? roomRows;
 
+  /// How many messages this station holds for a room (a group's callsign or
+  /// name): a number asked of the store, never a page counted.
+  final int Function(String room)? roomCount;
+
   /// Public groups ranked across this station's archivers (XPRS.md 12.9.7):
   /// `GET /api/xprs/groups?by=`. Null where the host keeps no ranking.
   final ({int sources, List<Map<String, Object?>> rows}) Function(String by)?
@@ -331,6 +335,7 @@ class WebChatApi {
     this.roomKeys,
     this.keep,
     this.roomRows,
+    this.roomCount,
     this.groupRank,
     this.airVerbatim,
     this.fileStore,
@@ -786,6 +791,9 @@ class WebChatApi {
           'state': roster != null && roster.closed ? 'closed' : 'open',
           'verified': roster?.verified ?? false,
           if (_groupNick(group) != null) 'name': _groupNick(group),
+          // How many messages this station holds for it, all told (the rows
+          // above are a page).
+          if (roomCount != null) 'n': roomCount!(group),
           // The groups this one lists as part of itself (10.2), from its
           // cached roster: what lets the page draw its folders. Each is a
           // group of its own, asked for by its own callsign.
@@ -794,7 +802,13 @@ class WebChatApi {
             'subs': [
               for (final e in roster.roles.entries)
                 if (e.value == XprsRole.sub)
-                  {'g': e.key, 'name': _groupNick(e.key) ?? e.key},
+                  {
+                    'g': e.key,
+                    'name': _groupNick(e.key) ?? e.key,
+                    // How many messages this station holds for it: what the
+                    // page shows beside the folder.
+                    if (roomCount != null) 'n': roomCount!(e.key),
+                  },
             ].take(maxSubs).toList(),
           // The asker's place in it, from the record this station holds:
           // what lets the page offer Join, Leave or the moderator's menu.

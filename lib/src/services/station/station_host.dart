@@ -127,6 +127,7 @@ WebChatApi stationWebChatApi({
         // Visible to the next poll, not in twenty seconds.
         XprsArchive.instance.flush();
       },
+      roomCount: XprsArchive.instance.messagesTo,
       roomRows: ({required room, sinceMs, untilMs, required types, required limit}) =>
           XprsArchive.instance.query(
             sinceMs: sinceMs,

@@ -286,6 +286,12 @@ class XprsArchive {
       '$type|${toc.isEmpty ? 1 : 0}|$tier';
 
   void _bump(String type, String toc, int tier, int rows, int bytes) {
+    // A room's kept message count follows what is filed and what goes: a
+    // lookup in a map that is empty until some page has asked.
+    if (_held.isNotEmpty && type == 'message') {
+      final h = _held[toc];
+      if (h != null) _held[toc] = h + rows < 0 ? 0 : h + rows;
+    }
     final k = _ck(type, toc, tier);
     final c = _counts.putIfAbsent(k, () => [0, 0]);
     c[0] += rows;
@@ -358,6 +364,7 @@ class XprsArchive {
     _db?.dispose();
     _db = null;
     _rooms.clear();
+    _held.clear();
     _served.clear();
   }
 
@@ -1810,6 +1817,33 @@ class XprsArchive {
         ..._reachOf(r['wire'] as String, r['bearer'] as String? ?? '',
             (r['own'] as int) != 0),
       };
+
+  // ── How many messages a room holds ──────────────────────────────────────
+  //
+  // What a group's page shows beside each of its folders. Asked with every
+  // poll of every visitor, eleven folders at a time, so it is counted once
+  // (an index range on idx_pk_to, no row built: performance.md 8.7) and then
+  // kept in step by [_bump], which already hears of every row filed or gone.
+  final Map<String, int> _held = {};
+  static const int _heldMax = 256;
+
+  /// The `t:message` rows held for [call] (a group, a person): a number,
+  /// never the rows. Counts what is written; what waits for the next flush
+  /// arrives with it.
+  int messagesTo(String call) {
+    final db = _db;
+    if (db == null) return 0;
+    final c = _base(call);
+    if (c.isEmpty) return 0;
+    final kept = _held[c];
+    if (kept != null) return kept;
+    final n = (db.select(
+                "SELECT COUNT(*) n FROM packets WHERE toc = ? AND type = 'message'",
+                [c]).first['n'] as int?) ??
+        0;
+    if (_held.length >= _heldMax) _held.remove(_held.keys.first);
+    return _held[c] = n;
+  }
 
   /// Tool seams (tool/room_time.dart): a statement, and the row count.
   void debugExec(String sql) => _db?.execute(sql);
