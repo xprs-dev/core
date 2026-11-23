@@ -2382,8 +2382,39 @@ class XprsArchive {
       where.write(' AND pts < ?');
       args.add(untilMs);
     }
-    if (only != null && only.trim().isNotEmpty) {
-      final c = _base(only);
+    // ONE CALLSIGN, ASKED AS SEPARATE LOOKUPS. `fromc=? OR toc=? OR (an
+    // observation naming it)` cannot use idx_pk_from or idx_pk_to, so the
+    // planner walked every row in the window: a history request for a
+    // callsign this station holds nothing of read a week of a busy spool to
+    // answer 404 (2 to 10 s, the Pi's server, 2026-11-23, named by the stall
+    // watch). Each half is an indexed range on its own; observations are read
+    // only when the ask includes them. Merged here, newest first.
+    final onlyCall =
+        only != null && only.trim().isNotEmpty ? _base(only) : null;
+    if (onlyCall != null && rankFor == null) {
+      const cols =
+          'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
+          'FROM packets WHERE ';
+      final halves = <(String, List<Object?>)>[
+        ('fromc = ?', [onlyCall]),
+        ('toc = ?', [onlyCall]),
+        if (types == null || types.contains('observation'))
+          ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall]),
+      ];
+      final byId = <Object?, Map<String, Object?>>{};
+      for (final h in halves) {
+        for (final r in db.select(
+            '$cols$where AND ${h.$1} ORDER BY pts DESC LIMIT ?',
+            [...args, ...h.$2, lim])) {
+          byId[r['id']] = r;
+        }
+      }
+      final rows = byId.values.toList()
+        ..sort((a, b) => (b['pts'] as int).compareTo(a['pts'] as int));
+      return [for (final r in rows.take(lim)) _rowOf(r)];
+    }
+    if (onlyCall != null) {
+      final c = onlyCall;
       // An observation ABOUT the named callsign has that callsign in its
       // `hears:` list and someone else in `f:` — matching sender/addressee
       // alone made `only:X kind:observation` (12.9.4's bulk-gossip ask, "the

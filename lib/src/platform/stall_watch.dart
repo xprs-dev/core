@@ -46,7 +46,8 @@ class StallWatch {
     this.label = 'main isolate',
     this.thresholdMs = 250,
     this.maxPerMinute = 20,
-  });
+    Duration recordAtStart = const Duration(minutes: 2),
+  }) : _deepUntilMs = recordAtStart.inMilliseconds;
 
   /// Where a line goes (LogService.instance.add).
   final void Function(String line) report;
@@ -67,7 +68,11 @@ class StallWatch {
   /// callback, and how seldom that may start.
   final Duration deepFor = const Duration(minutes: 5);
   final Duration deepEvery = const Duration(minutes: 30);
-  int _deepUntilMs = 0;
+  /// Where callbacks come from is also recorded for the first minutes of
+  /// the process: a stream listener is registered once, at start, and a
+  /// slow one would otherwise never be named (seen on the C61 with beta.9:
+  /// `held 820ms by Closure: (dynamic) => Null`, every minute and a half).
+  int _deepUntilMs;
   int _deepLastMs = -1 << 40;
   final Expando<StackTrace> _sites = Expando<StackTrace>('stall-watch-site');
 

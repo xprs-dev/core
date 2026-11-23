@@ -78,7 +78,8 @@ void main() {
 
   test('an unnamed slow callback turns on recording, and the next is named', () async {
     final lines = <String>[];
-    final w = StallWatch(report: lines.add, thresholdMs: 40);
+    final w = StallWatch(
+        report: lines.add, thresholdMs: 40, recordAtStart: Duration.zero);
     await runZoned(() async {
       final c = StreamController<int>();
       final sub = c.stream.listen((_) => _busy(60)); // anonymous: no name
@@ -92,5 +93,20 @@ void main() {
     }, zoneSpecification: w.spec);
     expect(lines.last, contains('callback from '), reason: lines.join(' | '));
     expect(lines.last, contains('stall_watch_test.dart'));
+  });
+
+  test('a listener registered at start is named when it is slow later', () async {
+    final lines = <String>[];
+    final w = StallWatch(report: lines.add, thresholdMs: 40);
+    await runZoned(() async {
+      final c = StreamController<int>();
+      final sub = c.stream.listen((_) => _busy(60)); // registered at start
+      c.add(1);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await sub.cancel();
+      await c.close();
+    }, zoneSpecification: w.spec);
+    expect(lines.join(' | '), contains('callback from '));
+    expect(lines.join(' | '), contains('stall_watch_test.dart'));
   });
 }

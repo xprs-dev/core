@@ -77,6 +77,7 @@ import '../xprs/xprs_group_deposit.dart';
 import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_sig.dart';
+import '../../platform/off_thread.dart';
 import '../receive/core_state.dart';
 import '../receive/packet_gateway.dart';
 import '../xprs/xprs_vocab.dart';
@@ -836,11 +837,31 @@ class MeshService {
           ..archivers =
               (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
           ..groups = (() => XprsGroups.instance.known.toList())
-          ..vouches = ((g) =>
-              XprsGroupKeys.instance.holdsKey(g) ||
-              XprsGroups.instance.rosterOf(g).roles[
-                      NostrCrypto.bareCallsign(tableCallsign).toUpperCase()] ==
-                  XprsRole.mod)
+          // Once per start, a group this device holds the key of whose
+          // record does not yet say where its admin is now: handed over
+          // again at once, not in a week (10.3, a request to join must find
+          // the admin).
+          ..stale = ((g) {
+            if (!XprsGroupKeys.instance.holdsKey(g)) return false;
+            final lx = (XprsGroupAct.ownLx?.call() ?? '').toLowerCase();
+            if (lx.length != 32) return false;
+            return !XprsArchive.instance
+                .query(types: const ['identity'], only: g, limit: 4)
+                .any((r) => '${r['wire']}'.contains(' lx:$lx'));
+          })
+          ..vouches = ((g) {
+            if (XprsGroupKeys.instance.holdsKey(g)) return true;
+            final me = NostrCrypto.bareCallsign(tableCallsign).toUpperCase();
+            // The roster is a replay of every act with its signature
+            // checked: 330 ms a group on the C61 after start (the stall
+            // watch, 2026-11-23), for groups this station could never
+            // moderate. Only when some act even names it as a moderator.
+            final named = XprsGroupKeys.instance
+                .actsFor(g)
+                .any((w) => w.contains('role:mod') && w.contains(me));
+            return named &&
+                XprsGroups.instance.rosterOf(g).roles[me] == XprsRole.mod;
+          })
           ..record = ((g) {
             // The acts from the roster's own durable record (10.4): the
             // archive is a spool and may have let them go. The identity
@@ -859,16 +880,27 @@ class MeshService {
             for (final r in ids) {
               add(r['wire']);
             }
-            if (ids.isEmpty) {
+            // Signed afresh, too, when none on record says where its admin
+            // is now (`lx:`, XprsGroupAct.ownLx): an identity from before
+            // that, or from this device's previous address. It goes to the
+            // archive here as well, so the record this station keeps is the
+            // one it hands over.
+            final lx = (XprsGroupAct.ownLx?.call() ?? '').toLowerCase();
+            final current = lx.length != 32 ||
+                ids.any((r) => '${r['wire']}'.contains(' lx:$lx'));
+            if (ids.isEmpty || !current) {
               final scalar = XprsGroupKeys.instance.scalarFor(g);
               final npub = XprsGroupKeys.instance.npubFor(g);
               if (scalar != null && npub != null) {
-                add(XprsGroupAct.identity(
-                        group: g,
-                        npub: npub,
-                        scalar: scalar,
-                        nick: XprsGroupKeys.instance.nickFor(g))
-                    ?.encode());
+                final fresh = XprsGroupAct.identity(
+                    group: g,
+                    npub: npub,
+                    scalar: scalar,
+                    nick: XprsGroupKeys.instance.nickFor(g));
+                if (fresh != null) {
+                  add(fresh.encode());
+                  XprsArchive.instance.admit(fresh, bearer: 'local', own: true);
+                }
               }
             }
             final acts = XprsGroupKeys.instance.actsFor(g);
@@ -1780,7 +1812,7 @@ class MeshService {
   /// `serve:`), signed. Shared by the LAN beacon and the archiver deposit.
   XprsPacket? _observation(
       String self, String link, List<String> heard, int budget,
-      {bool stamped = false}) {
+      {bool stamped = false, bool sign = true}) {
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
     final at = XprsSharedPosition.instance.current();
     // The archiver's fields -- `serve:`, `dial:`, `room:` and the `mail:` it
@@ -1804,7 +1836,7 @@ class MeshService {
       // goes on the device's own observation when there is one.
       pos: _deviceIsSeparate ? null : at?.pos,
       accM: _deviceIsSeparate ? null : at?.acc,
-      signingKey: xprsProfileScalar(),
+      signingKey: sign ? xprsProfileScalar() : null,
       ts: stamped ? xprsNowTs() : null,
     );
   }
@@ -1816,7 +1848,7 @@ class MeshService {
   /// the install's one LXMF address, shared with the person. Null when the
   /// device is the profile itself.
   XprsPacket? _deviceObservation(String link, List<String> heard, int budget,
-      {bool stamped = false}) {
+      {bool stamped = false, bool sign = true}) {
     if (!_deviceIsSeparate) return null;
     final dev = DeviceIdentity.instance;
     final upSec = DateTime.now().difference(_startedAt).inSeconds;
@@ -1836,7 +1868,7 @@ class MeshService {
       room: arch.room,
       pos: at?.pos,
       accM: at?.acc,
-      signingKey: dev.scalar,
+      signingKey: sign ? dev.scalar : null,
       ts: stamped ? xprsNowTs() : null,
     );
   }
@@ -2126,17 +2158,33 @@ class MeshService {
     _hearsReporter.noteReported(heard, now);
     // One claim per radio (15.6.1): `link:` names the radio the hearing is
     // about, and a station heard on both is in both.
-    final wires = <String>[];
+    // Composed here with room kept for the signature, SIGNED on a worker:
+    // four Schnorr signatures in pure Dart were a quarter of a second of
+    // the main isolate every minute (the stall watch on the C61,
+    // 2026-11-23: reportHeard=256ms). performance.md 8.1: one heavy call
+    // inside a tick goes off the thread.
+    final toSign = <List<String>>[];
     for (final link in const ['ble', 'lan']) {
       final onLink = XprsMonitor.instance.directlyHeardOn(link, nowMs: now);
       if (onLink.isEmpty) continue;
-      final p = _observation(self, link, onLink, XprsPacket.maxBytes,
-          stamped: true);
-      if (p != null) wires.add(p.encode());
-      final dp = _deviceObservation(link, onLink, XprsPacket.maxBytes,
-          stamped: true);
-      if (dp != null) wires.add(dp.encode());
+      final key = xprsProfileScalar();
+      final p = _observation(self, link, onLink, XprsPacket.maxBytes - 65,
+          stamped: true, sign: false);
+      if (p != null && key != null) toSign.add([p.encode(), key.toString()]);
+      final dk = _deviceIsSeparate ? DeviceIdentity.instance.scalar : null;
+      final dp = _deviceObservation(link, onLink, XprsPacket.maxBytes - 65,
+          stamped: true, sign: false);
+      if (dp != null && dk != null) toSign.add([dp.encode(), dk.toString()]);
     }
+    if (toSign.isEmpty) return;
+    unawaited(offThread(_signWires, toSign, debugLabel: 'sign-observations')
+        .then((wires) => _depositHeard(wires, why, heard.length, now))
+        .catchError((Object e) {
+      LogService.instance.add('XPRS: could not sign the hears report: $e');
+    }));
+  }
+
+  void _depositHeard(List<String> wires, String why, int heardN, int now) {
     if (wires.isEmpty) return;
     // The key goes first, every half hour (29.1's cadence): to an archiver
     // that cannot verify our signature the claim feeds nothing (12.9.4).
@@ -2147,8 +2195,15 @@ class MeshService {
     XprsPublisher.instance.depositArchivers(wires, what: 'observation');
     hearsReports++;
     LogService.instance.add('XPRS: told the archivers who we hear ($why, '
-        '${heard.length} station(s), ${wires.length} radio(s)) — 12.1');
+        '$heardN station(s), ${wires.length} radio(s)) — 12.1');
   }
+
+  /// On a worker: each `[wire, scalar]` signed, in order.
+  static List<String> _signWires(List<List<String>> jobs) => [
+        for (final j in jobs)
+          if (XprsPacket.parse(j[0]) case final p?)
+            xprsSign(p, BigInt.parse(j[1])).encode(),
+      ];
 
   int _xprsLanBeaconsSent = 0;
   int _xprsLanBeaconsFailed = 0;
