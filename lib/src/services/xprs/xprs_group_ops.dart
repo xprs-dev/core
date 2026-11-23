@@ -165,7 +165,7 @@ class XprsGroupOps {
       XprsProfiles.instance.own(g, p); // a station never hears itself
       airs.add(_air(p));
     }
-    unawaited(Future.wait(airs).then((_) => XprsArchive.instance.flush()));
+    unawaited(Future.wait(airs).then((_) => XprsArchive.instance.flushNow()));
     return XprsGroupOpResult.ok(wires.first);
   }
 
@@ -219,7 +219,7 @@ class XprsGroupOps {
     // and it writes every 20 s. Flushing on an act somebody just tapped is
     // performance.md 8.12's rule: measured here, a restart inside that
     // window came back without the picture.
-    unawaited(Future.wait(airs).then((_) => XprsArchive.instance.flush()));
+    unawaited(Future.wait(airs).then((_) => XprsArchive.instance.flushNow()));
     return XprsGroupOpResult.ok(wires.first);
   }
 

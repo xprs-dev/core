@@ -733,3 +733,15 @@ and logged as one `perf: <job> took Nms (step=Nms ...)` line only when the
 whole turn is felt (250 ms). Silent otherwise. Use it for any new periodic
 job on the one isolate instead of guessing which step is slow; the app's
 `docs/performance.md` 8.26 and 8.27 are two stalls it named.
+
+## A store written on its own thread, read where it is
+
+`XprsArchive` + `xprs_archive_writer_io.dart`: a long-lived isolate opens
+the same zx file and runs the class's own write code (`openWriter`,
+`writeBatch`), fed batches of plain data by the main isolate and answering
+with what the main isolate must update (counters, caches, hooks). Reads stay
+synchronous on the main isolate: zx shows each isolate the other's commits
+on the next statement. Counters both sides write are stored as additions
+(`_countsDelta`). Reuse this shape for any other store whose periodic write
+shows up as a stall; the web build keeps an inline path behind a
+conditional export (`xprs_archive_writer.dart`).

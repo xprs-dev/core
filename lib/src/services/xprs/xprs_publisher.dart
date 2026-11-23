@@ -435,7 +435,7 @@ class _ReticulumBearer implements XprsBearer {
       // queue (it flushes every 20 s); a grant sent seconds after `create`
       // found nothing to bundle. Flush first -- a handful of rows, on an act a
       // person just tapped, not on any poll.
-      XprsArchive.instance.flush();
+      await XprsArchive.instance.flushNow();
       // Every identity row the archive keeps for the group, not the newest
       // alone: it keeps the key binding and the decoration (a name and a
       // picture, 6.3.2) as separate rows, and the newest is the decoration,

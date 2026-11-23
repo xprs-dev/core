@@ -125,7 +125,7 @@ WebChatApi stationWebChatApi({
         if (p == null) return;
         XprsArchive.instance.admit(p, bearer: 'web', tier: Tier.self);
         // Visible to the next poll, not in twenty seconds.
-        XprsArchive.instance.flush();
+        unawaited(XprsArchive.instance.flushNow());
       },
       roomCount: XprsArchive.instance.messagesTo,
       roomRows: ({required room, sinceMs, untilMs, required types, required limit}) =>

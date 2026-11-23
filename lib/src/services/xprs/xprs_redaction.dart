@@ -173,10 +173,9 @@ class XprsRedaction {
   String? _wireOf(String id) {
     var wire = XprsArchive.instance.wireById(id);
     if (wire == null || wire.isEmpty) {
-      // It may be staged in the archive but not yet flushed to disk (a message
-      // just heard). Flush and look again.
-      XprsArchive.instance.flush();
-      wire = XprsArchive.instance.wireById(id);
+      // It may be admitted but not yet written (a message just heard): the
+      // archive finds it among what waits, without writing anything here.
+      wire = XprsArchive.instance.pendingWire(id);
     }
     if (wire == null || wire.isEmpty) {
       wire = XprsPassphrases.instance.redactionWire(id);

@@ -22,6 +22,7 @@ import '../models/monitored_task.dart';
 import 'event_bus.dart';
 import 'log_service.dart';
 import 'reticulum/rns_service.dart';
+import 'xprs/xprs_archive.dart' show XprsArchive;
 import 'package:xprs_core/src/platform/core_host.dart';
 
 /// Singleton registry. Access via `TaskMonitorService()` or
@@ -78,6 +79,11 @@ class TaskMonitorService {
         final s =
             crypto.entries.map((e) => '${e.key}=${e.value}').join(' ');
         LogService.instance.add('perf: crypto-worker $s');
+      }
+      final aw = XprsArchive.drainWriterStats();
+      if (aw.isNotEmpty) {
+        final s = aw.entries.map((e) => '${e.key}=${e.value}').join(' ');
+        LogService.instance.add('perf: archive-writer $s');
       }
       final ev = RnsService.instance.nostrEventStats;
       if (ev.isNotEmpty && ev.values.any((v) => v > 0)) {

@@ -14,10 +14,12 @@
  * that a copy with fewer `via:` hops replaces one with more, because the
  * zero-hop copy is the closest thing to what the author transmitted.
  *
- * The hot path writes nothing: admit() appends to RAM and returns. A 20 s
- * timer flushes in one transaction, verifies signatures off the hot path,
- * and prunes in bounded batches (the ActivityArchive discipline). Nothing
- * here blocks the UI isolate for longer than one small indexed transaction.
+ * The hot path writes nothing: admit() appends to RAM and returns. Every
+ * 20 s what was admitted is handed to the archive's own thread
+ * (xprs_archive_writer.dart), which checks the signatures, writes the rows
+ * and prunes, against the same file; this isolate reads it. Where there is
+ * no such thread (the web, tests that do not ask for one) the same write
+ * runs here, in slices.
  *
  * Also holds the `t:mailbox` declarations (section 13.12) that decide which
  * Reticulum-borne traffic may enter at all — see XprsIngest for the rule.
@@ -32,6 +34,7 @@ import '../log_service.dart';
 import '../receive/core_state.dart';
 import 'xprs_id.dart';
 import 'xprs_archive_policy.dart';
+import 'xprs_archive_writer.dart';
 import 'xprs_directory.dart' show XprsDirectoryEntry;
 import 'xprs_packet.dart';
 import 'xprs_parts.dart';
@@ -72,6 +75,9 @@ class XprsArchive {
 
   ZxSqlDb? _db;
   bool get ready => _db != null;
+
+  /// True while the rows are written on the archive's own thread.
+  bool get writesOffThread => _writer?.alive ?? false;
 
   /// The stored packet whose §5 identifier is [id], or null when the spool
   /// holds none. This is how the core answers a read receipt for a message too
@@ -149,6 +155,39 @@ class XprsArchive {
   void Function(String callsign, XprsSigState state)? onVerdict;
 
   final List<_Pending> _pending = [];
+
+  /// Write on the archive's own thread instead of this isolate. Set by the
+  /// host before [init] (MeshService); tests leave it off and write inline.
+  bool offThreadWrites = false;
+  XprsArchiveWriterPort? _writer;
+
+  /// This instance IS the writer thread's archive (see [openWriter]).
+  bool _isWriter = false;
+
+  /// The batch now with the writer thread, still findable by [pendingWire].
+  List<_Pending> _handed = const [];
+  Future<void>? _handing;
+
+  /// Bumped by every [init] and [close]: a reply from the thread of a store
+  /// that has since been closed is not applied to the next one.
+  int _gen = 0;
+
+  /// What the writer thread did, for the minute's perf line.
+  static int writerBatches = 0, writerRows = 0, writerMs = 0, writerSlowest = 0;
+
+  /// The counters since the last call, then zero (TaskMonitorService).
+  static Map<String, int> drainWriterStats() {
+    if (writerBatches == 0) return const {};
+    final out = {
+      'batches': writerBatches,
+      'rows': writerRows,
+      'ms': writerMs,
+      'slowest': writerSlowest,
+    };
+    writerBatches = writerRows = writerMs = writerSlowest = 0;
+    return out;
+  }
+
   static const int _pendingMax = 512;
   static const int _flushEarlyAt = 64;
   static const int _flushNowAt = 192;
@@ -269,6 +308,20 @@ class XprsArchive {
       _flushTimer?.cancel();
       _flushTimer =
           Timer.periodic(const Duration(seconds: 20), (_) => unawaited(flushInSlices()));
+      final gen = ++_gen;
+      if (offThreadWrites && !_isWriter) {
+        // The schema exists now; the thread only writes rows into it.
+        unawaited(startArchiveWriter(path, storeSecretFor(path)).then((w) {
+          if (gen != _gen || _db == null) {
+            w?.close();
+            return;
+          }
+          _writer = w;
+          if (w != null) {
+            LogService.instance.add('XPRS archive: writes on its own thread');
+          }
+        }));
+      }
     } catch (e) {
       _db = null;
       // A broken disk degrades to no archive, never to a crash.
@@ -278,9 +331,20 @@ class XprsArchive {
 
   // ── counters ─────────────────────────────────────────────────────────────
 
-  /// key "type|u|tier" (u 1: undirected) -> [rows, wire bytes].
+  /// key "type|u|tier" (u 1: undirected) -> [rows, wire bytes]: what the
+  /// `counts` table said when last read.
   final Map<String, List<int>> _counts = {};
-  final Set<String> _countsDirty = {};
+
+  /// What this isolate moved since, written as an addition. Two isolates
+  /// write the table (the writer thread the rows, this one a group forgotten
+  /// or a shelf changed), so neither may write the number it remembers.
+  final Map<String, List<int>> _countsDelta = {};
+
+  // What the writer thread reports back with each batch.
+  List<Object> _notes = [];
+  Set<String> _gone = {};
+  Map<String, int> _heldDelta = {};
+  bool _namesChanged = false;
 
   static String _ck(String type, String toc, int tier) =>
       '$type|${toc.isEmpty ? 1 : 0}|$tier';
@@ -288,7 +352,9 @@ class XprsArchive {
   void _bump(String type, String toc, int tier, int rows, int bytes) {
     // A room's kept message count follows what is filed and what goes: a
     // lookup in a map that is empty until some page has asked.
-    if (_held.isNotEmpty && type == 'message') {
+    if (_isWriter && type == 'message') {
+      _heldDelta[toc] = (_heldDelta[toc] ?? 0) + rows;
+    } else if (_held.isNotEmpty && type == 'message') {
       final h = _held[toc];
       if (h != null) _held[toc] = h + rows < 0 ? 0 : h + rows;
     }
@@ -296,15 +362,21 @@ class XprsArchive {
     final c = _counts.putIfAbsent(k, () => [0, 0]);
     c[0] += rows;
     c[1] += bytes;
-    _countsDirty.add(k);
+    final d = _countsDelta.putIfAbsent(k, () => [0, 0]);
+    d[0] += rows;
+    d[1] += bytes;
   }
 
-  void _loadCounts(ZxSqlDb db) {
+  void _readCounts(ZxSqlDb db) {
     _counts.clear();
-    _countsDirty.clear();
     for (final r in db.select('SELECT k, n, b FROM counts')) {
       _counts[r['k'] as String] = [r['n'] as int, r['b'] as int];
     }
+  }
+
+  void _loadCounts(ZxSqlDb db) {
+    _countsDelta.clear();
+    _readCounts(db);
     if (_counts.isEmpty &&
         // arch-ignore: no-page-fetch-to-count an existence probe (LIMIT 1), not a count
         db.select('SELECT 1 FROM packets LIMIT 1').isNotEmpty) {
@@ -313,27 +385,27 @@ class XprsArchive {
           "SELECT type, toc = '' u, tier, COUNT(*) n, SUM(length(wire)) b "
           'FROM packets GROUP BY type, toc = \'\', tier')) {
         final k = '${r['type']}|${r['u']}|${r['tier']}';
-        _counts[k] = [r['n'] as int, (r['b'] as num?)?.toInt() ?? 0];
-        _countsDirty.add(k);
+        // The table is empty: the addition is the whole number.
+        _countsDelta[k] = [r['n'] as int, (r['b'] as num?)?.toInt() ?? 0];
       }
       db.transaction(() => _saveCounts(db));
     }
   }
 
+  /// Inside the caller's transaction: add what moved, then read the table
+  /// back, so the numbers include what the other isolate wrote.
   void _saveCounts(ZxSqlDb db) {
-    for (final k in _countsDirty) {
-      final c = _counts[k];
-      if (c == null || c[0] <= 0) {
-        _counts.remove(k);
-        db.execute('DELETE FROM counts WHERE k = ?', [k]);
-      } else {
-        db.execute(
-            'INSERT INTO counts(k, n, b) VALUES(?, ?, ?) '
-            'ON CONFLICT(k) DO UPDATE SET n = excluded.n, b = excluded.b',
-            [k, c[0], c[1]]);
-      }
+    if (_countsDelta.isEmpty) return;
+    for (final e in _countsDelta.entries) {
+      if (e.value[0] == 0 && e.value[1] == 0) continue;
+      db.execute(
+          'INSERT INTO counts(k, n, b) VALUES(?, ?, ?) '
+          'ON CONFLICT(k) DO UPDATE SET n = n + excluded.n, b = b + excluded.b',
+          [e.key, e.value[0], e.value[1]]);
     }
-    _countsDirty.clear();
+    _countsDelta.clear();
+    db.execute('DELETE FROM counts WHERE n <= 0');
+    _readCounts(db);
   }
 
   /// Deletes `packets` rows ([sql] is a DELETE without RETURNING), moving
@@ -344,7 +416,9 @@ class XprsArchive {
       // A kept room that could hold this row is found again by a scan. The
       // housekeeping that runs with every flush removes presence rows,
       // which are in no room, and must not cost every room its answer.
-      if (_rooms.isNotEmpty) {
+      if (_isWriter) {
+        _gone.add('${r['type']}|${r['toc']}');
+      } else if (_rooms.isNotEmpty) {
         _rooms.removeWhere((_, h) =>
             h.types.contains(r['type']) && h.to.contains(r['toc']));
       }
@@ -358,7 +432,13 @@ class XprsArchive {
   int get dataBytes => _counts.values.fold(0, (a, c) => a + c[1]);
 
   void close() {
+    // What is still here is written here: a profile switch or an exit.
     flush();
+    _gen++;
+    _writer?.close();
+    _writer = null;
+    _handed = const [];
+    _handing = null;
     _flushTimer?.cancel();
     _flushTimer = null;
     _db?.dispose();
@@ -408,6 +488,13 @@ class XprsArchive {
     // the queue would overflow and drop: past [_flushNowAt] it is written
     // at once, whole, as it always was. Losing packets is worse than a
     // pause.
+    if (_writer != null) {
+      // The thread takes everything at once, so a burst is never written
+      // here: past [_flushEarlyAt] it is handed over without waiting for
+      // the timer.
+      if (_pending.length >= _flushEarlyAt) unawaited(flushInSlices());
+      return;
+    }
     if (_pending.length >= _flushNowAt) {
       flush();
     } else if (_pending.length >= _flushEarlyAt) {
@@ -460,6 +547,11 @@ class XprsArchive {
   static int slices = 0;
 
   Future<void> flushInSlices() async {
+    final w = _writer;
+    if (w != null) {
+      if (w.alive) return _handOver();
+      _writerGone('ended');
+    }
     if (_slicing) return;
     _slicing = true;
     try {
@@ -521,8 +613,12 @@ class XprsArchive {
     }
 
     final db = _db;
+    // Housekeeping belongs to whoever writes the rows: the writer thread
+    // runs it once a batch ([writeBatch]); this isolate only when there is
+    // no such thread.
+    final prunesHere = !_isWriter && !(_writer?.alive ?? false);
     if (db == null || _pending.isEmpty) {
-      if (db != null) _prune(db, nowMs: nowMs);
+      if (db != null && prunesHere) _prune(db, nowMs: nowMs);
       return;
     }
     final take = max != null && max > 0 && max < _pending.length;
@@ -649,7 +745,15 @@ class XprsArchive {
           ]).first;
           final tierNow = res['tier'] as int;
           final bytes = (res['b'] as num).toInt();
-          if (_rooms.isNotEmpty) _roomsNote(p, id, toWire);
+          if (_isWriter) {
+            _notes
+              ..add(p.type)
+              ..add(_roomOf(p))
+              ..add(id)
+              ..add(toWire);
+          } else if (_rooms.isNotEmpty) {
+            _roomsNote(p.type, _roomOf(p), id, toWire);
+          }
           if (res['heard'] == 1) {
             _bump(p.type, toWire, tierNow, 1, bytes);
             if (onFiled != null) filed.add((p, id, sig));
@@ -705,7 +809,13 @@ class XprsArchive {
       _saveCounts(db);
       db.execute('COMMIT');
       lap('commit');
-      if (identities.isNotEmpty) CoreState.instance.changed(CoreState.names);
+      if (identities.isNotEmpty) {
+        if (_isWriter) {
+          _namesChanged = true;
+        } else {
+          CoreState.instance.changed(CoreState.names);
+        }
+      }
     } catch (e) {
       try {
         db.execute('ROLLBACK');
@@ -714,7 +824,7 @@ class XprsArchive {
       _loadCounts(db);
       LogService.instance.add('XPRS archive: flush failed: $e');
     }
-    _prune(db, nowMs: now);
+    if (prunesHere) _prune(db, nowMs: now);
     lap('prune');
     // The archive's counters moved, and its dashboard is somebody's screen.
     // Once per flush rather than once per row: a backlog drain writes hundreds
@@ -749,6 +859,334 @@ class XprsArchive {
       }
     }
     lap('stored');
+  }
+
+  // ── The writer thread ────────────────────────────────────────────────────
+
+  /// Hand what was admitted to the writer thread, and apply what it did.
+  /// One batch at a time: a second call while one is out waits for it.
+  Future<void> _handOver() {
+    final running = _handing;
+    if (running != null) return running;
+    final f = _handOverNow().whenComplete(() => _handing = null);
+    _handing = f;
+    return f;
+  }
+
+  static bool _derived(String f) =>
+      f.length >= 2 &&
+      (f.codeUnitAt(0) | 0x20) == 0x78 /* x */ &&
+      f.codeUnitAt(1) >= 0x31 &&
+      f.codeUnitAt(1) <= 0x35;
+
+  Future<void> _handOverNow() async {
+    final w = _writer;
+    if (w == null || _db == null) return;
+    final gen = _gen;
+    final batch = List.of(_pending);
+    _pending.clear();
+    _handed = batch;
+    // Everything the thread needs, as data: the wires, and the keys this
+    // isolate holds for their authors (a map lookup each, done here because
+    // the key store lives here).
+    final rows = <Object>[];
+    final keys = <String, Uint8List>{};
+    final alts = <String, List<Uint8List>>{};
+    final asked = <String>{};
+    for (final e in batch) {
+      rows
+        ..add(e.p.encode())
+        ..add(e.bearer)
+        ..add(e.rssi)
+        ..add(e.own)
+        ..add(e.nowMs)
+        ..add(e.tier.index);
+      if (!e.p.has('sig')) continue;
+      final f = e.p['f'] ?? '';
+      if (!asked.add(f)) continue;
+      final base = _base(f);
+      final k = keyResolver?.call(base);
+      if (k != null) keys[base] = k;
+      // An issued callsign is held by lease (xprs_sig.dart): its holder's key.
+      if (!_derived(f)) {
+        final a = xprsAlternateKeys?.call(f);
+        if (a != null && a.isNotEmpty) alts[f] = a;
+      }
+    }
+    final reply = await w.write({
+      'rows': rows,
+      'keys': keys,
+      'alts': alts,
+      'self': selfCallsign,
+      'aka': selfAlsoKnownAs.toList(),
+      'fstations': followedStations.toList(),
+      'fgroups': followedGroups.toList(),
+      'maxBytes': maxBytes,
+      'maxGroupBytes': maxGroupBytes,
+      'maxAgeDays': maxAgeDays,
+    });
+    _handed = const [];
+    if (gen != _gen) return; // closed meanwhile: not this store's news
+    if (reply == null) {
+      // The thread is gone: the rows come back and are written here.
+      _pending.insertAll(0, batch);
+      while (_pending.length > _pendingMax) {
+        _pending.removeAt(0);
+        dropped++;
+      }
+      _writerGone('ended with a batch in hand');
+      return;
+    }
+    final err = reply['error'];
+    if (err != null) {
+      dropped += batch.length;
+      LogService.instance.add('XPRS archive: writer thread refused a batch: $err');
+      return;
+    }
+    _apply(reply);
+    // More arrived while it wrote: on, without waiting for the timer.
+    if (_pending.length >= _flushEarlyAt) {
+      unawaited(Future<void>(() => flushInSlices()));
+    }
+  }
+
+  void _writerGone(String why) {
+    if (_writer == null) return;
+    _writer = null;
+    LogService.instance
+        .add('XPRS archive: writer thread $why; writing on this isolate');
+  }
+
+  /// What the writer thread did, made true here: counters, caches, hooks.
+  /// Each is a map update; nothing here reads or writes the store but the
+  /// counters table (a few dozen rows).
+  void _apply(Map<String, Object?> r) {
+    final db = _db;
+    if (db == null) return;
+    admitted += r['admitted'] as int? ?? 0;
+    forged += r['forged'] as int? ?? 0;
+    groupPruned += r['groupPruned'] as int? ?? 0;
+    writerBatches++;
+    writerRows += r['rows'] as int? ?? 0;
+    final ms = r['ms'] as int? ?? 0;
+    writerMs += ms;
+    final slowest = r['slowest'] as int? ?? 0;
+    if (slowest > writerSlowest) writerSlowest = slowest;
+    for (final l in (r['logs'] as List? ?? const [])) {
+      LogService.instance.add('$l');
+    }
+    final verdicts = r['verdicts'] as List? ?? const [];
+    final onV = onVerdict;
+    if (onV != null) {
+      for (var i = 0; i + 1 < verdicts.length; i += 2) {
+        try {
+          onV(verdicts[i] as String, XprsSigState.values[verdicts[i + 1] as int]);
+        } catch (_) {}
+      }
+    }
+    final heard = r['verified'] as List? ?? const [];
+    final onHeard = xprsVerifiedAs;
+    if (onHeard != null) {
+      for (var i = 0; i + 1 < heard.length; i += 2) {
+        try {
+          onHeard(heard[i] as String, heard[i + 1] as Uint8List);
+        } catch (_) {}
+      }
+    }
+    try {
+      _readCounts(db);
+    } catch (_) {}
+    (r['held'] as Map? ?? const {}).forEach((toc, n) {
+      final h = _held[toc];
+      if (h != null) {
+        final v = h + (n as int);
+        _held[toc as String] = v < 0 ? 0 : v;
+      }
+    });
+    if (_rooms.isNotEmpty) {
+      for (final g in (r['gone'] as List? ?? const [])) {
+        final s = '$g';
+        final cut = s.indexOf('|');
+        final type = s.substring(0, cut), toc = s.substring(cut + 1);
+        _rooms.removeWhere(
+            (_, h) => h.types.contains(type) && h.to.contains(toc));
+      }
+      final notes = r['notes'] as List? ?? const [];
+      for (var i = 0; i + 3 < notes.length; i += 4) {
+        _roomsNote(notes[i] as String, notes[i + 1] as String,
+            notes[i + 2] as String, notes[i + 3] as String);
+      }
+    }
+    if (r['names'] == true) CoreState.instance.changed(CoreState.names);
+    final stored = r['stored'] as List? ?? const [];
+    if (stored.isNotEmpty) CoreState.instance.changed(CoreState.archive);
+    final hook = onFiled;
+    final filed = r['filed'] as List? ?? const [];
+    if (hook != null && filed.isNotEmpty) {
+      for (var i = 0; i + 2 < filed.length; i += 3) {
+        final p = XprsPacket.parse(filed[i] as String);
+        if (p == null) continue;
+        try {
+          hook(p, filed[i + 1] as String, XprsSigState.values[filed[i + 2] as int]);
+        } catch (_) {}
+      }
+      try {
+        onFiledDone?.call();
+      } catch (_) {}
+    }
+    final notify = onStored;
+    if (notify != null) {
+      for (var i = 0; i + 1 < stored.length; i += 2) {
+        try {
+          notify(stored[i] as String, stored[i + 1] as int?);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Written now, wherever this station writes: for a caller that reads
+  /// the rows straight after (a post of its own, an act just aired).
+  Future<void> flushNow() async {
+    if (_writer?.alive ?? false) {
+      final running = _handing;
+      if (running != null) await running;
+      await _handOver();
+    }
+    if (_pending.isNotEmpty && !(_writer?.alive ?? false)) flush();
+  }
+
+  /// The wire of a packet admitted but not yet written (here, or with the
+  /// writer thread), by its section 5 identifier.
+  String? pendingWire(String id) {
+    final key = id.trim().toLowerCase();
+    if (key.isEmpty) return null;
+    for (final list in [_pending, _handed]) {
+      for (final e in list) {
+        if (xprsIdentifier(e.p) == key) return e.p.encode();
+      }
+    }
+    return null;
+  }
+
+  /// Rows written per transaction on the writer thread: the file lock is
+  /// held for one of these, so this isolate's own occasional writes never
+  /// wait long for it.
+  static const int writerSlice = 32;
+
+  /// Open the store as the writer thread's archive. The schema is the main
+  /// isolate's work ([init]); this only writes rows into it. Null, or why
+  /// not.
+  String? openWriter(String path, String? secret) {
+    _isWriter = true;
+    try {
+      final db = openStoreDbWithSecret(path, secret, autoCompact: false);
+      _db = db;
+      _loadCounts(db);
+      _prunedThisSession = false;
+      return null;
+    } catch (e) {
+      _db = null;
+      return 'open failed: $e';
+    }
+  }
+
+  /// One batch, on the writer thread: everything [flush] does, a slice of
+  /// [writerSlice] rows per transaction with each slice's signatures checked
+  /// before its transaction begins, then the housekeeping once. Returns
+  /// what the main isolate needs to make true on its side ([_apply]).
+  Map<String, Object?> writeBatch(Map<String, Object?> b) {
+    final db = _db;
+    if (db == null) return {'error': 'closed'};
+    final sw = Stopwatch()..start();
+    selfCallsign = b['self'] as String? ?? '';
+    selfAlsoKnownAs = {...(b['aka'] as List? ?? const []).cast<String>()};
+    followedStations = {...(b['fstations'] as List? ?? const []).cast<String>()};
+    followedGroups = {...(b['fgroups'] as List? ?? const []).cast<String>()};
+    maxBytes = b['maxBytes'] as int? ?? maxBytes;
+    maxGroupBytes = b['maxGroupBytes'] as int? ?? maxGroupBytes;
+    maxAgeDays = b['maxAgeDays'] as int? ?? maxAgeDays;
+    final keys = (b['keys'] as Map? ?? const {}).cast<String, Uint8List>();
+    final alts = <String, List<Uint8List>>{
+      for (final e in (b['alts'] as Map? ?? const {}).entries)
+        e.key as String: (e.value as List).cast<Uint8List>(),
+    };
+    keyResolver = (c) => keys[c];
+    xprsAlternateKeys = alts.isEmpty ? null : (c) => alts[c] ?? const [];
+    final verified = <Object>[];
+    xprsVerifiedAs = (c, k) => verified
+      ..add(c)
+      ..add(k);
+    final verdicts = <Object>[];
+    onVerdict = (c, s) => verdicts
+      ..add(c)
+      ..add(s.index);
+    final filed = <Object>[];
+    onFiled = (p, id, s) => filed
+      ..add(p.encode())
+      ..add(id)
+      ..add(s.index);
+    onFiledDone = null;
+    final stored = <Object?>[];
+    onStored = (f, t) => stored
+      ..add(f)
+      ..add(t);
+    _notes = [];
+    _gone = {};
+    _heldDelta = {};
+    _namesChanged = false;
+    final logs = <String>[];
+    final log = LogService.instance;
+    final before = log.onLine;
+    log.onLine = logs.add;
+    final a0 = admitted, f0 = forged, g0 = groupPruned;
+    final rows = b['rows'] as List? ?? const [];
+    for (var i = 0; i + 5 < rows.length; i += 6) {
+      final p = XprsPacket.parse(rows[i] as String);
+      if (p == null) continue;
+      _pending.add(_Pending(p, rows[i + 1] as String, rows[i + 2] as int,
+          rows[i + 3] as bool, rows[i + 4] as int, Tier.values[rows[i + 5] as int]));
+    }
+    final n = _pending.length;
+    var slowest = 0;
+    try {
+      while (_db != null && _pending.isNotEmpty) {
+        final t = sw.elapsedMilliseconds;
+        // The curve work outside the transaction: inside it, the file lock
+        // would be held for it. The verdicts are remembered (xprs_sig), so
+        // the write below looks them up.
+        for (final e in _pending.take(writerSlice)) {
+          if (e.p.has('sig') && !e.p.has('n')) {
+            xprsVerify(e.p, keyResolver?.call(_base(e.p['f'] ?? '')));
+          }
+        }
+        flush(max: writerSlice);
+        final d = sw.elapsedMilliseconds - t;
+        if (d > slowest) slowest = d;
+      }
+      final t = sw.elapsedMilliseconds;
+      _prune(db);
+      final d = sw.elapsedMilliseconds - t;
+      if (d > slowest) slowest = d;
+    } finally {
+      log.onLine = before;
+    }
+    return {
+      'rows': n,
+      'admitted': admitted - a0,
+      'forged': forged - f0,
+      'groupPruned': groupPruned - g0,
+      'verdicts': verdicts,
+      'verified': verified,
+      'filed': filed,
+      'stored': stored,
+      'notes': _notes,
+      'gone': _gone.toList(),
+      'held': _heldDelta,
+      'names': _namesChanged,
+      'logs': logs,
+      'ms': sw.elapsedMilliseconds,
+      'slowest': slowest,
+    };
   }
 
   /// The types 7.8.1 lets an author correct and 7.8.2 lets an author withdraw.
@@ -1940,12 +2378,11 @@ class XprsArchive {
     return s == 'local' || s == 'regional' ? s : 'global';
   }
 
-  void _roomsNote(XprsPacket p, String id, String toc) {
-    final room = _roomOf(p);
+  void _roomsNote(String type, String room, String id, String toc) {
     for (final e in _rooms.entries.toList()) {
       final h = e.value;
       if ((h.room.isNotEmpty && h.room != room) ||
-          !h.types.contains(p.type) ||
+          !h.types.contains(type) ||
           !h.to.contains(toc)) {
         continue;
       }

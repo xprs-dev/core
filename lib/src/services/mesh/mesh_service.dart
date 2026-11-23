@@ -363,6 +363,10 @@ class MeshService {
           // station from ITS verdict rather than repeating the curve work on
           // the isolate that draws.
           ..onVerdict = XprsMonitor.instance.recordVerdict
+          // Written on its own thread: the write, its signature checks and
+          // its pruning never run on the isolate that draws (performance.md
+          // 8.28).
+          ..offThreadWrites = true
           ..init(wappsDataStorage(prefs)
               .getAbsolutePath('xprs_archive.zx'));
         stage('archive open');
