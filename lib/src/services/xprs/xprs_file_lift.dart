@@ -92,7 +92,10 @@ XprsFileLift xprsLiftFile(String text) {
   final rest = text
       .replaceFirst(ref.token, '')
       .replaceAll(_szRe, '') // the old in-body size hint; `size:` replaces it
-      .replaceAll(RegExp(r'\s+'), ' ')
+      // Spaces left where the token was close up; the line breaks the
+      // person wrote (4.11) stay, as in a message with no file.
+      .replaceAll(RegExp(r'[^\S\n\u2028\u2029]+'), ' ')
+      .replaceAllMapped(RegExp(r' *([\n\u2028\u2029]) *'), (m) => m[1]!)
       .trim();
   final m = XprsFileLift.meta?.call(ref.sha256);
   final self = '${ref.sha256}.${ref.ext}';
