@@ -2392,26 +2392,28 @@ class XprsArchive {
     final onlyCall =
         only != null && only.trim().isNotEmpty ? _base(only) : null;
     if (onlyCall != null && rankFor == null) {
-      const cols =
-          'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
-          'FROM packets WHERE ';
-      final halves = <(String, List<Object?>)>[
+      return _byIndex(db, where, args, [
         ('fromc = ?', [onlyCall]),
         ('toc = ?', [onlyCall]),
         if (types == null || types.contains('observation'))
           ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall]),
-      ];
-      final byId = <Object?, Map<String, Object?>>{};
-      for (final h in halves) {
-        for (final r in db.select(
-            '$cols$where AND ${h.$1} ORDER BY pts DESC LIMIT ?',
-            [...args, ...h.$2, lim])) {
-          byId[r['id']] = r;
-        }
+      ], lim);
+    }
+    // THIS STATION'S OWN PUBLICATIONS, the same way: `own = 1` has no index,
+    // and a stranger's history request is answered from our own rows only,
+    // so it walked the whole window to find a handful (7 to 49 s on the Pi's
+    // server, each a 404, 2026-11-23). Our rows are the ones under our own
+    // names, and idx_pk_from serves each name.
+    if (ownOnly && rankFor == null) {
+      final names = <String>{
+        if (_selfBase.isNotEmpty) _selfBase.toUpperCase(),
+        ...selfAlsoKnownAs,
+        if (archiverName.isNotEmpty) _base(archiverName).toUpperCase(),
+      };
+      if (names.isNotEmpty) {
+        return _byIndex(
+            db, where, args, [for (final n in names) ('fromc = ?', [n])], lim);
       }
-      final rows = byId.values.toList()
-        ..sort((a, b) => (b['pts'] as int).compareTo(a['pts'] as int));
-      return [for (final r in rows.take(lim)) _rowOf(r)];
     }
     if (onlyCall != null) {
       final c = onlyCall;
@@ -2469,6 +2471,26 @@ class XprsArchive {
           [for (final r in rows) (r['pts'] as int, _rowOf(r))]);
     }
     return [for (final r in rows) _rowOf(r)];
+  }
+
+  /// [where] narrowed by each of [halves] in turn, every one an indexed
+  /// range, merged newest first: what an OR across columns cannot be.
+  List<Map<String, dynamic>> _byIndex(ZxSqlDb db, StringBuffer where,
+      List<Object?> args, List<(String, List<Object?>)> halves, int lim) {
+    const cols =
+        'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
+        'FROM packets WHERE ';
+    final byId = <Object?, Map<String, Object?>>{};
+    for (final h in halves) {
+      for (final r in db.select(
+          '$cols$where AND ${h.$1} ORDER BY pts DESC LIMIT ?',
+          [...args, ...h.$2, lim])) {
+        byId[r['id']] = r;
+      }
+    }
+    final rows = byId.values.toList()
+      ..sort((a, b) => (b['pts'] as int).compareTo(a['pts'] as int));
+    return [for (final r in rows.take(lim)) _rowOf(r)];
   }
 
   static Map<String, dynamic> _rowOf(Map<String, Object?> r) => {

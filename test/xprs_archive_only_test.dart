@@ -50,4 +50,22 @@ void main() {
     expect(ask('X1NOBODY', types: const ['message']), isEmpty);
     expect(a.query(only: 'X1N5', types: const ['message'], limit: 7).length, 7);
   });
+
+  test("a stranger is answered from this station's own rows, by name", () {
+    a.selfCallsign = 'X3SELF';
+    for (var i = 0; i < 2000; i++) {
+      put('t:message f:X1N${i % 97} ts:${ts(i)} m:noise $i');
+    }
+    a.admit(XprsPacket.parse('t:status f:X3SELF ts:${ts(2001)} m:ours')!,
+        bearer: 'lan', own: true);
+    a.admit(XprsPacket.parse('t:message f:X3SELF ts:${ts(2002)} m:also ours')!,
+        bearer: 'lan', own: true);
+    a.flush();
+    final got = [
+      for (final r in a.query(ownOnly: true, types: const ['message', 'status'], limit: 10))
+        '${r['wire']}'.split(' m:').last
+    ];
+    expect(got, ['also ours', 'ours']);
+    a.selfCallsign = '';
+  });
 }
