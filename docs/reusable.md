@@ -763,3 +763,9 @@ the same shape. Reach for it whenever a store's periodic write shows up in
 logs any that holds the isolate 250 ms or more, naming a timer by where it
 was created. On in the app and the server. Read its lines before changing
 anything for a pause.
+
+## HttpTransport.request maxBytes
+
+`HttpTransport.shared.request(..., maxBytes: n)` reads at most n bytes of
+the answer and drops the rest of the download. For any answer whose size is
+not known to be small.

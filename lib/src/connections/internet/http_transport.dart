@@ -68,20 +68,42 @@ class HttpTransport {
   /// request: a wapp's `hal_http_request2` (an API that wants a key in a
   /// header, a PUT or a DELETE) goes through here. Throws on network
   /// failure or timeout, like [get] and [post].
+  ///
+  /// [maxBytes] stops reading the answer once that many bytes are in, and
+  /// the result holds those first bytes. A page's head is at its start, and
+  /// a link nobody vetted may name a file of gigabytes: without the bound
+  /// the whole of it would be held in memory (performance.md §8.9).
   Future<HttpResult> request(
     String method,
     Uri url, {
     Map<String, String>? headers,
     List<int>? body,
     Duration? timeout,
+    int? maxBytes,
   }) async {
     final req = http.Request(method.toUpperCase(), url);
     if (headers != null) req.headers.addAll(headers);
     if (body != null) req.bodyBytes = body;
     // The deadline covers connecting as well as reading the answer.
-    var future = req.send().then(http.Response.fromStream);
+    var future = req.send().then((r) => maxBytes == null
+        ? http.Response.fromStream(r).then(
+            (res) => HttpResult(res.statusCode, res.bodyBytes))
+        : _readAtMost(r, maxBytes));
     if (timeout != null) future = future.timeout(timeout);
-    final res = await future;
-    return HttpResult(res.statusCode, res.bodyBytes);
+    return future;
+  }
+
+  static Future<HttpResult> _readAtMost(
+      http.StreamedResponse r, int maxBytes) async {
+    final out = BytesBuilder(copy: false);
+    await for (final chunk in r.stream) {
+      final room = maxBytes - out.length;
+      if (chunk.length >= room) {
+        out.add(chunk.sublist(0, room < 0 ? 0 : room));
+        break; // leaving the loop cancels the rest of the download
+      }
+      out.add(chunk);
+    }
+    return HttpResult(r.statusCode, out.takeBytes());
   }
 }
