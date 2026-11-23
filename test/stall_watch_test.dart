@@ -87,7 +87,9 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(lines.join(' | '), contains('recording where callbacks come from'));
       // Registered while recording: named by the place that registered it.
-      await Future<void>.value(1).then((_) => _busy(60));
+      await Future<void>.value().then<void>((_) {
+        _busy(60);
+      });
       await sub.cancel();
       await c.close();
     }, zoneSpecification: w.spec);
