@@ -923,8 +923,18 @@ class MeshService {
           // A served visitor's deposit is cancelled by a receipt this
           // station HEARD for it, since the packet is in no outbox here.
           ..receiptSeen = ((id) => MeshStore.instance.wasReceived(id))
+          // Only for whom the mail could leave now. A station that keeps
+          // mail for hundreds of strangers asked the store for each one's
+          // rows every minute, to find that nearly none of them is in
+          // reach: a query per stranger on the one isolate, and a frame of
+          // two seconds on the same second of every minute (measured on
+          // the C61, 2026-11-23). The reachability test is a few map
+          // lookups; the rows are read for those who pass it. An older ask
+          // from an unreachable station is superseded when it is in reach
+          // or when the store's own sweep ages it out.
           ..held = (() => [
                 for (final target in MeshStore.instance.heldTargets())
+                  if (XprsMailbox.instance.reachable?.call(target) ?? false)
                   for (final row in MeshStore.instance.releasableFor(target,
                       selfCallsign: NostrCrypto.bareCallsign(tableCallsign),
                       alsoSelf: _aliases))
@@ -1087,6 +1097,17 @@ class MeshService {
     _sweepTimer?.cancel();
     var sweepTick = 0;
     _sweepTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      // What this minute costs the one isolate, said only when it is felt
+      // (each step below runs up to its first await before returning).
+      final sw = Stopwatch()..start();
+      var mark = 0;
+      final cost = <String>[];
+      void lap(String what) {
+        final now = sw.elapsedMilliseconds;
+        if (now - mark >= 50) cost.add('$what=${now - mark}ms');
+        mark = now;
+      }
+
       if (_table?.sweep() ?? false) revision++;
       if (++sweepTick % 10 == 0) {
         MeshStore.instance.sweep(); // TTL + quota
@@ -1097,21 +1118,32 @@ class MeshService {
       // is the right rule on a radio; an always-on archiver mostly never hears
       // its recipients speak, it simply gains a path to them, and without this
       // minute it would hold their mail for ever while they sat online.
+      lap('table');
       unawaited(XprsMailbox.instance.sweepHeld());
+      lap('held');
       // A group's record to this station's archivers (10.9.2): one group
       // and one archiver a minute at most, each pair once a week.
       unawaited(XprsGroupDeposit.instance.tick());
+      lap('groupDeposit');
       // A public archiver's directory (12.9): recomposed every ten minutes
       // (the announcer's own gate), announced only when it changed.
       unawaited(XprsDirectoryAnnouncer.instance.tick());
+      lap('directory');
       // Who we hear, repeated to our archivers on its period (12.1).
       _reportHeard();
+      lap('reportHeard');
       // Who we lean on, reconsidered every minute (12.3). Cheap — a scan of a
       // station table that is bounded at a few hundred entries — and the first
       // minutes are exactly when it matters: a phone that has just met the
       // network should not spend five of them with nowhere to leave its mail.
       _reconsiderArchiver();
-    _dialArchivers();
+      lap('archiver');
+      _dialArchivers();
+      lap('dial');
+      if (sw.elapsedMilliseconds >= 250) {
+        LogService.instance.add(
+            'perf: mesh sweep took ${sw.elapsedMilliseconds}ms (${cost.join(' ')})');
+      }
       // lifetime: accumulate service time every 15 min (section 10.5). A kill
       // loses at most that tail, same trade the dongle makes with its NVS.
       if (sweepTick % 15 == 0 && _lifeBaseSec >= 0) {
