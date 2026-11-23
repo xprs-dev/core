@@ -565,9 +565,25 @@ class XprsArchive {
         RETURNING heard, tier, length(wire) b''');
       final tomb = db.prepare(
           'INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)');
+      // Where the rows' time goes, kept only while a slice is being timed:
+      // the check of the signature, the withdrawn lookups, the row itself,
+      // and the one row that cost the most (its type, never its words).
+      final rowSw = laps == null ? null : (Stopwatch()..start());
+      var usSig = 0, usGone = 0, usRow = 0, usWorst = 0, usMark = 0;
+      var worstType = '';
+      int rowLap() {
+        if (rowSw == null) return 0;
+        final now = rowSw.elapsedMicroseconds;
+        final d = now - usMark;
+        usMark = now;
+        return d;
+      }
+
       try {
         for (final e in batch) {
           final p = e.p;
+          final usStart = rowSw?.elapsedMicroseconds ?? 0;
+          rowLap();
           // Signature state, off the hot path. A forged packet is somebody
           // else's words under a callsign, and a spool that replays it later
           // repeats the lie — dropped, same policy as the courier.
@@ -591,6 +607,7 @@ class XprsArchive {
           } catch (_) {
             // A view that throws must not cost the spool its flush.
           }
+          usSig += rowLap();
           if (sig == XprsSigState.forged) {
             forged++;
             continue;
@@ -604,6 +621,7 @@ class XprsArchive {
           }
           // The words of something already withdrawn do not come back.
           if (_isWithdrawn(db, p, fromc)) continue;
+          usGone += rowLap();
           stored.add(MapEntry(fromc, xprsParseTs(p['ts'])));
           final id = xprsIdentifier(p);
           final toWire = (p['d'] ?? '').trim().isEmpty ? '' : toc;
@@ -650,13 +668,28 @@ class XprsArchive {
               followedStations.contains(fromc)) {
             capped.add(fromc);
           }
+          usRow += rowLap();
+          if (rowSw != null) {
+            final cost = rowSw.elapsedMicroseconds - usStart;
+            if (cost > usWorst) {
+              usWorst = cost;
+              worstType = p.type;
+            }
+          }
         }
       } finally {
         ins.dispose();
         tomb.dispose();
         oldTier.dispose();
       }
-      lap('write');
+      if (laps != null && lapSw != null && lapSw.elapsedMilliseconds >= 50) {
+        laps.add('write=${lapSw.elapsedMilliseconds}ms'
+            '[sig=${usSig ~/ 1000} gone=${usGone ~/ 1000} row=${usRow ~/ 1000} '
+            'worst=$worstType:${usWorst ~/ 1000}]');
+        lapSw.reset();
+      } else {
+        lap('write');
+      }
       for (final c in identities) {
         _collapseIdentities(db, c);
         _refreshName(db, c);
