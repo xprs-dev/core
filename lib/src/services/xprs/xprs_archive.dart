@@ -151,6 +151,7 @@ class XprsArchive {
   final List<_Pending> _pending = [];
   static const int _pendingMax = 512;
   static const int _flushEarlyAt = 64;
+  static const int _flushNowAt = 192;
   Timer? _flushTimer;
   bool _prunedThisSession = false;
   int _flushesSinceCap = 0;
@@ -395,8 +396,16 @@ class XprsArchive {
         nowMs ?? DateTime.now().millisecondsSinceEpoch,
         tier ?? (own ? Tier.self : Tier.stranger)));
     // In slices too: a full queue on a busy channel is exactly when one
-    // long write hurts most.
-    if (_pending.length >= _flushEarlyAt) unawaited(flushInSlices());
+    // long write hurts most. But a burst admitted in one turn of the event
+    // loop (a replay, an import) gives the slices no turn to run in, and
+    // the queue would overflow and drop: past [_flushNowAt] it is written
+    // at once, whole, as it always was. Losing packets is worse than a
+    // pause.
+    if (_pending.length >= _flushNowAt) {
+      flush();
+    } else if (_pending.length >= _flushEarlyAt) {
+      unawaited(flushInSlices());
+    }
   }
 
   /// Write the pending batch, verify signatures, prune. Public so tests and
