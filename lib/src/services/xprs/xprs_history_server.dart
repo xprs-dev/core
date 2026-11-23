@@ -368,7 +368,7 @@ class XprsHistoryServer {
     }
 
     // Flush so a window ending "now" sees what was heard seconds ago.
-    if (cmd == 'history') archive.flush(nowMs: now);
+    if (cmd == 'history') archive.flushBeforeRead(nowMs: now);
 
     final selfIsAsking = _isOwn(from, selfBase);
     // A file this station holds FOR everyone -- a firmware image its mirror
@@ -797,7 +797,7 @@ class XprsHistoryServer {
       if (state == XprsSigState.forged) return [];
     }
     final now = DateTime.now().millisecondsSinceEpoch;
-    archive.flush(nowMs: now);
+    archive.flushBeforeRead(nowMs: now);
     final cmdId = xprsIdentifier(cmd);
     // A hosted room on this lane as on the air (10.10.1): shared peers only.
     final onlyBase = _base(cmd['only'] ?? '');

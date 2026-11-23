@@ -1087,6 +1087,25 @@ class XprsArchive {
     if (_pending.isNotEmpty && !(_writer?.alive ?? false)) flush();
   }
 
+  /// For a reader about to answer from the store (a history request): what
+  /// was admitted is sent to be written, and this returns at once. With a
+  /// writer thread the answer covers what is already written, and what was
+  /// heard in the last seconds goes with the next ask; without one (the
+  /// web, tests) it is written here first, as before.
+  ///
+  /// It was a synchronous [flush] in the history server, on every request
+  /// any station made: with the thread running it wrote twenty seconds of
+  /// rows on the main isolate AND waited for the thread's lock, and the
+  /// requests came on the asking station's own twenty-second clock. That
+  /// was the C61's 1.9 s every twenty seconds through 1.14.0-beta.6.
+  void flushBeforeRead({int? nowMs}) {
+    if (_writer?.alive ?? false) {
+      if (_pending.isNotEmpty) unawaited(flushInSlices());
+      return;
+    }
+    flush(nowMs: nowMs);
+  }
+
   /// The wire of a packet admitted but not yet written (here, or with the
   /// writer thread), by its section 5 identifier.
   String? pendingWire(String id) {
