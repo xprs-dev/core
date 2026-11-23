@@ -54,6 +54,11 @@ class XprsGroupDeposit {
   /// after start (C61, 2026-11-23).
   bool Function(String group)? vouches;
 
+  /// A group whose record must be handed over again now, whatever the
+  /// week says (its identity changed). Asked once per group per start.
+  bool Function(String group)? stale;
+  final Set<String> _staleAsked = {};
+
   /// This station's archivers, in preference order.
   List<String> Function()? archivers;
 
@@ -120,9 +125,13 @@ class XprsGroupDeposit {
       for (final g in groups?.call() ?? const <String>[]) {
         // The cheap test first (performance.md 8.26): a key read per
         // archiver, in memory.
+        // Asked again on later looks until it has been handed over: the
+        // address it waits for may not be known at the first one.
+        final again = !_staleAsked.contains(g) && (stale?.call(g) ?? false);
+        if (again) _staleAsked.add(g);
         final due = [
           for (final a in to)
-            if (!_fresh(st.getInt(_key(g, a)) ?? 0, t)) a,
+            if (again || !_fresh(st.getInt(_key(g, a)) ?? 0, t)) a,
         ];
         if (due.isEmpty) continue;
         // The event loop gets a turn between groups that cost something.
@@ -176,6 +185,8 @@ class XprsGroupDeposit {
   void debugReset() {
     groups = null;
     vouches = null;
+    stale = null;
+    _staleAsked.clear();
     archivers = null;
     record = null;
     send = null;

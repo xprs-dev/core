@@ -411,8 +411,20 @@ class _ReticulumBearer implements XprsBearer {
     // for everybody else is no member of it, so it was never addressed and
     // learned the record only by overhearing a radio copy.
     targets.addAll(XprsGroupDeposit.instance.targets());
-    targets.remove(group);
+    // The group's own address, which is its admin's (XprsGroupAct.ownLx, an
+    // `lx:` on the group's identity): a station that holds no roster can
+    // still reach whoever may answer a request to join (10.3). Skipped below
+    // when nothing has named it.
+    targets.add(group);
     targets.remove(me);
+    // Somebody outside the group writing to it is asking to join (10.3):
+    // passed on a few times a day per person and group, never a stream.
+    final author = NostrCrypto.bareCallsign(_fromOf(bytes)).toUpperCase();
+    if (author.isNotEmpty && !_mayPostTo(group, author) && !_requestAllowed(group, author)) {
+      LogService.instance.add(
+          'XPRS: request to join $group from $author not passed on: over $requestsPerDay today');
+      return XprsSendResult.refused;
+    }
     // The people an act NAMES may never have heard the group announce itself:
     // a `t:identity` is undirected, so over Reticulum it is an announce, and
     // the hubs drop those between their own clients (see [send]). Without the
@@ -468,9 +480,14 @@ class _ReticulumBearer implements XprsBearer {
       }
     }
     final sends = <Future<bool>>[];
+    final own = (RnsService.instance.lxmfDeliveryHex ?? '').toLowerCase();
+    final sentTo = <String>{};
     for (final call in targets) {
       final hex = RnsService.instance.lxmfDestForCallsign(call);
       if (hex.isEmpty) continue; // never observed; the radios still carry it
+      // One copy per address: the group's address is its admin's, who may
+      // also be on the roster; and never to this device itself.
+      if (hex.toLowerCase() == own || !sentTo.add(hex.toLowerCase())) continue;
       if (named.contains(call)) {
         for (final b in bundle) {
           sends.add(RnsService.instance.wappSendTo('xprs', hex, b));
@@ -481,6 +498,34 @@ class _ReticulumBearer implements XprsBearer {
     if (sends.isEmpty) return XprsSendResult.refused;
     final ok = await Future.wait(sends);
     return ok.any((v) => v) ? XprsSendResult.sent : XprsSendResult.queued;
+  }
+
+  /// Requests to join passed on per person and group a day (10.3).
+  static const int requestsPerDay = 3;
+  final Map<String, int> _requests = {};
+  int _requestsDay = -1;
+
+  bool _requestAllowed(String group, String author) {
+    final day = DateTime.now().millisecondsSinceEpoch ~/ 86400000;
+    if (day != _requestsDay) {
+      _requestsDay = day;
+      _requests.clear();
+    }
+    final k = '$group|$author';
+    final n = _requests[k] ?? 0;
+    if (n >= requestsPerDay) return false;
+    _requests[k] = n + 1;
+    return true;
+  }
+
+  /// A member, a moderator or the admin by the roster this station holds; a
+  /// roster it cannot verify, or does not hold, fails open as 26.7 says.
+  static bool _mayPostTo(String group, String author) =>
+      XprsGroups.instance.mayPost(group, author);
+
+  static String _fromOf(Uint8List bytes) {
+    final p = XprsPacket.parse(utf8.decode(bytes, allowMalformed: true));
+    return p?['f'] ?? '';
   }
 }
 

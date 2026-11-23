@@ -52,6 +52,7 @@ import '../receive/packet_gateway.dart';
 import '../receive/core_state.dart';
 import '../receive/wapp_delivery.dart';
 import '../xprs/xprs_ingest.dart';
+import '../xprs/xprs_group_act.dart';
 import '../xprs/xprs_profiles.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_monitor.dart';
@@ -2924,11 +2925,22 @@ class RnsService {
   /// is how an asker that never heard a phone's beacon learns where its X3,
   /// the archiver, is. Verified only when the pairing would change.
   void noteSignedLx(XprsPacket p) {
-    if (p.type != 'observation' || !p.has('sig')) return;
+    if (!p.has('sig')) return;
     final lx = (p['lx'] ?? '').trim().toLowerCase();
     if (lx.length != 32) return;
     final f = _bareUpper(p['f'] ?? '');
     if (f.isEmpty) return;
+    // A group's identity: where its admin is written to (XprsGroupAct.ownLx).
+    // A second name on the admin's address, as a phone's X3 is: the address
+    // still names the person, and a sender looking for the group finds it.
+    if (p.type == 'identity' && f.startsWith('X5')) {
+      if (_lxmfAlias[f] == lx) return;
+      final key = XprsArchive.instance.keyResolver?.call(f);
+      if (key == null || xprsVerify(p, key) != XprsSigState.verified) return;
+      _noteLxmfAlias(f, lx);
+      return;
+    }
+    if (p.type != 'observation') return;
     if (_lxmfCallsign[lx] == f || _lxmfAlias[f] == lx) return;
     final key = XprsArchive.instance.keyResolver?.call(f);
     if (key == null || xprsVerify(p, key) != XprsSigState.verified) return;
@@ -5798,6 +5810,8 @@ class RnsService {
       noteStationAddress(destHex, callsign);
     };
     MeshService.instance.ourLxmfDest = () => lxmfDeliveryHex;
+    XprsGroupAct.ownLx = () => lxmfDeliveryHex;
+    XprsIngest.onSignedLx = noteSignedLx;
   }
 
   void _noteWappStation(RnsIdentity id, List<int> wire) {

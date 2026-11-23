@@ -108,4 +108,24 @@ void main() {
     d.archivers = () => ['a', 'b', ' ', 'c', 'd'];
     expect(d.targets(), ['A', 'B', 'C']);
   });
+
+  test('a group whose record is stale is handed over again at once', () async {
+    await d.tick();
+    await minutes(5);
+    final before = sent.length;
+    await minutes(30);
+    expect(sent.length, before, reason: 'fresh at both archivers');
+    // The identity changed (a new address for its admin): due now.
+    var staleNow = {'X5ROOT'};
+    d.stale = (g) => staleNow.contains(g);
+    clock += const Duration(hours: 2).inMilliseconds; // past the idle look
+    await minutes(1);
+    expect(sent.skip(before).where((s) => s.$2.contains('X5ROOT')), isNotEmpty);
+    // Once handed over, not again this run, stale or not.
+    final after = sent.length;
+    staleNow = {'X5ROOT'};
+    clock += const Duration(hours: 2).inMilliseconds;
+    await minutes(1);
+    expect(sent.length, after);
+  });
 }

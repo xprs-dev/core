@@ -950,7 +950,22 @@ class XprsIngest {
   static int impostorClaims = 0;
   static int _lastImpostorLogMs = 0;
 
+  /// A signed `lx:` on an identity says where to write to its author; a
+  /// group's says where its admin is (XprsGroupAct.ownLx). Set by RnsService,
+  /// which keeps those pairings.
+  static void Function(XprsPacket p)? onSignedLx;
+
   static void _bindIdentity(String callsign, XprsPacket p) {
+    try {
+      _bindIdentityKey(callsign, p);
+    } finally {
+      // After the key is bound, so the signature can be checked; and on
+      // every identity, not only the first, so a new address is learned.
+      if (p.has('lx')) onSignedLx?.call(p);
+    }
+  }
+
+  static void _bindIdentityKey(String callsign, XprsPacket p) {
     final hook = onIdentity;
     final npub = p['k'];
     if (hook == null || npub == null || !npub.startsWith('npub1')) return;

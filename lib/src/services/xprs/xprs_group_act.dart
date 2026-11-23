@@ -20,6 +20,14 @@ class XprsGroupAct {
   /// creation ceremony" -- this is the ordinary `t:identity` of section 9.3,
   /// self-signed, which is what proves possession of the group's private key.
   /// `nick:` is shown only when that signature verifies (9.3.1).
+  /// This device's own LXMF delivery address, set by RnsService. A group's
+  /// identity signed here says, with the group's key, that its admin is
+  /// written to there (`lx:`, the field a beacon uses for the same thing):
+  /// any station can then address the GROUP -- a request to join (10.3)
+  /// reaches whoever holds its key -- without knowing its roster, and
+  /// nobody without the key can claim the address.
+  static String? Function()? ownLx;
+
   static XprsPacket? identity({
     required String group,
     required String npub,
@@ -30,8 +38,10 @@ class XprsGroupAct {
     final g = group.trim().toUpperCase();
     if (g.isEmpty || !npub.startsWith('npub1')) return null;
     final n = _nick(nick);
+    final lx = (ownLx?.call() ?? '').trim().toLowerCase();
     final p = XprsPacket.parse('t:identity f:$g ts:${xprsNowTs(nowMs)} '
-        'k:$npub${n.isEmpty ? '' : ' nick:$n'}');
+        'k:$npub${n.isEmpty ? '' : ' nick:$n'}'
+        '${lx.length == 32 ? ' lx:$lx' : ''}');
     if (p == null) return null;
     return xprsSign(p, scalar);
   }
