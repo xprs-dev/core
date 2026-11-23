@@ -779,6 +779,29 @@ class XprsHistoryServer {
 
   List<String> serveInline(XprsPacket cmd, {required String selfBase}) {
     if (cmd.type != 'command' || (cmd['cmd'] ?? '') != 'history') return [];
+    // Where an answer's time goes, said when it is felt (the stall watch
+    // named this handler holding the Pi's server for seconds, 2026-11-23).
+    final sw = Stopwatch()..start();
+    var mark = 0;
+    final laps = <String>[];
+    void lap(String what) {
+      final now = sw.elapsedMilliseconds;
+      if (now - mark >= 20) laps.add('$what=${now - mark}ms');
+      mark = now;
+    }
+
+    try {
+      return _serveInline(cmd, selfBase: selfBase, lap: lap);
+    } finally {
+      if (sw.elapsedMilliseconds >= 100) {
+        LogService.instance.add('perf: inline history for '
+            '${cmd['f']} took ${sw.elapsedMilliseconds}ms (${laps.join(' ')})');
+      }
+    }
+  }
+
+  List<String> _serveInline(XprsPacket cmd,
+      {required String selfBase, required void Function(String) lap}) {
     // The device's X3 is the archiver; the person's X1 is still served for
     // the stations that chose it before the move (see [_onPacket]).
     final person = selfBase;
@@ -792,12 +815,15 @@ class XprsHistoryServer {
     if (!archive.ready) return [];
     final from = _base(cmd['f'] ?? '');
     if (from.isEmpty) return [];
+    lap('start');
     if (cmd.has('sig')) {
       final state = xprsVerify(cmd, archive.keyResolver?.call(from));
       if (state == XprsSigState.forged) return [];
     }
+    lap('verify');
     final now = DateTime.now().millisecondsSinceEpoch;
     archive.flushBeforeRead(nowMs: now);
+    lap('flush');
     final cmdId = xprsIdentifier(cmd);
     // A hosted room on this lane as on the air (10.10.1): shared peers only.
     final onlyBase = _base(cmd['only'] ?? '');
@@ -821,11 +847,14 @@ class XprsHistoryServer {
     if (hostedRoom != null) {
       rows.removeWhere((r) => _withheldRoomRow(r, onlyBase, from));
     }
+    lap('query');
     answered++;
     if (rows.isEmpty) {
-      return [
+      final out = [
         if (_result(selfBase, from, cmdId, 404) case final p?) p.encode()
       ];
+      lap('answer');
+      return out;
     }
     final more = rows.length > inlinePageSize;
     return [
