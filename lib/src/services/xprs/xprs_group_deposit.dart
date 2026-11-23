@@ -46,6 +46,14 @@ class XprsGroupDeposit {
   /// being complete: the ones it administers or moderates.
   List<String> Function()? groups;
 
+  /// Whether this station is in a position to vouch for [group]'s record,
+  /// asked only of a group that is due somewhere. Left out, every group
+  /// [groups] names counts. Separate from [groups] because the answer may
+  /// cost a roster replay (a signature check per act): asked of every
+  /// known group in one go it was 1.5 s of the one isolate three minutes
+  /// after start (C61, 2026-11-23).
+  bool Function(String group)? vouches;
+
   /// This station's archivers, in preference order.
   List<String> Function()? archivers;
 
@@ -70,6 +78,10 @@ class XprsGroupDeposit {
   /// How long the groups are left alone after a look that found nothing due.
   static const Duration idleLook = Duration(hours: 1);
   int _nextLookMs = 0;
+
+  /// Never handed over, or made due again by a new act: 0.
+  static bool _fresh(int last, int t) =>
+      last > 0 && t - last < every.inMilliseconds;
 
   static String _key(String group, String archiver) =>
       // `2`: the first version read the acts from the archive alone, which
@@ -104,16 +116,27 @@ class XprsGroupDeposit {
     }
     _busy = true;
     try {
+      final turn = Stopwatch()..start();
       for (final g in groups?.call() ?? const <String>[]) {
+        // The cheap test first (performance.md 8.26): a key read per
+        // archiver, in memory.
+        final due = [
+          for (final a in to)
+            if (!_fresh(st.getInt(_key(g, a)) ?? 0, t)) a,
+        ];
+        if (due.isEmpty) continue;
+        // The event loop gets a turn between groups that cost something.
+        if (turn.elapsedMilliseconds >= 8) {
+          await Future<void>.delayed(Duration.zero);
+          turn.reset();
+        }
+        if (!(vouches?.call(g) ?? true)) continue;
         // One group a turn, to every archiver it is due at: a person with
         // thirty groups and three archivers is done in half an hour, not in
         // an hour and a half.
         List<String>? wires;
         var total = 0;
-        for (final a in to) {
-          // Never handed over, or made due again by a new act: 0.
-          final last = st.getInt(_key(g, a)) ?? 0;
-          if (last > 0 && t - last < every.inMilliseconds) continue;
+        for (final a in due) {
           wires ??= rec(g);
           if (wires.isEmpty) break;
           var sent = 0;
@@ -152,6 +175,7 @@ class XprsGroupDeposit {
 
   void debugReset() {
     groups = null;
+    vouches = null;
     archivers = null;
     record = null;
     send = null;

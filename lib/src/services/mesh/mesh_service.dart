@@ -831,15 +831,12 @@ class MeshService {
           ..store = PreferencesService.instanceSync?.store
           ..archivers =
               (() => PreferencesService.instanceSync?.xprsArchivers ?? const [])
-          ..groups = (() {
-            final me = NostrCrypto.bareCallsign(tableCallsign).toUpperCase();
-            return [
-              for (final g in XprsGroups.instance.known)
-                if (XprsGroupKeys.instance.holdsKey(g) ||
-                    XprsGroups.instance.rosterOf(g).roles[me] == XprsRole.mod)
-                  g,
-            ];
-          })
+          ..groups = (() => XprsGroups.instance.known.toList())
+          ..vouches = ((g) =>
+              XprsGroupKeys.instance.holdsKey(g) ||
+              XprsGroups.instance.rosterOf(g).roles[
+                      NostrCrypto.bareCallsign(tableCallsign).toUpperCase()] ==
+                  XprsRole.mod)
           ..record = ((g) {
             // The acts from the roster's own durable record (10.4): the
             // archive is a spool and may have let them go. The identity

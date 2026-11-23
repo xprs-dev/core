@@ -483,9 +483,18 @@ class XprsArchive {
         sw
           ..reset()
           ..start();
+        final rows = _pending.length;
+        _laps = <String>[];
         flush(max: _sliceRows);
         slices++;
         final ms = sw.elapsedMilliseconds;
+        // A slice that is felt names where it went (performance.md 8.26:
+        // "so the next one names itself"). Silent otherwise.
+        if (ms >= 250) {
+          LogService.instance.add('perf: archive flush took ${ms}ms '
+              '(rows=${rows - _pending.length} ${_laps!.join(' ')})');
+        }
+        _laps = null;
         if (ms < 50 && _sliceRows < flushSliceMax) {
           _sliceRows *= 2;
         } else if (ms > 120 && _sliceRows > 3) {
@@ -498,7 +507,19 @@ class XprsArchive {
     }
   }
 
+  /// The steps of one [flush], timed only while [flushInSlices] asks.
+  List<String>? _laps;
+
   void flush({int? nowMs, int? max}) {
+    final laps = _laps;
+    final lapSw = laps == null ? null : (Stopwatch()..start());
+    void lap(String what) {
+      if (laps == null || lapSw == null) return;
+      final ms = lapSw.elapsedMilliseconds;
+      if (ms >= 50) laps.add('$what=${ms}ms');
+      lapSw.reset();
+    }
+
     final db = _db;
     if (db == null || _pending.isEmpty) {
       if (db != null) _prune(db, nowMs: nowMs);
@@ -523,6 +544,7 @@ class XprsArchive {
     final newest = <String, int>{};
     try {
       db.execute('BEGIN');
+      lap('begin'); // the wait for the writer lock, when somebody holds it
       final oldTier = db.prepare('SELECT tier FROM packets WHERE id = ?');
       final ins = db.prepare('''
         INSERT INTO packets(id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,
@@ -634,6 +656,7 @@ class XprsArchive {
         tomb.dispose();
         oldTier.dispose();
       }
+      lap('write');
       for (final c in identities) {
         _collapseIdentities(db, c);
         _refreshName(db, c);
@@ -645,8 +668,10 @@ class XprsArchive {
           'INSERT INTO newest(fromc, pts) VALUES(?, ?) '
           'ON CONFLICT(fromc) DO UPDATE SET pts = MAX(pts, excluded.pts)',
           [c, t]));
+      lap('tidy');
       _saveCounts(db);
       db.execute('COMMIT');
+      lap('commit');
       if (identities.isNotEmpty) CoreState.instance.changed(CoreState.names);
     } catch (e) {
       try {
@@ -657,6 +682,7 @@ class XprsArchive {
       LogService.instance.add('XPRS archive: flush failed: $e');
     }
     _prune(db, nowMs: now);
+    lap('prune');
     // The archive's counters moved, and its dashboard is somebody's screen.
     // Once per flush rather than once per row: a backlog drain writes hundreds
     // in one transaction, and the reader re-reads the whole status anyway.
@@ -678,6 +704,7 @@ class XprsArchive {
         } catch (_) {}
       }
     }
+    lap('filed');
     final notify = onStored;
     if (notify != null) {
       for (final e in stored) {
@@ -688,6 +715,7 @@ class XprsArchive {
         }
       }
     }
+    lap('stored');
   }
 
   /// The types 7.8.1 lets an author correct and 7.8.2 lets an author withdraw.

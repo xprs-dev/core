@@ -61,6 +61,24 @@ void main() {
     expect(sent.length, 16);
   });
 
+  test('the costly question is asked only of a group that is due', () async {
+    // Measured on a phone, 2026-11-23: asked of every known group at once,
+    // "may I vouch for it" replayed every roster in one go.
+    final asked = <String>[];
+    d.vouches = (g) {
+      asked.add(g);
+      return g == 'X5FOLD';
+    };
+    await d.tick();
+    await minutes(3);
+    expect({for (final s in sent) s.$2.split(' ')[1]}, {'f:X5FOLD'},
+        reason: 'only the group this station vouches for is handed over');
+    asked.clear();
+    await minutes(1);
+    expect(asked, ['X5ROOT'],
+        reason: 'X5FOLD is fresh at both archivers: not asked about again');
+  });
+
   test('an archiver that cannot be named now is tried again later', () async {
     named = {'X3ARC'};
     await d.tick();

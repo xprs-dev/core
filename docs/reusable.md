@@ -723,3 +723,13 @@ its holder" need.
 - `XprsOutbox.noteKept` / `keptAt`: where a message this station sent is kept
   (`held`: a station said so, `handed`: a copy was sent to an archiver).
   `XprsIngest.noteHeld` takes a station's signed `t:observation s:held r:<id>`.
+
+## A periodic job that names its own slow step
+
+`mesh_service.dart` (the minute sweep: `lap('held')`) and
+`xprs_archive.dart` (`_laps`, read by `flushInSlices`): a stopwatch and a
+`lap(name)` after each step, collected only when a step costs 50 ms or more
+and logged as one `perf: <job> took Nms (step=Nms ...)` line only when the
+whole turn is felt (250 ms). Silent otherwise. Use it for any new periodic
+job on the one isolate instead of guessing which step is slow; the app's
+`docs/performance.md` 8.26 and 8.27 are two stalls it named.
