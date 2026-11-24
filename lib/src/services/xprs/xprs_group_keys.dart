@@ -149,6 +149,26 @@ class XprsGroupKeys {
     return fresh;
   }
 
+  /// Put one key minted elsewhere into the pool [candidates] fills, so
+  /// [create] can pick it by its callsign. The host's callsign search mints
+  /// its keys on a worker isolate (the app's docs/performance.md 8.1) and
+  /// offers only the one the person chose, instead of asking [candidates]
+  /// for thousands of keys on the caller's isolate. Memory only, like the
+  /// rest of the pool; a new dialog (a call to [candidates] without `more`)
+  /// clears it. Returns the key's `X5` callsign, or null when no store is
+  /// open or a group already held here wears that callsign.
+  String? offer(NostrKeyPair kp) {
+    final db = _db;
+    if (db == null) return null;
+    final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
+    if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ?', [call])
+        .isNotEmpty) {
+      return null;
+    }
+    _candidates[call] = kp;
+    return call;
+  }
+
   /// The private scalar this group signs with, or null when we do not hold it
   /// -- i.e. we are a member or a bystander rather than the admin.
   BigInt? scalarFor(String callsign) {

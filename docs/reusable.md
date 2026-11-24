@@ -602,7 +602,11 @@ callsign" means minting several keys and keeping the picked one.
 `candidates(n)` mints n keys held in memory only (never stored, replaced by
 the next call, spent by `create`) and returns their callsigns;
 `create(nick:, callsign:)` / `XprsGroupOps.create(callsign:)` keeps the one
-picked and mints fresh for anything else. About 45 ms per key on the Pi.
+picked and mints fresh for anything else. About 45 ms per key on the Pi,
+on the caller's isolate, so a few at a time only. A SEARCH (thousands of
+keys) runs on a worker in the host and hands the one chosen key to
+`offer(kp)`, which puts it in the same memory-only pool and returns its
+callsign (null when a held group already wears it); `create` then picks it.
 
 ### Who is there by name — `XprsArchive.names`, `XprsNames.find`, `XprsCatchup.askNames`
 
