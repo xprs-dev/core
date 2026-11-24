@@ -4,6 +4,7 @@ import 'package:xprs_core/src/platform/key_value_store.dart';
 
 import 'package:xprs_core/src/platform/os.dart' as platform;
 import '../profile/profile_service.dart';
+import 'xprs/xprs_shared_position.dart' show xprsNewPosCode;
 
 /// Persistent user preferences, in the store the host opens through
 /// CoreHost.openPreferences (shared_preferences in the app, a file on the
@@ -719,9 +720,11 @@ class PreferencesService {
   set nodeGeohash(String v) => _prefs.setString('node.geohash', v);
 
   // Whether this station's position goes out with its beacon (XPRS.md 15.1,
-  // 15.6), and how coarsely: the owner's radius in metres, the position
-  // snapped to a grid cell that size (xprs_shared_position.dart). Off by
-  // default for the same reason as the geohash above. [positionFixed] is
+  // 15.6), and how coarsely: the owner's
+  // range in metres, 100 km unless they chose finer; the digits past it
+  // travel hidden for whoever holds [positionCode] (xprs_shared_position.dart).
+  // Off by default here; a phone turns it on once (the app's boot), a server
+  // and a desktop stay off until their owner says. [positionFixed] is
   // "lat,lon" for a station with no GPS (a desktop, a server, the box on the
   // roof); a GPS fix, when there is one, wins.
   /// The packet types each wapp follows (`hal_xprs_follow_kind`), as
@@ -747,8 +750,24 @@ class PreferencesService {
 
   bool get positionShare => _prefs.getBool('position.share') ?? false;
   set positionShare(bool v) => _prefs.setBool('position.share', v);
-  int get positionRadiusM => _prefs.getInt('position.radiusM') ?? 10;
+  /// Whether the owner has ever chosen: a host that shares by default (a
+  /// phone) turns sharing on once, and says so, only while this is false.
+  bool get positionShareChosen => _prefs.containsKey('position.share');
+  int get positionRadiusM => _prefs.getInt('position.radiusM') ?? 100000;
   set positionRadiusM(int v) => _prefs.setInt('position.radiusM', v);
+
+  /// The code that opens the hidden digits of this station's position
+  /// (XPRS.md 6.2.1), given by its owner to whom they like. Made on first
+  /// use; the owner may write their own, and an empty one makes a new one.
+  String get positionCode {
+    final c = _prefs.getString('position.code') ?? '';
+    if (c.isNotEmpty) return c;
+    final made = xprsNewPosCode();
+    _prefs.setString('position.code', made);
+    return made;
+  }
+
+  set positionCode(String v) => _prefs.setString('position.code', v.trim());
   String get positionFixed => _prefs.getString('position.fixed') ?? '';
   set positionFixed(String v) => _prefs.setString('position.fixed', v);
 

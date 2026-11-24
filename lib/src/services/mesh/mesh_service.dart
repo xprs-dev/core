@@ -1836,6 +1836,7 @@ class MeshService {
       // goes on the device's own observation when there is one.
       pos: _deviceIsSeparate ? null : at?.pos,
       accM: _deviceIsSeparate ? null : at?.acc,
+      xr: _deviceIsSeparate ? null : at?.xr,
       signingKey: sign ? xprsProfileScalar() : null,
       ts: stamped ? xprsNowTs() : null,
     );
@@ -1868,6 +1869,7 @@ class MeshService {
       room: arch.room,
       pos: at?.pos,
       accM: at?.acc,
+      xr: at?.xr,
       signingKey: sign ? dev.scalar : null,
       ts: stamped ? xprsNowTs() : null,
     );

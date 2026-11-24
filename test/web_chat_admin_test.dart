@@ -213,7 +213,7 @@ void main() {
         'settings': {'pos': '39,-8', 'acc': 171000}});
     expect(set.json['settings']['pos'], '39,-8');
     expect(set.json['settings']['acc'], 171000);
-    expect(XprsSharedPosition.instance.current(), (pos: '39,-8', acc: 171000));
+    expect(XprsSharedPosition.instance.current(), (pos: '39,-8', acc: 171000, xr: null));
     await act(a, lan, {'action': 'set', 'session': s, 'settings': {'pos': ''}});
     expect(XprsSharedPosition.instance.current(), isNull);
   });

@@ -206,6 +206,9 @@ class PowerState {
   /// The host's answer to "in the foreground?" at boot, recorded WITHOUT a
   /// recompute: start() recomputes once its listeners are attached, so the
   /// first tier still reaches the native service.
+  /// Whether the host says the app is in front of its owner right now.
+  bool get foreground => _foreground;
+
   void initForeground(bool foreground) => _foreground = foreground;
 
   void setForeground(bool foreground) {

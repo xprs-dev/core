@@ -266,8 +266,11 @@ class StationBrowse {
   Map<String, dynamic>? Function(String call) announced =
       (c) => RnsService.instance.announcedVia(c);
   ({double lat, double lon})? Function() here = () {
-    final at = XprsSharedPosition.instance.current();
-    return at == null ? null : xprsParseLatLon(at.pos);
+    // Worked out here and sent nowhere, so the device's own fix serves; a
+    // station placed by its administrator has only that value.
+    final sp = XprsSharedPosition.instance;
+    final at = sp.current();
+    return sp.own() ?? (at == null ? null : _cell(at.pos));
   };
 
   List<(XprsDevice, XprsReach)>? _listed;
@@ -339,7 +342,7 @@ class StationBrowse {
           () {
             final d = e.$1;
             final h = heardHere(d.callsign);
-            final at = me == null || h == null ? null : xprsParseLatLon('${h['pos'] ?? ''}');
+            final at = me == null || h == null ? null : _cell('${h['pos'] ?? ''}');
             final a = announced(d.callsign);
             return {
               'call': d.callsign,
@@ -367,4 +370,11 @@ class StationBrowse {
     _entries.removeWhere((k, _) => k.startsWith('$c|'));
     StationVisits.instance.leave(c);
   }
+}
+
+/// Where a heard `pos:` is for a distance: the middle of its square when
+/// digits are hidden (15.1), the point itself otherwise.
+({double lat, double lon})? _cell(String pos) {
+  final c = xprsPosCell(pos);
+  return c == null ? null : (lat: c.lat, lon: c.lon);
 }

@@ -50,4 +50,19 @@ void main() {
       expect(utf8.encode(p.encode()).length, lessThanOrEqualTo(XprsPacket.maxBytes));
     }
   });
+
+  // 6.2.1: a phone states the digits everyone may read and bars the rest.
+  // The identity carries the bars with no `xr:` (the map needs no code).
+  test('hidden digits: the bars travel signed, and no blob with them', () {
+    final ps = _compose(place: '38█████,-9█████ acc:100000', url: 'https://x1phone.xprs.dev/');
+    final at = ps.where((p) => p.has('pos')).toList();
+    expect(at, hasLength(1));
+    expect(at.single['pos'], '38█████,-9█████');
+    expect(at.single['acc'], '100000');
+    expect(at.single.has('xr'), isFalse);
+    expect(at.single.has('sig'), isTrue);
+    for (final p in ps) {
+      expect(utf8.encode(p.encode()).length, lessThanOrEqualTo(XprsPacket.maxBytes));
+    }
+  });
 }

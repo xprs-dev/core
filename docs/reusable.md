@@ -769,3 +769,24 @@ anything for a pause.
 `HttpTransport.shared.request(..., maxBytes: n)` reads at most n bytes of
 the answer and drops the rest of the download. For any answer whose size is
 not known to be small.
+
+## A value with hidden digits (`services/xprs/xprs_shared_position.dart`)
+
+- `xprsPosAuthored(lat, lon, radiusM)`: a position as its owner writes it for a
+  range, `38((.7077)),-9((.1365))`, with its `barred` and `public` forms and
+  the `acc:` to state. The pattern for any numeric field 6.2.1 permits
+  (telemetry, energy): keep a prefix readable, mark the rest.
+- `xprsPosStrip(v)` and `xprsPosCell(wire)`: a barred value read as every
+  parser reads it, and as the middle of the square its readable digits name.
+  Anything that draws or measures from a `pos:` uses `xprsPosCell`, never the
+  stripped corner. `xprsParseLatLon` strips bars itself.
+- `XprsSharedPosition._hide()` / `XprsPosUnlock.open()`: the shape for paying
+  6.2.1's derivation once: keyed on what the answer depends on (value and
+  code, or blob and code), worked out with `offThread`, the caller given the
+  cheap answer meanwhile. Reuse it before adding another per-packet PBKDF2.
+- `xprsNewPosCode()`: a code people read to each other: 16 characters, no
+  look-alikes, four groups, 80 bits.
+- `XprsMonitor.stationsJson(forOwner: true)`: one JSON, two readers. A visitor
+  is told what the wire says; the owner's own screen gets what this reader may
+  know. Use the flag rather than a second accessor when a row has a private
+  reading.

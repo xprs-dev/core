@@ -27,6 +27,8 @@ import 'xprs_packet.dart';
 import 'xprs_presence.dart';
 import 'xprs_group_act.dart' show xprsGroupNickShown;
 import 'xprs_profiles.dart';
+import 'xprs_shared_position.dart'
+    show XprsPosUnlock, xprsPosCell, xprsPosStrip;
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
 
@@ -171,6 +173,10 @@ class XprsStation {
   /// warning). Newest composed wins. Empty when it shares no position.
   String pos = '';
   int acc = 0;
+
+  /// The same position with its hidden digits restored, when this reader
+  /// holds the station's code (XprsPosUnlock). Never served to a visitor.
+  String posFine = '';
   int posAtMs = 0;
   String? lifetime;
 
@@ -436,9 +442,21 @@ class XprsMonitor {
         (p['pos'] ?? '').contains(',')) {
       final at = xprsParseTs(p['ts']) ?? now;
       if (at >= st.posAtMs) {
-        st.pos = p['pos']!;
+        final said = p['pos']!;
+        if (said != st.pos) st.posFine = '';
+        st.pos = said;
         st.acc = int.tryParse(p['acc'] ?? '') ?? 0;
         st.posAtMs = at;
+        // Hidden digits (6.2.1): opened only for a station whose code the
+        // owner of this one was given, once per blob, off this isolate.
+        final xr = p['xr'] ?? '';
+        if (xr.isNotEmpty && said != xprsPosStrip(said)) {
+          st.posFine = XprsPosUnlock.instance.open(st.callsign, said, xr,
+                  then: (fine) {
+                if (st.pos == said) st.posFine = fine;
+              }) ??
+              st.posFine;
+        }
       }
     }
     if (p.has('lifetime')) st.lifetime = p['lifetime'];
@@ -711,6 +729,23 @@ class XprsMonitor {
     return r != null && now - r <= within.inMilliseconds;
   }
 
+  /// `pos` and `acc` of a row: the wire's, or the owner's reading of it
+  /// ([stationsJson]).
+  static Map<String, dynamic> _posJson(XprsStation s, bool forOwner) {
+    if (s.pos.isEmpty) return const {};
+    if (forOwner) {
+      if (s.posFine.isNotEmpty) return {'pos': s.posFine, 'acc': 10};
+      final c = xprsPosCell(s.pos);
+      if (c != null && c.halfM > 0) {
+        return {
+          'pos': '${c.lat},${c.lon}',
+          'acc': s.acc > 0 ? s.acc : c.halfM,
+        };
+      }
+    }
+    return {'pos': s.pos, if (s.acc > 0) 'acc': s.acc};
+  }
+
   void clear() {
     _ring.clear();
     _stations.clear();
@@ -721,7 +756,13 @@ class XprsMonitor {
 
   /// The stations, shaped as people-widget sections so the wapp renders them
   /// without parsing — the same contract `hal_mesh_devices` uses.
-  String stationsJson({int? nowMs}) {
+  ///
+  /// [forOwner] is for the owner's own screen (a wapp's map): `pos` is then a
+  /// plain point, never bars, the hidden digits restored where this reader
+  /// holds the station's code, else the middle of the square its readable
+  /// digits name. Without it `pos` is the wire's own value, bars and all,
+  /// which is all a visitor of this station's page or API may be told.
+  String stationsJson({int? nowMs, bool forOwner = false}) {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     sweep(nowMs: now);
     final list = _stations.values.toList()
@@ -754,8 +795,7 @@ class XprsMonitor {
         'title': s.callsign,
         'subtitle': sub.toString(),
         'tags': tags,
-        if (s.pos.isNotEmpty) 'pos': s.pos,
-        if (s.pos.isNotEmpty && s.acc > 0) 'acc': s.acc,
+        ..._posJson(s, forOwner),
         ...kind,
       };
     }).toList();
@@ -802,7 +842,8 @@ class XprsMonitor {
   /// for `hal_xprs_station`: a wapp setting one station up reads its own
   /// facts back rather than walking every station's row for one line. Null
   /// when nothing has been heard from it this hour.
-  Map<String, dynamic>? stationJson(String callsign, {int? nowMs}) {
+  Map<String, dynamic>? stationJson(String callsign,
+      {int? nowMs, bool forOwner = false}) {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     final c = callsign.trim().toUpperCase();
     final s = _stations[c];
@@ -833,8 +874,7 @@ class XprsMonitor {
       if (s.mail != null) 'mail': s.mail,
       if (s.uptime != null) 'uptime': s.uptime,
       if (s.lifetime != null) 'lifetime': s.lifetime,
-      if (s.pos.isNotEmpty) 'pos': s.pos,
-      if (s.pos.isNotEmpty && s.acc > 0) 'acc': s.acc,
+      ..._posJson(s, forOwner),
       if (s.fw != null) 'fw': s.fw,
       if (s.count != null) 'count': s.count,
       if (s.services.isNotEmpty) 'serve': s.services,
