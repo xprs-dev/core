@@ -27,6 +27,8 @@ import 'dart:convert';
 
 import '../../storage/store_db.dart';
 import 'package:reticulum/reticulum.dart';
+import 'xprs_group_index.dart';
+import 'xprs_group_read.dart';
 import 'xprs_groups.dart';
 import 'xprs_packet.dart';
 
@@ -180,13 +182,17 @@ class XprsFileAcl {
   }
 
   /// Whether anyone may fetch [shaHex], proven or not: unbound, public, or
-  /// bound to a group whose host says it is open ([openGroup]).
+  /// bound to a group whose host says it is open ([openGroup]) or that is
+  /// public (10.7.1). A public group's words are anybody's, so are its files.
   bool isOpen(String shaHex) {
     final scope = scopeOf(shaHex);
     if (scope == null || scope == XprsFileScope.public) return true;
     if (scope != XprsFileScope.group) return false;
     final g = groupOf(shaHex);
-    return g != null && (openGroup?.call(g) ?? false);
+    if (g == null) return false;
+    if (openGroup?.call(g) ?? false) return true;
+    return XprsGroupIndex.instance.hostedPrivate?.call(g) != true &&
+        XprsGroupRead.instance.isPublic(g);
   }
 
   /// The recorded scope of a hash, for tests and status. Null when unbound.
