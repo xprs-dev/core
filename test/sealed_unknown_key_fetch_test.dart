@@ -52,7 +52,7 @@ void main() {
 
   test('the stations that carried a sealed message are asked for its key first', () {
     final sent = <String>[];
-    final fetch = XprsFetch.instance
+    XprsFetch.instance
       ..autoTick = false
       ..selfCallsign = (() => 'X1ME')
       ..archivers = (() => ['X3ARC'])
