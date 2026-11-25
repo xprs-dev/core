@@ -203,10 +203,22 @@ class XprsSharedPosition {
   void Function(String pos, int acc) announce =
       (pos, acc) => XprsPublisher.instance.setPlace(pos, acc);
 
-  /// The position the station's administrator set from its page (the web
-  /// chat's `pos` and `acc` settings), already as the beacon carries it.
-  /// It comes first: the administrator chose to say it, and how precisely.
-  ({String pos, int acc})? Function() station = () => null;
+  /// Whether the owner has ever chosen to share or not (a phone is turned
+  /// on once; a server and a desktop wait for their owner).
+  bool Function() chosen =
+      () => PreferencesService.instanceSync?.positionShareChosen ?? false;
+
+  /// The owner's choice, from whichever screen made it: the app's Settings >
+  /// Location or a station page's Location card (WebChatApi). One setting,
+  /// so the two always agree. Null leaves that part as it was.
+  void Function({bool? share, String? fixed, int? radiusM}) choose =
+      ({bool? share, String? fixed, int? radiusM}) {
+    final p = PreferencesService.instanceSync;
+    if (p == null) return;
+    if (share != null) p.positionShare = share;
+    if (fixed != null) p.positionFixed = fixed;
+    if (radiusM != null) p.positionRadiusM = radiusM;
+  };
 
   /// How often the host is asked for a fix. A station that moves is
   /// described by its owner's range, not by a fresh fix every beacon.
@@ -258,10 +270,8 @@ class XprsSharedPosition {
 
   String? _said;
 
-  /// Tell the identity where we are, when that changed. The administrator's
-  /// own place (the station's page) is theirs to state and is left alone.
+  /// Tell the identity where we are, when that changed.
   void _say(String pos, int acc) {
-    if (station() != null) return;
     final next = '$pos|$acc';
     if (next == (_said ?? '|0')) return;
     _said = next;
@@ -299,12 +309,10 @@ class XprsSharedPosition {
 
   /// What the beacon carries now, or null when sharing is off or there is
   /// no position to share. `xr` is the blob of the hidden digits, null when
-  /// nothing can be opened: the administrator's own position, a range of
-  /// 10 m, or the moment before the hidden form is worked out (the bars are
-  /// there already; what fills them follows).
+  /// nothing can be opened: a range of 10 m, or the moment before the
+  /// hidden form is worked out (the bars are there already; what fills them
+  /// follows).
   ({String pos, int acc, String? xr})? current() {
-    final set = station();
-    if (set != null) return (pos: set.pos, acc: set.acc, xr: null);
     if (!enabled()) return null;
     final a = _authored();
     if (a == null) return null;

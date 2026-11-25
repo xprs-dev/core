@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
+import 'package:xprs_core/src/platform/key_value_store.dart';
 import 'package:xprs_core/src/services/web_chat_api.dart';
 import 'package:xprs_core/src/services/xprs/xprs_shared_position.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
@@ -22,7 +23,7 @@ void main() {
   late List<String> received;
   const lan = '192.168.178.20', internet = '203.0.113.7';
 
-  WebChatApi make({Map<String, bool> switches = const {}}) => WebChatApi(
+  WebChatApi make({Map<String, bool> switches = const {}, KeyValueStore? store}) => WebChatApi(
         publicRows: ({sinceMs, untilMs, required types, from, visitor, room, required limit}) => [
           {'type': 'message', 'from': 'X1AAA', 'to': '', 'own': false,
            'wire': 't:message f:X1AAA ts:2026-10-15_12:00:00 scope:local m:near'},
@@ -36,6 +37,7 @@ void main() {
         keyOf: (c) => keys[c],
         appPath: () => null,
         hostSwitches: switches,
+        store: store,
       );
 
   setUp(() {
@@ -99,7 +101,8 @@ void main() {
     expect(r.status, 200);
     expect(r.json['admin'], 'X1ALIC');
     expect(r.json['you'], isTrue);
-    expect(r.json['settings'], WebChatApi.settingDefaults);
+    expect(r.json['settings'], {...WebChatApi.settingDefaults,
+      'pos_share': false, 'pos_chosen': false, 'pos_at': '', 'pos_range': 100000});
     // Nobody else can claim it now.
     final b = await session(a, 'X1BOBB', _bob, lan);
     expect((await act(a, lan, {'action': 'claim', 'session': b})).status, 409);
@@ -154,7 +157,8 @@ void main() {
     expect(r.json['settings'], {
       'local_private': false, 'who_may_post': 'local', 'who_may_alert': 'moderators',
       'reach_alerts': 'regional', 'reach_posts': 'regional', 'reach_chat': 'global',
-      'follow': '', 'peers_mode': 'open', 'peers': '', 'pos': '', 'acc': 0,
+      'follow': '', 'peers_mode': 'open', 'peers': '',
+      'pos_share': false, 'pos_chosen': false, 'pos_at': '', 'pos_range': 100000,
     });
     // The mesh settings: a reach word, a mode, and lists of callsigns.
     expect((await act(a, lan, {'action': 'set', 'session': s,
@@ -194,28 +198,85 @@ void main() {
         'settings': {'who_may_post': 'everyone'}})).status, 200);
   });
 
-  test('where the station is: pos and acc, set by the admin, carried by the '
-      'beacon ahead of any other source', () async {
+  /// The app's location choice, in memory: what the page's card and the
+  /// app's Settings > Location both set (XprsSharedPosition).
+  void placeInMemory() {
+    final sp = XprsSharedPosition.instance;
+    var on = false, was = false, at = '', r = 100000;
+    sp.enabled = () => on;
+    sp.chosen = () => was;
+    sp.fixed = () => at;
+    sp.radiusM = () => r;
+    sp.code = () => '';
+    sp.announce = (_, __) {};
+    sp.choose = ({bool? share, String? fixed, int? radiusM}) {
+      if (share != null) {
+        on = share;
+        was = true;
+      }
+      if (fixed != null) at = fixed;
+      if (radiusM != null) r = radiusM;
+    };
+    sp.debugReset();
+    addTearDown(() {
+      sp.enabled = () => false;
+      sp.chosen = () => false;
+      sp.fixed = () => '';
+      sp.radiusM = () => 100000;
+    });
+  }
+
+  test('where the station is: the app\'s own choice, shared only when its '
+      'administrator says, aired as the app airs it', () async {
+    placeInMemory();
     final a = make();
     final s = await session(a, 'X1ALIC', _alice, lan);
-    await act(a, lan, {'action': 'claim', 'session': s});
-    expect(a.stationPosition(), isNull);
+    final st = await act(a, lan, {'action': 'claim', 'session': s});
+    expect(st.json['settings']['pos_chosen'], false, reason: 'a server waits for its owner');
     expect(XprsSharedPosition.instance.current(), isNull);
     for (final bad in [
-      {'pos': '91,0'}, {'pos': '38.7,-9.1,3'}, {'pos': '38.123456,-9.1'},
-      {'pos': 'Lisbon'}, {'pos': 38.7}, {'acc': -1}, {'acc': '300km'},
-      {'acc': 3000001},
+      {'pos_at': '91,0'}, {'pos_at': '38.7,-9.1,3'}, {'pos_at': '38.123456,-9.1'},
+      {'pos_at': 'Lisbon'}, {'pos_at': 38.7}, {'pos_range': 25000}, {'pos_range': '100km'},
+      {'pos_share': 'yes'}, {'pos': '39,-8'}, {'acc': 171000},
     ]) {
       expect((await act(a, lan, {'action': 'set', 'session': s, 'settings': bad})).status,
           400, reason: '$bad');
     }
     final set = await act(a, lan, {'action': 'set', 'session': s,
-        'settings': {'pos': '39,-8', 'acc': 171000}});
-    expect(set.json['settings']['pos'], '39,-8');
-    expect(set.json['settings']['acc'], 171000);
-    expect(XprsSharedPosition.instance.current(), (pos: '39,-8', acc: 171000, xr: null));
-    await act(a, lan, {'action': 'set', 'session': s, 'settings': {'pos': ''}});
+        'settings': {'pos_share': true, 'pos_at': '49.6317,8.6683', 'pos_range': 100000}});
+    expect(set.json['settings']['pos_share'], true);
+    expect(set.json['settings']['pos_chosen'], true);
+    expect(set.json['settings']['pos_at'], '49.6317,8.6683');
+    final c = XprsSharedPosition.instance.current()!;
+    expect(c.pos, '49█████,8█████', reason: 'the square, as a phone airs it');
+    expect(c.acc, 100000);
+    final pub = (await a.handle('GET', '/api/services', {}, '', peer: internet)).json;
+    expect(pub['page']['place'], {'pos': '49█████,8█████', 'acc': 100000});
+    expect(jsonEncode(pub).contains('49.63'), isFalse, reason: 'the exact point stays here');
+    await act(a, lan, {'action': 'set', 'session': s, 'settings': {'pos_share': false}});
     expect(XprsSharedPosition.instance.current(), isNull);
+    expect((await a.handle('GET', '/api/services', {}, '', peer: internet)).json['page']['place'],
+        isNull);
+  });
+
+  test('a place an older page set becomes the same choice, at 100 km for '
+      '25 km', () async {
+    placeInMemory();
+    final kv = MemoryKeyValueStore();
+    await kv.setString(WebChatApi.settingsKey, jsonEncode({
+      'who_may_post': 'everyone',
+      'pos': '49.6,8.7',
+      'acc': 25000,
+      'page_pos': '49.6317,8.6683,25',
+    }));
+    make(store: kv);
+    final sp = XprsSharedPosition.instance;
+    expect(sp.enabled(), isTrue, reason: 'its owner had chosen to share');
+    expect(sp.fixed(), '49.63170,8.66830');
+    expect(sp.radiusM(), 100000);
+    expect(sp.current()!.pos, '49█████,8█████');
+    final left = jsonDecode(kv.getString(WebChatApi.settingsKey)!) as Map<String, dynamic>;
+    expect(left, {'who_may_post': 'everyone'}, reason: 'the old keys go, the rest stays');
   });
 
   test('released, the station can be claimed again', () async {

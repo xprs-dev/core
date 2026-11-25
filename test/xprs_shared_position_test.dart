@@ -111,7 +111,6 @@ void main() {
       sp.fixed = () => fixed;
       sp.code = () => 'ABCD-EFGH';
       sp.foreground = () => front;
-      sp.station = () => null;
       sp.redact = (job) async {
         hidden++;
         return xprsPosRedactCompute(job);
@@ -187,16 +186,6 @@ void main() {
       await sp.refresh();
       expect(said.last, ' 0', reason: 'sharing turned off withdraws it');
       expect(said.length, 3);
-    });
-
-    test('the administrator\'s own position goes out as it was set', () async {
-      on = true;
-      sp.station = () => (pos: '48.1,11.5', acc: 5000);
-      await sp.refresh();
-      final c = sp.current()!;
-      expect(c.pos, '48.1,11.5');
-      expect(c.xr, isNull);
-      expect(said, isEmpty, reason: 'the page states that one itself');
     });
   });
 

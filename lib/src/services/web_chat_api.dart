@@ -45,6 +45,7 @@
  * Pure over its callbacks (no sockets, no singletons) so every rule is tested
  * without a phone; ShareAppService is the socket half.
  */
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -70,8 +71,8 @@ import 'xprs/xprs_parts.dart';
 import 'xprs/xprs_mesh_policy.dart';
 import 'xprs/xprs_sig.dart';
 import 'web_chat_forum.dart';
-import 'xprs/xprs_publisher.dart' show XprsPublisher;
-import 'xprs/xprs_shared_position.dart' show XprsSharedPosition, xprsParseLatLon;
+import 'xprs/xprs_shared_position.dart'
+    show XprsSharedPosition, kXprsPosRangesM, xprsParseLatLon;
 import 'xprs/xprs_vocab.dart' show xprsParseTs, xprsNowTs, xprsScope, XprsScope;
 
 /// The keys of the rooms a station hosts (XPRS.md 10.10.1): the host's store.
@@ -350,7 +351,6 @@ class WebChatApi {
         // `self` is the node's own owner through its own API
         // (StationHost.own): at home by definition, whatever the host's rule.
         isLocalPeer = ((p) => p == 'self' || (isLocalPeer ?? isPrivateAddress)(p)) {
-    XprsSharedPosition.instance.station = stationPosition;
     // A public room's files are anybody's, over the mesh too (11.2).
     XprsFileAcl.instance.openGroup =
         (g) => _hostedRoom(g) != null && _rooms[_base(g)]?['visibility'] != 'private';
@@ -358,19 +358,50 @@ class WebChatApi {
     // (12.9.7): its posts are in the clear here, served to members only.
     XprsGroupIndex.instance.hostedPrivate =
         (g) => _hostedRoom(g) != null && _rooms[_base(g)]?['visibility'] == 'private';
-    final at = stationPosition();
-    if (at != null) XprsPublisher.instance.setPlace(at.pos, at.acc);
+    _placeFromOlderPage();
   }
 
   static final RegExp _posRe = RegExp(r'^-?\d{1,3}(\.\d{1,5})?,-?\d{1,3}(\.\d{1,5})?$');
 
-  /// The position the administrator set, as the beacon carries it, or null.
-  ({String pos, int acc})? stationPosition() {
-    final s = settings;
-    final p = '${s['pos'] ?? ''}';
-    if (p.isEmpty) return null;
-    final a = s['acc'];
-    return (pos: p, acc: a is int ? a : 0);
+  /// A place set by an older page (`pos`/`acc` as the beacon carried them,
+  /// `page_pos` as "lat,lon,radius_km") becomes the owner's choice in the
+  /// one system the app uses (XprsSharedPosition): its owner had chosen to
+  /// share, so sharing stays on, at the finest of the app's ranges that is
+  /// not finer than theirs (25 km is 100 km). Done once; the old keys go.
+  void _placeFromOlderPage() {
+    final raw = _json(_kSettings);
+    final pos = '${raw['pos'] ?? ''}';
+    final page = '${raw['page_pos'] ?? ''}';
+    if (pos.isEmpty && page.isEmpty) return;
+    final sp = XprsSharedPosition.instance;
+    final at = xprsParseLatLon(page.split(',').take(2).join(',')) ?? xprsParseLatLon(pos);
+    if (at != null && !sp.chosen()) {
+      final a = raw['acc'];
+      final km = page.split(',').length == 3 ? double.tryParse(page.split(',')[2]) : null;
+      final wantM = km != null ? (km * 1000).round() : (a is int ? a : 0);
+      final range = kXprsPosRangesM.reversed
+          .firstWhere((r) => r >= wantM, orElse: () => kXprsPosRangesM.first);
+      sp.choose(
+          share: true,
+          fixed: '${at.lat.toStringAsFixed(5)},${at.lon.toStringAsFixed(5)}',
+          radiusM: range);
+      unawaited(sp.refresh());
+    }
+    raw..remove('pos')..remove('acc')..remove('page_pos');
+    _save(_kSettings, jsonEncode(raw));
+  }
+
+  /// Where this station is, as its administrator sees it on the page: the
+  /// app's own choice (XprsSharedPosition), the exact point included. Only
+  /// the administrator is shown this; everyone else gets what is aired.
+  Map<String, Object> get _placeSettings {
+    final sp = XprsSharedPosition.instance;
+    return {
+      'pos_share': sp.enabled(),
+      'pos_chosen': sp.chosen(),
+      'pos_at': sp.fixed(),
+      'pos_range': sp.radiusM(),
+    };
   }
 
   /// Whether this host tells a visitor where their mail is kept and how much
@@ -599,6 +630,10 @@ class WebChatApi {
         // (`page_<name>` settings): the banner, its CSS, its logo.
         for (final e in settings.entries)
           if (e.key.startsWith(pagePrefix)) e.key.substring(pagePrefix.length): e.value,
+        // Where the station says it is, as it is aired (XPRS.md 6.2.1: the
+        // square, never the exact point the administrator set).
+        if (XprsSharedPosition.instance.current() case final at?)
+          'place': {'pos': at.pos, 'acc': at.acc},
         // Rooms this station hosts (10.10.1): GET/POST /api/rooms.
         if (_hostsRooms) 'rooms': true,
         // And has the storage for collections: gallery, music and library
@@ -2269,13 +2304,6 @@ class WebChatApi {
     'follow': '',
     'peers_mode': 'open',
     'peers': '',
-    // Where this station says it is (XPRS.md 15.1), set by its administrator
-    // from the page: a spot, or a country's centre with its radius. `pos` is
-    // carried as given (its decimals are the precision claimed) and `acc` in
-    // metres; empty, the station keeps its own source (a GPS, its owner's
-    // fixed position) or says nothing. The page does the arithmetic.
-    'pos': '',
-    'acc': 0,
   };
 
   /// Told after the administrator changed the settings, with the new map:
@@ -2341,7 +2369,7 @@ class WebChatApi {
       'local': local,
       // Who could claim now: nobody holds it and the asker is on the network.
       'claimable': admin == null && local,
-      if (you) 'settings': settings,
+      if (you) 'settings': {...settings, ..._placeSettings},
       if (groups != null) ..._moderationState(session, you),
     });
   }
@@ -2433,6 +2461,7 @@ class WebChatApi {
         final want = b['settings'];
         if (want is! Map) return no(400, 'no settings');
         final next = Map<String, Object>.of(settings);
+        final place = <String, Object>{};
         for (final e in want.entries) {
           final k = '${e.key}';
           final v = e.value;
@@ -2462,17 +2491,23 @@ class WebChatApi {
                 return no(400, '$k must be local, regional or global');
               }
               next[k] = v as String;
-            case 'pos':
-              if (v is! String) return no(400, 'pos is "lat,lon" or empty');
+            // Where the station is (XPRS.md 15.1, 6.2.1): the app's own
+            // choice, kept by XprsSharedPosition, which works out what the
+            // beacon and the identity carry exactly as on a phone.
+            case 'pos_share':
+              if (v is! bool) return no(400, '$k must be true or false');
+              place['share'] = v;
+            case 'pos_at':
+              if (v is! String) return no(400, 'pos_at is "lat,lon" or empty');
               if (v.isNotEmpty && (!_posRe.hasMatch(v) || xprsParseLatLon(v) == null)) {
-                return no(400, 'pos is "lat,lon" in degrees, at most 5 decimals');
+                return no(400, 'pos_at is "lat,lon" in degrees, at most 5 decimals');
               }
-              next[k] = v;
-            case 'acc':
-              if (v is! int || v < 0 || v > 3000000) {
-                return no(400, 'acc is metres, 0 to 3000000');
+              place['fixed'] = v;
+            case 'pos_range':
+              if (v is! int || !kXprsPosRangesM.contains(v)) {
+                return no(400, 'pos_range is one of ${kXprsPosRangesM.join(', ')} metres');
               }
-              next[k] = v;
+              place['range'] = v;
             case 'peers_mode':
               if (!const {'open', 'named', 'mesh'}.contains(v)) {
                 return no(400, '$k must be open, named or mesh');
@@ -2506,9 +2541,13 @@ class WebChatApi {
         }
         _save(_kSettings, jsonEncode(next));
         _trustedAt = 0;
-        if (want.containsKey('pos') || want.containsKey('acc')) {
-          final at = stationPosition();
-          XprsPublisher.instance.setPlace(at?.pos ?? '', at?.acc ?? 0);
+        if (place.isNotEmpty) {
+          final sp = XprsSharedPosition.instance;
+          sp.choose(
+              share: place['share'] as bool?,
+              fixed: place['fixed'] as String?,
+              radiusM: place['range'] as int?);
+          unawaited(sp.refresh());
         }
         onSettings?.call(settings);
         return _adminState(session, peer);
