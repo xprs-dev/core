@@ -38,6 +38,7 @@ const _vmin = 6;
 // ioctl modem lines
 const _tiocmbis = 0x5416;
 const _tiocmbic = 0x5417;
+const _tiocoutq = 0x5411; // bytes still waiting to leave
 const _tiocmDtr = 0x002;
 const _tiocmRts = 0x004;
 
@@ -104,8 +105,6 @@ typedef _TcsetattrN = Int32 Function(Int32, Int32, Pointer<_Termios>);
 typedef _TcsetattrD = int Function(int, int, Pointer<_Termios>);
 typedef _TcflushN = Int32 Function(Int32, Int32);
 typedef _TcflushD = int Function(int, int);
-typedef _TcdrainN = Int32 Function(Int32);
-typedef _TcdrainD = int Function(int);
 typedef _CfsetspeedN = Int32 Function(Pointer<_Termios>, Uint32);
 typedef _CfsetspeedD = int Function(Pointer<_Termios>, int);
 typedef _IoctlN = Int32 Function(Int32, Uint64, Pointer<Int32>);
@@ -125,7 +124,6 @@ class _Libc {
   late final _TcgetattrD tcgetattr;
   late final _TcsetattrD tcsetattr;
   late final _TcflushD tcflush;
-  late final _TcdrainD tcdrain;
   late final _CfsetspeedD cfsetispeed;
   late final _CfsetspeedD cfsetospeed;
   late final _IoctlD ioctl;
@@ -140,7 +138,6 @@ class _Libc {
     tcgetattr = _lib.lookupFunction<_TcgetattrN, _TcgetattrD>('tcgetattr');
     tcsetattr = _lib.lookupFunction<_TcsetattrN, _TcsetattrD>('tcsetattr');
     tcflush = _lib.lookupFunction<_TcflushN, _TcflushD>('tcflush');
-    tcdrain = _lib.lookupFunction<_TcdrainN, _TcdrainD>('tcdrain');
     cfsetispeed = _lib.lookupFunction<_CfsetspeedN, _CfsetspeedD>('cfsetispeed');
     cfsetospeed = _lib.lookupFunction<_CfsetspeedN, _CfsetspeedD>('cfsetospeed');
     ioctl = _lib.lookupFunction<_IoctlN, _IoctlD>('ioctl');
@@ -211,6 +208,7 @@ List<SerialDevice> linuxListDevices() {
 class LinuxSerialPort implements SerialPort {
   final String path;
   int _fd = -1;
+  int _baud = 115200;
   final _c = _Libc.instance;
 
   LinuxSerialPort(this.path);
@@ -249,6 +247,7 @@ class LinuxSerialPort implements SerialPort {
       r.c_cc[_vmin] = 0;
       r.c_cc[_vtime] = 0;
       final code = _baudCodes[baud] ?? _baudCodes[115200]!;
+      _baud = _baudCodes.containsKey(baud) ? baud : 115200;
       _c.cfsetispeed(t, code);
       _c.cfsetospeed(t, code);
       if (_c.tcsetattr(_fd, _tcsanow, t) != 0) return false;
@@ -304,9 +303,31 @@ class LinuxSerialPort implements SerialPort {
         }
         off += n;
       }
-      _c.tcdrain(_fd);
     } finally {
       calloc.free(buf);
+    }
+    await _drain(data.length);
+  }
+
+  /// Wait until the bytes have left, but not for ever. tcdrain had no
+  /// limit: a native-USB board running its own firmware does not read the
+  /// line, its pipe stays full, and the ROM loader's first SYNC frames sat
+  /// 4 to 23 s each in tcdrain before the reset that wakes the ROM (an
+  /// ESP32-S3 probe took 80 s on a Pi). What is still queued at the
+  /// deadline is dropped by the next flushInput; the read that follows
+  /// times out as it would for a silent board.
+  Future<void> _drain(int bytes) async {
+    // Twice the line time of these bytes, plus room for a USB frame or two.
+    final deadline = DateTime.now().millisecondsSinceEpoch + 50 + bytes * 20000 ~/ _baud;
+    final q = calloc<Int32>();
+    try {
+      while (_fd >= 0) {
+        if (_c.ioctl(_fd, _tiocoutq, q) != 0 || q.value <= 0) return;
+        if (DateTime.now().millisecondsSinceEpoch >= deadline) return;
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+    } finally {
+      calloc.free(q);
     }
   }
 
