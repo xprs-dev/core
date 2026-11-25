@@ -390,6 +390,12 @@ class WebChatApi {
     'identity', 'file',
   };
 
+  /// Announcements a visitor gets only by naming them (`kind=service`), never
+  /// in the default listing: who serves what (XPRS.md 12.9, "how an archiver
+  /// is found at all"), public broadcasts every station airs. A browser with
+  /// no station of its own finds the archivers to keep its mail with this.
+  static const Set<String> askable = {'service'};
+
   /// What a visitor may post. An identity so others can verify their
   /// signature; a command or a group act is never a visitor's to send.
   static const Set<String> postable = {
@@ -887,7 +893,7 @@ class WebChatApi {
     }
     var types = <String>[
       for (final t in (q['kind'] ?? q['only'] ?? '').split(','))
-        if (readable.contains(t.trim())) t.trim(),
+        if (readable.contains(t.trim()) || askable.contains(t.trim())) t.trim(),
     ];
     // Asked for nothing readable, or for nothing in particular: conversation.
     if (types.isEmpty) types = readable.toList();
