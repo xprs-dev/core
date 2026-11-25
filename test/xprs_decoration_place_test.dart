@@ -24,6 +24,7 @@ List<XprsPacket> _compose({String? url, String? place, String about = ''}) => [
     ];
 
 void main() {
+  _deviceBinding();
   test('no place: the field is not stated', () {
     expect(_compose().any((p) => p.has('pos')), isFalse);
   });
@@ -64,5 +65,32 @@ void main() {
     for (final p in ps) {
       expect(utf8.encode(p.encode()).length, lessThanOrEqualTo(XprsPacket.maxBytes));
     }
+  });
+}
+
+// The archiver on a phone is its device (`X3`): its key binding carries the
+// place its owner shares, the same square, so a map finds the archiver.
+
+final _bar = '█';
+XprsPacket? _binding({String? place}) {
+  final w = XprsPublisher.instance.identityWire('X3DEV1',
+      'npub1qhn4njvvuka3palv8dsd2kjcv8vv6temvwd6mx585ec2f5dkw3wsuuct0z',
+      ts: '2026-11-25_09:00:00', key: _d, place: place);
+  return w == null ? null : XprsPacket.parse(w);
+}
+
+void _deviceBinding() {
+  test('a device binding carries the shared square, barred, with its range', () {
+    final p = _binding(place: '49$_bar$_bar$_bar$_bar$_bar,8$_bar$_bar$_bar$_bar$_bar acc:100000')!;
+    expect(p['pos'], '49$_bar$_bar$_bar$_bar$_bar,8$_bar$_bar$_bar$_bar$_bar');
+    expect(p['acc'], '100000');
+    expect(p['k'], startsWith('npub1'));
+    expect(p.has('sig'), isTrue);
+  });
+  test('sharing stopped: pos:- so the map takes it down', () {
+    expect(_binding(place: '')!['pos'], '-');
+  });
+  test('never shared: no place stated', () {
+    expect(_binding()!.has('pos'), isFalse);
   });
 }

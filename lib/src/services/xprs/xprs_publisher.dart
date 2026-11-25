@@ -1380,7 +1380,7 @@ class XprsPublisher {
             ProfileService.instance.activeProfile?.wireCallsign ?? '')
         .toUpperCase();
     if (!dev.ready || dev.callsign == active) return const {};
-    final wire = identityWire(dev.callsign, dev.npub, key: dev.scalar);
+    final wire = deviceIdentityWire();
     if (wire == null) return const {};
     final air = await _fanOut([wire], slot: 'identity:device');
     XprsIngest.own(wire, bearer: air.carriedBy ?? 'none');
@@ -1388,10 +1388,15 @@ class XprsPublisher {
   }
 
   /// [publishDeviceIdentity]'s wire without airing it, for a deposit.
+  ///
+  /// It carries the device's place ([place]): the `X3` is where the phone is,
+  /// and it is the device that keeps others' messages (the archiver), so a
+  /// map finds the archiver where its owner shares the phone's place, the
+  /// same square and only while they do (XprsSharedPosition).
   String? deviceIdentityWire() {
     final dev = DeviceIdentity.instance;
     if (!dev.ready) return null;
-    return identityWire(dev.callsign, dev.npub, key: dev.scalar);
+    return identityWire(dev.callsign, dev.npub, key: dev.scalar, place: _place);
   }
 
   /// Leave this station's signed key binding with its archivers (12.12.1:
@@ -1412,9 +1417,14 @@ class XprsPublisher {
   /// The signed key binding of section 9.3 for [call], as one wire, or null
   /// with no signing key or a packet that does not fit. The ONE builder:
   /// the airing, the deposit and the line-up handshake all send this.
-  String? identityWire(String call, String npub, {String? ts, BigInt? key}) {
+  ///
+  /// [place] is a place as [setPlace] keeps it (`pos` with its `acc:`),
+  /// `''` for "none any more" (`pos:-`), or null to leave it out.
+  String? identityWire(String call, String npub,
+      {String? ts, BigInt? key, String? place}) {
     var p = XprsPacket.parse(
-        't:identity f:${call.toUpperCase()} ts:${ts ?? xprsNowTs()} k:$npub');
+        't:identity f:${call.toUpperCase()} ts:${ts ?? xprsNowTs()} k:$npub'
+        '${place == null ? '' : ' pos:${place.isEmpty ? '-' : place}'}');
     final d = key ?? xprsProfileScalar();
     if (p == null || d == null) return null;
     p = xprsSign(p, d);
@@ -1513,6 +1523,8 @@ class XprsPublisher {
     if (next == _place) return;
     _place = next;
     unawaited(publishDecoration());
+    // The device's own binding carries it too (the archiver on a phone).
+    unawaited(publishDeviceIdentity());
   }
 
   /// The decoration of section 6.3.2, COMPOSED: `nick:`, `file:`, `url:` and
