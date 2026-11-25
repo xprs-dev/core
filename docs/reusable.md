@@ -173,6 +173,22 @@ bridging several networks uses it the same way the phone does.
 
 The digipeat decision (what to repeat, where, how often), with no radio in it.
 
+### `XprsQos` — what a constrained lane admits and how it spends the hour (spec QoS.md)
+
+`services/xprs/xprs_qos.dart`. Pure decisions, injected facts (no timer, no
+clock, no `dart:io`), so the same code runs in the app, the server, the web
+build and the replay harness. Three layers: `XprsQosProfile` (one kind of
+lane: budget, repeat intervals, pace; `loraLongFast`, `loraXprs`, `lora1pct`,
+`aprs1200`, `unmetered`), `XprsQosGate` (admission by class, the 10% owner
+reserve, fair share, pace, an exact rolling-hour ledger — for a caller with
+its own queue) and `XprsQosQueue` (the gate plus a bounded queue in XPRS.md
+11.10 order with expiry and eviction — for a lane that lets it decide what
+goes next). `XprsQos.of(lane)` is the gate per lane the core transmits on;
+`MeshService.airOnLane` and the digipeater ask it, and the publisher asks it
+on metered lanes. A new radio lane gets a profile in `forBearer`, nothing
+else. Harness: `test/xprs_qos_replay_test.dart` replays a bench trace made by
+`tool/qos_trace.py` and checks QoS.md's nine criteria.
+
 ### `XprsAirtime` / `XprsRetryLedger` — one airtime budget across every bearer
 
 XPRS.md §31.1. Ask it before airing; don't keep a second counter.

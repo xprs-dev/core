@@ -42,6 +42,7 @@ import 'dart:math';
 import '../log_service.dart';
 import 'xprs_id.dart';
 import 'xprs_packet.dart';
+import 'xprs_qos.dart';
 import 'xprs_vocab.dart';
 
 class _Pending {
@@ -110,7 +111,7 @@ class XprsDigipeater {
 
   Timer? _timer;
 
-  int cancelled = 0, aired = 0, refused = 0, dropped = 0;
+  int cancelled = 0, aired = 0, refused = 0, dropped = 0, shed = 0;
 
   Map<String, dynamic> get json => {
         'queued': _queue.length,
@@ -118,6 +119,8 @@ class XprsDigipeater {
         'cancelled': cancelled,
         'refused': refused,
         'dropped': dropped,
+        'shed': shed,
+        'qos': XprsQos.json(now()),
       };
 
   /// Every XPRS packet heard on this bearer, duplicates included.
@@ -156,6 +159,17 @@ class XprsDigipeater {
     // station past our reach on one is not reachable on the other.
     if (!enabled(bearer)) return;
     if (_aired.containsKey(key) || _queue.containsKey(key)) return;
+
+    // spec QoS.md: a repeat that would be shed on this lane (a beacon sooner
+    // than the lane's repeat interval, a scope it may not carry) does not
+    // take a queue slot. Asked without counting: the door that airs
+    // (MeshService.airOnLane) asks again and counts.
+    final gate = XprsQos.of(bearer);
+    if (gate != null &&
+        !gate.admit(p, XprsQos.contextFor(bearer), count: false).admitted) {
+      shed++;
+      return;
+    }
 
     final out = relayable(wire);
     if (out == null) {
@@ -238,6 +252,6 @@ class XprsDigipeater {
   void reset() {
     dispose();
     _aired.clear();
-    cancelled = aired = refused = dropped = 0;
+    cancelled = aired = refused = dropped = shed = 0;
   }
 }

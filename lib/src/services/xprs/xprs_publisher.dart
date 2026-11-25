@@ -55,6 +55,7 @@ import 'xprs_id.dart';
 import 'xprs_monitor.dart';
 import 'xprs_mailbox.dart';
 import 'xprs_packet.dart';
+import 'xprs_qos.dart';
 import 'xprs_sig.dart';
 import 'xprs_groups.dart';
 import 'xprs_vocab.dart';
@@ -871,6 +872,26 @@ class XprsPublisher {
         xprsLogDeferral(slot, b.name, XprsAirtime.instance.owedBy(b.name));
         return false;
       }
+      // spec QoS.md on a METERED lane (a LoRa or VHF radio): our own traffic
+      // spends the whole budget but the sos slice, and our own beacons obey
+      // the lane's repeat interval. Not on the advert bearer: there a send
+      // registers a frame in a rotation that the bearer airs on its own
+      // cadence, so a send is not a transmission, and the unmetered lanes
+      // have nothing to meter.
+      final gate = XprsQos.of(b.name);
+      XprsQosDecision? q;
+      if (gate != null && gate.profile.metered && p0 != null && !verbatim) {
+        final c = XprsQos.contextFor(null, own: true);
+        q = gate.admit(p0, c);
+        final why = !q.admitted
+            ? q.shed
+            : gate.mayAir(q.cls, '', wires.fold(0, (n, w) => n + w.length), c.nowMs);
+        if (why != XprsQosShed.none) {
+          if (q.admitted) gate.countShed(q.cls, why);
+          report[b.name] = 'qos:${why.name}';
+          return false;
+        }
+      }
       // Worst answer across the parts wins: a message whose third part was
       // refused did not go, whatever the first two did.
       var worst = XprsSendResult.sent;
@@ -891,6 +912,12 @@ class XprsPublisher {
       if (worst != XprsSendResult.refused) {
         carriedBy ??= b.archiveBearer;
         XprsAirtime.instance.charge([b.name], packets: wires.length);
+        if (gate != null && q != null && p0 != null) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          for (final w in wires) {
+            gate.aired(XprsPacket.parse(w) ?? p0, q.cls, w.length, now);
+          }
+        }
       }
       return worst == XprsSendResult.sent;
     }

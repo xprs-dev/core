@@ -76,6 +76,7 @@ import '../xprs/xprs_group_act.dart';
 import '../xprs/xprs_group_deposit.dart';
 import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
+import '../xprs/xprs_qos.dart';
 import '../xprs/xprs_sig.dart';
 import '../../platform/off_thread.dart';
 import '../receive/core_state.dart';
@@ -1470,7 +1471,31 @@ class MeshService {
       if (b.name != want) continue;
       if (!XprsPublisher.instance.isBearerEnabled(b.name)) return false;
       if (!await b.active) return false;
+      // spec QoS.md, once, for every wire that leaves by this door: what the
+      // lane admits (scope, repeats, and on a metered lane what somebody
+      // waits for) and what its budget allows. Shed is not an error: the
+      // gate counts it, by class and reason, in the digipeater's report.
+      final gate = XprsQos.of(b.name);
+      final p = gate == null ? null : XprsPacket.parse(wire);
+      XprsQosDecision? q;
+      if (gate != null && p != null) {
+        final from = (p['f'] ?? '').trim().toUpperCase();
+        final own = from.isNotEmpty &&
+            (from == tableCallsign.toUpperCase() ||
+                from == DeviceIdentity.instance.callsign.toUpperCase());
+        final c = XprsQos.contextFor(own ? null : want, own: own);
+        q = gate.admit(p, c);
+        if (!q.admitted) return false;
+        final why = gate.mayAir(q.cls, own ? '' : from, wire.length, c.nowMs);
+        if (why != XprsQosShed.none) {
+          gate.countShed(q.cls, why);
+          return false;
+        }
+      }
       final ok = await b.send(wire, part: 1, slot: slot) == XprsSendResult.sent;
+      if (ok && gate != null && p != null && q != null) {
+        gate.aired(p, q.cls, wire.length, DateTime.now().millisecondsSinceEpoch);
+      }
       // §31.1: "a beacon is not free", and neither is a repeat. Airtime is
       // charged in _fanOut, which this path deliberately does not use — so a
       // digipeat and a bridge were spending the shared budget without ever
