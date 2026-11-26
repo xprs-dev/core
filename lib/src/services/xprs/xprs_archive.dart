@@ -151,6 +151,12 @@ class XprsArchive {
   /// with [followed]; the receive funnel does one lookup.
   Set<String> followedStations = const {};
 
+  /// The packet types a wapp follows (XprsIngest.followKind). A stranger's
+  /// presence of one of these is kept only as its newest
+  /// [followedKindPresenceMax] per station and type. Pushed by XprsIngest
+  /// with its policy.
+  Set<String> followedKinds = const {};
+
   /// Open groups (7.3) this station follows, by name: a message or reaction
   /// addressed to one is a room's talk, kept and served like the rooms by
   /// range (XprsIngest), and fetched by XprsCatchup.
@@ -688,6 +694,8 @@ class XprsArchive {
     final identities = <String>{};
     /// Stations followed by callsign whose presence rows need capping.
     final capped = <String>{};
+    // (station, type) of strangers' presence kept for a followed kind.
+    final kindCapped = <(String, String)>{};
     if (take) {
       _pending.removeRange(0, batch.length);
     } else {
@@ -829,6 +837,12 @@ class XprsArchive {
               followedStations.contains(fromc)) {
             capped.add(fromc);
           }
+          if (e.tier == Tier.stranger &&
+              fromc.isNotEmpty &&
+              xprsIsPresenceType(p.type) &&
+              followedKinds.contains(p.type)) {
+            kindCapped.add((fromc, p.type));
+          }
           usRow += rowLap();
           if (rowSw != null) {
             final cost = rowSw.elapsedMicroseconds - usStart;
@@ -857,6 +871,9 @@ class XprsArchive {
       }
       for (final c in capped) {
         _capFollowedPresence(db, c);
+      }
+      for (final (c, t) in kindCapped) {
+        _capKindPresence(db, c, t);
       }
       newest.forEach((c, t) => db.execute(
           'INSERT INTO newest(fromc, pts) VALUES(?, ?) '
@@ -985,6 +1002,7 @@ class XprsArchive {
       'self': selfCallsign,
       'aka': selfAlsoKnownAs.toList(),
       'fstations': followedStations.toList(),
+      'fkinds': followedKinds.toList(),
       'fgroups': followedGroups.toList(),
       'maxBytes': maxBytes,
       'maxGroupBytes': maxGroupBytes,
@@ -1239,6 +1257,7 @@ class XprsArchive {
     selfCallsign = b['self'] as String? ?? '';
     selfAlsoKnownAs = {...(b['aka'] as List? ?? const []).cast<String>()};
     followedStations = {...(b['fstations'] as List? ?? const []).cast<String>()};
+    followedKinds = {...(b['fkinds'] as List? ?? const []).cast<String>()};
     followedGroups = {...(b['fgroups'] as List? ?? const []).cast<String>()};
     maxBytes = b['maxBytes'] as int? ?? maxBytes;
     maxGroupBytes = b['maxGroupBytes'] as int? ?? maxGroupBytes;
@@ -1494,6 +1513,20 @@ class XprsArchive {
         "AND type IN ('observation','service') ORDER BY pts DESC LIMIT ?)",
         [fromc, Tier.followed.index, fromc, Tier.followed.index,
          followedPresenceMax]);
+  }
+
+  /// A stranger's presence kept because a wapp follows its type: only the
+  /// newest is ever read (what a station serves now), so a station that
+  /// announces every few minutes holds two rows, not a day's worth.
+  static const int followedKindPresenceMax = 2;
+
+  void _capKindPresence(ZxSqlDb db, String fromc, String type) {
+    _delete(db,
+        'DELETE FROM packets WHERE fromc = ? AND tier = ? AND type = ? AND id NOT IN ('
+        'SELECT id FROM packets WHERE fromc = ? AND tier = ? AND type = ? '
+        'ORDER BY pts DESC LIMIT ?)',
+        [fromc, Tier.stranger.index, type, fromc, Tier.stranger.index, type,
+         followedKindPresenceMax]);
   }
 
   /// Keep, per callsign, only the identity announcements that still carry the

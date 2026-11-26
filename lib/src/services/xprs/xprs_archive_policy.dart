@@ -201,8 +201,13 @@ Tier? xprsAdmitTier({
   if (room && policy.followRooms && !presence) return Tier.stranger;
 
   // ── The types a wapp follows. Its publications, whoever sent them: heard
-  // directly and replayed by an archiver alike, one row per packet.
-  if (followedKind && !presence) return Tier.stranger;
+  // directly and replayed by an archiver alike, one row per packet. A
+  // presence type is kept too when a wapp asks for it (Mesh and Check-in
+  // follow t:service to know which stations archive, relay or run on
+  // solar): only its newest is worth anything, so the archive keeps
+  // [XprsArchive.followedKindPresenceMax] per station and type
+  // (XprsArchive._capKindPresence), never a history of it.
+  if (followedKind) return Tier.stranger;
 
   // ── Everyone else. Silence is not consent (12): with Public archiver off
   // this station holds nothing for strangers — not their chatter, not their

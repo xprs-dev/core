@@ -289,6 +289,9 @@ class XprsIngest {
       followRooms: p.xprsCatchup,
       followedKinds: p.xprsFollowedKinds,
     );
+    // The archive caps a stranger's presence of a followed kind to its
+    // newest (XprsArchive._capKindPresence).
+    XprsArchive.instance.followedKinds = policy.followedKinds;
   }
 
   /// [wapp] starts (or stops) following packet type [kind]: its undirected

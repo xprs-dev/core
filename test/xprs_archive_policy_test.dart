@@ -294,17 +294,26 @@ void main() {
     test('without the follow it is not, on a private phone', () {
       expect(admit(Tier.stranger, 'event'), isNull);
     });
-    test('presence is never kept this way', () {
-      expect(
-          xprsAdmitTier(
-              tier: Tier.stranger,
-              type: 'observation',
-              publication: false,
-              declared: false,
-              internet: false,
-              policy: const XprsArchivePolicy(followedKinds: {'observation'}),
-              followedKind: true),
-          isNull);
+    // Mesh and Check-in follow t:service to learn which stations archive:
+    // dropping it as presence left every phone without a single archiver.
+    // The archive keeps only its newest (xprs_archive_kind_presence_test).
+    test('a followed presence type is kept too, on the strangers\' shelf', () {
+      for (final type in ['service', 'observation']) {
+        expect(
+            xprsAdmitTier(
+                tier: Tier.stranger,
+                type: type,
+                publication: false,
+                declared: false,
+                internet: true,
+                policy: XprsArchivePolicy(followedKinds: {type}),
+                followedKind: true),
+            Tier.stranger,
+            reason: type);
+      }
+    });
+    test('presence nobody follows is still not kept on a private phone', () {
+      expect(admit(Tier.stranger, 'service'), isNull);
     });
   });
 }
