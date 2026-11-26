@@ -44,4 +44,26 @@ void main() {
         selfBase: 'X1ME', nowMs: now, current: 'X3BLE1');
     expect(pick, 'X3BLE1');
   });
+
+  test('among equals on the bearer: room first, then what keeps it going',
+      () {
+    ArchiverOffer r(String c, {bool room = true, int rank = 0}) =>
+        ArchiverOffer(
+            callsign: c,
+            lastHeardMs: now - 10000,
+            bearer: 'rns',
+            uptimeS: 99999,
+            room: room,
+            rank: rank);
+    expect(
+        XprsArchiverChoice.pick([r('X3GRID'), r('X3SOLAR', rank: 121)],
+            selfBase: 'X1ME', nowMs: now),
+        'X3SOLAR');
+    expect(
+        XprsArchiverChoice.pick(
+            [r('X3FULL', room: false, rank: 121), r('X3GRID')],
+            selfBase: 'X1ME', nowMs: now),
+        'X3GRID',
+        reason: 'room:no is never chosen over one with room');
+  });
 }

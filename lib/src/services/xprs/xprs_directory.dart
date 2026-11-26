@@ -20,8 +20,10 @@
  *
  *   XprsDirectory          compose / parse, pure.
  *   XprsDirectoryAnnouncer WHEN to publish: a public archiver, on the minute
- *                          sweep, every ten minutes, and only when the text
- *                          changed. Stores the bytes, holds the file, signs
+ *                          sweep, looking every ten minutes: announced when
+ *                          the text or the offer (`serve:`, `dial:`, `room:`,
+ *                          `size:`) changed, and every hour regardless
+ *                          (13.0.5). Stores the bytes, holds the file, signs
  *                          and airs the announcement, deposits it with the
  *                          station's archivers (12.9: the announcement is one
  *                          of the four things that cross).
@@ -211,8 +213,8 @@ class XprsDirectory {
   }
 }
 
-/// Publishes this station's directory: every ten minutes, only when it
-/// changed. Every side effect is a seam, so the decision runs without a
+/// Publishes this station's directory, looking every ten minutes: when it or
+/// the offer changed, and hourly regardless (13.0.5). Every side effect is a seam, so the decision runs without a
 /// station.
 class XprsDirectoryAnnouncer {
   XprsDirectoryAnnouncer._();
@@ -243,8 +245,14 @@ class XprsDirectoryAnnouncer {
   String? Function()? dial;
   String? Function()? room;
 
-  /// `source:`, `backup:`, `uplink:`, `plan:` (13.0.4), in wire order.
-  List<MapEntry<String, String>> Function()? conditions;
+  /// `size:`, the free space this archiver still offers others, already
+  /// stepped (13.0.5). What keeps it going (13.0.4, `bw:`) rides its
+  /// observation instead: on this packet, beside `file:`, it would not fit.
+  String? Function()? size;
+
+  /// An unchanged announcement still goes out this often, so a reader can
+  /// tell a quiet archiver from a gone one (13.0.5: stale after three hours).
+  static const Duration heartbeat = Duration(hours: 1);
 
   /// Keep [bytes] in the file store under [shaHex] and offer them to anyone
   /// asking for that digest (XprsFileServer.hold). The previous listing's
@@ -265,6 +273,8 @@ class XprsDirectoryAnnouncer {
 
   int _lastMs = 0;
   String? _lastSha;
+  int _pubMs = 0;
+  String? _lastOffer;
   int published = 0, unchanged = 0;
 
   /// The digest of the listing last published, or null.
@@ -285,33 +295,54 @@ class XprsDirectoryAnnouncer {
     final text = XprsDirectory.compose(entries?.call() ?? const [],
         indexRef: indexRef?.call(), holders: holders?.call() ?? const []);
     final sha = XprsDirectory.shaOf(text);
-    if (sha == _lastSha) {
+    // An unchanged directory has an unchanged hash (12.9).
+    final changed = sha != _lastSha;
+    if (changed) {
+      final ref = XprsDirectory.refOf(sha);
+      if (ref == null) return null;
+      store?.call(Uint8List.fromList(utf8.encode(text)), sha, _lastSha);
+      _lastSha = sha;
+    } else {
       unchanged++;
-      return null; // an unchanged directory has an unchanged hash (12.9)
     }
-    final ref = XprsDirectory.refOf(sha);
+    final ref = XprsDirectory.refOf(_lastSha!);
     if (ref == null) return null;
-    store?.call(Uint8List.fromList(utf8.encode(text)), sha, _lastSha);
-    _lastSha = sha;
 
-    final b = StringBuffer('t:service f:$self serve:${serve?.call() ?? 'archive'}');
+    // 13.0.5: announced again when what it offers changed, and every hour
+    // regardless; `count:` alone moves with every record, so it rides the
+    // next announcement rather than causing one.
+    final sv = serve?.call() ?? 'archive';
+    final d = dial?.call();
+    final r = room?.call();
+    final sz = size?.call();
+    final offer = '$sv|${d ?? ''}|${r ?? ''}|${sz ?? ''}';
+    if (!changed &&
+        offer == _lastOffer &&
+        now - _pubMs < heartbeat.inMilliseconds) {
+      return null;
+    }
+
+    final b = StringBuffer('t:service f:$self serve:$sv');
     final n = count?.call();
     if (n != null) b.write(' count:$n');
     b.write(' file:$ref');
-    final d = dial?.call();
     if (d != null && d.isNotEmpty) b.write(' dial:$d');
-    final r = room?.call();
     if (r != null && r.isNotEmpty) b.write(' room:$r');
-    for (final c in conditions?.call() ?? const <MapEntry<String, String>>[]) {
-      b.write(' ${c.key}:${c.value}');
-    }
+    if (sz != null && sz.isNotEmpty) b.write(' size:$sz');
     b.write(' ts:${xprsNowTs(now)}');
     var p = XprsPacket.parse(b.toString());
     if (p == null) return null;
     final key = signingKey?.call();
     if (key != null) p = xprsSign(p, key);
-    if (!p.fits) return null;
+    if (!p.fits) {
+      // Silence here once hid a whole directory: say it.
+      LogService.instance.add('XPRS: t:service does not fit 250 bytes, '
+          'not announced (${p.encode().length} bytes)');
+      return null;
+    }
     final wire = p.encode();
+    _pubMs = now;
+    _lastOffer = offer;
     published++;
     await air?.call(wire);
     deposit?.call(wire);
@@ -324,6 +355,8 @@ class XprsDirectoryAnnouncer {
   void debugReset() {
     _lastMs = 0;
     _lastSha = null;
+    _pubMs = 0;
+    _lastOffer = null;
     published = unchanged = 0;
     isPublic = null;
     entries = null;
@@ -334,6 +367,7 @@ class XprsDirectoryAnnouncer {
     serve = null;
     dial = null;
     room = null;
+    size = null;
     store = null;
     air = null;
     deposit = null;

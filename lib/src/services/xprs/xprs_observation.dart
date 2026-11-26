@@ -56,6 +56,8 @@ XprsPacket? xprsComposeObservation({
   String? dial,
   String? room,
   List<MapEntry<String, String>> conditions = const [],
+  /// `bw:`, the measured internet speed (13.0.5), already stepped.
+  String? bw,
   String? pos,
   int? accM,
   String? xr,
@@ -82,6 +84,7 @@ XprsPacket? xprsComposeObservation({
   // 13.0.4: what keeps the station going, beside what it serves.
   envelope = conditions.fold<XprsPacket>(
       envelope, (e, c) => e.with_(c.key, c.value));
+  if (bw != null && bw.isNotEmpty) envelope = envelope.with_('bw', bw);
   // 15.1, 15.2: where the station is, only when its owner shares it, already
   // cut to their range (xprs_shared_position.dart). The digits past the
   // range travel as bars in `pos:` and, sealed, in `xr:` (6.2.1).

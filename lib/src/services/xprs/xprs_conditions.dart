@@ -76,3 +76,44 @@ List<MapEntry<String, String>> xprsConditions({
     if (up != 'none') MapEntry('plan', plan ?? xprsDefaultPlan(up)),
   ];
 }
+
+/// [bytes] rounded DOWN to a step of 1, 2 or 5 times a power of ten, as
+/// `size:` says it (13.0.5): `500MB`, `1GB`, `2GB`, `50GB`. Never more than
+/// there is, and steady while an archiver fills, so it is not re-announced
+/// on every megabyte. Zero or less is `0B`.
+String xprsStepBytes(int bytes) {
+  if (bytes <= 0) return '0B';
+  var p = 1;
+  while (p * 10 <= bytes) {
+    p *= 10;
+  }
+  final lead = bytes ~/ p;
+  final step = (lead >= 5 ? 5 : lead >= 2 ? 2 : 1) * p;
+  const units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB'];
+  var u = 0;
+  var v = step;
+  while (v >= 1000 && v % 1000 == 0 && u < units.length - 1) {
+    v ~/= 1000;
+    u++;
+  }
+  return '$v${units[u]}';
+}
+
+/// A measured rate in bytes per second as `bw:` says it (13.0.5): the same
+/// steps, per second. Null when nothing was measured.
+String? xprsStepRate(int bytesPerSecond) =>
+    bytesPerSecond <= 0 ? null : '${xprsStepBytes(bytesPerSecond)}/s';
+
+/// `size:` or `bw:` read back into bytes (or bytes per second): `50GB` is
+/// 50e9, `2MB/s` is 2e6. Null for anything else, a radio's `125kHz` among
+/// them.
+int? xprsParseBytes(String? v) {
+  final m = RegExp(r'^(\d+(?:\.\d+)?)(B|kB|MB|GB|TB|PB)(/s)?$')
+      .firstMatch((v ?? '').trim());
+  if (m == null) return null;
+  const mult = {
+    'B': 1, 'kB': 1000, 'MB': 1000000, 'GB': 1000000000,
+    'TB': 1000000000000, 'PB': 1000000000000000,
+  };
+  return (double.parse(m[1]!) * mult[m[2]]!).round();
+}

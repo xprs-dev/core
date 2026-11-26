@@ -78,6 +78,7 @@ import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_qos.dart';
 import '../xprs/xprs_conditions.dart';
+import '../xprs/xprs_archivers_known.dart';
 import '../files/capacity_governor.dart';
 import '../xprs/xprs_sig.dart';
 import '../../platform/off_thread.dart';
@@ -1860,6 +1861,7 @@ class MeshService {
       dial: arch?.dial,
       room: arch?.room,
       conditions: _deviceIsSeparate ? const [] : _conditions(),
+      bw: _deviceIsSeparate ? null : _bw(),
       // The place is the device's (it is where the station stands), so it
       // goes on the device's own observation when there is one.
       pos: _deviceIsSeparate ? null : at?.pos,
@@ -1896,6 +1898,7 @@ class MeshService {
       dial: arch.dial,
       room: arch.room,
       conditions: _conditions(),
+      bw: _bw(),
       pos: at?.pos,
       accM: at?.acc,
       xr: at?.xr,
@@ -1917,6 +1920,23 @@ class MeshService {
       uplink: p?.nodeUplinkWord,
       planFor: p?.nodePlanFor,
     );
+  }
+
+  /// `bw:` (13.0.5): the internet speed this device last measured, stepped;
+  /// null until something was measured.
+  String? _bw() {
+    return xprsStepRate(
+        PreferencesService.instanceSync?.observedBytesPerSec ?? 0);
+  }
+
+  /// What this archiver still takes for others (13.0.5 `size:`): room left
+  /// under the spool's cap plus room left under the file store's quota.
+  int _freeOffered(MediaArchive media) {
+    final spool = XprsArchive.instance.maxBytes - XprsArchive.instance.dataBytes;
+    final gb = PreferencesService.instanceSync?.archiveQuotaGb ?? 0;
+    final files =
+        gb <= 0 ? 0 : gb * (1 << 30) - media.hostedStats().totalBytes;
+    return (spool > 0 ? spool : 0) + (files > 0 ? files : 0);
   }
 
   /// `serve:` (section 13): what this station offers. `archive` only when
@@ -2114,7 +2134,8 @@ class MeshService {
         return d.isEmpty ? null : d;
       })
       ..room = (() => _hasRoom() ? null : 'no')
-      ..conditions = _conditions
+      // 13.0.5: the room still offered to others, messages and files.
+      ..size = (() => xprsStepBytes(_freeOffered(mediaArchive)))
       // The groups index (12.9.7), recomposed at most every thirty minutes
       // and named on a line of the directory.
       ..indexRef = (() => _groupIndexRef(mediaArchive))
@@ -2467,11 +2488,37 @@ class MeshService {
     pub.flushDeferredDeposits();
   }
 
+  /// The cache of archivers' announcements (13.0.5), by callsign, re-read
+  /// every ten minutes rather than on every minute's reconsideration.
+  Map<String, XprsKnownArchiver> _known = const {};
+  int _knownMs = 0;
+
+  Map<String, XprsKnownArchiver> _knownArchivers(int now) {
+    if (now - _knownMs >= 10 * 60000) {
+      _knownMs = now;
+      _known = {for (final k in xprsKnownArchivers(nowMs: now)) k.callsign: k};
+    }
+    return _known;
+  }
+
   void _reconsiderArchiver() {
     final prefs = PreferencesService.instanceSync;
     if (prefs == null) return;
     final self = NostrCrypto.bareCallsign(tableCallsign);
     final now = DateTime.now().millisecondsSinceEpoch;
+    final known = _knownArchivers(now);
+    ArchiverOffer ranked(ArchiverOffer o) {
+      final k = known[o.callsign.trim().toUpperCase()];
+      if (k == null) return o;
+      return ArchiverOffer(
+          callsign: o.callsign,
+          lastHeardMs: o.lastHeardMs,
+          bearer: o.bearer,
+          uptimeS: o.uptimeS,
+          room: k.room,
+          rank: k.rank);
+    }
+
     final offers = <ArchiverOffer>[
       for (final st in XprsMonitor.instance.stations.values)
         if (st.services.contains('archive'))
@@ -2511,7 +2558,7 @@ class MeshService {
     ];
     final before = prefs.xprsArchivers;
     XprsArchiverChoice.instance.reconsider(
-      offers: offers,
+      offers: [for (final o in offers) ranked(o)],
       selfBase: self,
       autoEnabled: prefs.xprsArchiverAuto,
       configured: configured,

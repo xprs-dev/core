@@ -287,7 +287,7 @@ class XprsIngest {
       // The room catch-up and keeping the rooms are one decision: a device
       // that polls archivers for the rooms' conversation keeps the answer.
       followRooms: p.xprsCatchup,
-      followedKinds: p.xprsFollowedKinds,
+      followedKinds: {...p.xprsFollowedKinds, ...kXprsCoreFollowedKinds},
     );
     // The archive caps a stranger's presence of a followed kind to its
     // newest (XprsArchive._capKindPresence).
@@ -322,7 +322,9 @@ class XprsIngest {
 
   /// An undirected packet of a type this station follows.
   static bool _followedKind(XprsPacket p) =>
-      policy.followedKinds.contains(p.type) && (p['d'] ?? '').trim().isEmpty;
+      (policy.followedKinds.contains(p.type) &&
+          (p['d'] ?? '').trim().isEmpty) ||
+      xprsIsArchiverObservation(p);
 
   /// A room's talk heard within its scope (9.11.1): an undirected message or
   /// a reaction whose `scope:` admits the bearer it arrived on. The same

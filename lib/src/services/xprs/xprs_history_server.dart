@@ -43,6 +43,7 @@ import 'xprs_id.dart';
 import 'xprs_ingest.dart';
 import 'xprs_owned_stations.dart';
 import 'xprs_packet.dart';
+import 'xprs_archive_policy.dart';
 import 'xprs_publisher.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
@@ -547,7 +548,7 @@ class XprsHistoryServer {
     if (!selfIsAsking) _recordAsk(from, now);
 
     final more = rows.length > pageSize;
-    final page = [for (final r in rows.take(pageSize)) r['wire'] as String];
+    final page = _withArchiverObservations(archive, rows.take(pageSize));
     // The keys ride the same page (12.9.4): an observation about the asked
     // callsign is signed by its OBSERVER, and an asker who has never met
     // that observer cannot verify it — so a page of sightings without the
@@ -863,9 +864,7 @@ class XprsHistoryServer {
       return out;
     }
     final more = rows.length > inlinePageSize;
-    final records = [
-      for (final r in rows.take(inlinePageSize)) r['wire'] as String,
-    ];
+    final records = _withArchiverObservations(archive, rows.take(inlinePageSize));
     for (final w in records) {
       bytesServed += w.length;
     }
@@ -875,6 +874,31 @@ class XprsHistoryServer {
       if (_result(selfBase, from, cmdId, more ? 206 : 200) case final p?)
         p.encode(),
     ];
+  }
+
+  /// The page's wires, each `t:service` followed by the newest observation
+  /// held of the same station when that observation claims `serve:archive`
+  /// (13.0.5): what an archiver offers and what keeps it going, in one
+  /// answer, so a reader never asks each archiver for the second half.
+  List<String> _withArchiverObservations(
+      XprsArchive archive, Iterable<Map<String, dynamic>> rows) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final r in rows) {
+      final w = r['wire'] as String;
+      out.add(w);
+      if (r['type'] != 'service') continue;
+      final f = (r['from'] as String? ?? '').trim();
+      if (f.isEmpty || !seen.add(f)) continue;
+      final obs = archive.query(from: f, types: const ['observation'], limit: 1);
+      if (obs.isEmpty) continue;
+      final ow = obs.first['wire'] as String;
+      final op = XprsPacket.parse(ow);
+      if (op != null && xprsIsArchiverObservation(op) && !out.contains(ow)) {
+        out.add(ow);
+      }
+    }
+    return out;
   }
 
   /// Put one wire of the answer on air.

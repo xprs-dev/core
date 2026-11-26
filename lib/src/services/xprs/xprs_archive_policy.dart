@@ -46,6 +46,9 @@ library;
 
 import 'package:reticulum/reticulum.dart';
 
+import 'xprs_packet.dart';
+import 'xprs_vocab.dart';
+
 /// Types no station spools, whatever its tiers say: an acknowledgement, a
 /// result and a reachability test are answers, not records. Defined here
 /// rather than beside the database because it is part of the rule, and this
@@ -57,6 +60,19 @@ const Set<String> kXprsNeverArchived = {'ping', 'pong', 'receipt', 'result'};
 /// that serves `cmd:history kind:observation` wants it, a phone does not.
 bool xprsIsPresenceType(String type) =>
     type == 'observation' || type == 'service';
+
+/// The types every station follows, whatever its wapps ask (13.0.5): the
+/// archivers' announcements, which are how it finds archivers at all. Kept
+/// newest-only per station, and asked of its archivers on the catch-up.
+const Set<String> kXprsCoreFollowedKinds = {'service'};
+
+/// An archiver's own observation (13.0.5): undirected and claiming
+/// `serve:archive`. Kept newest-only beside its `t:service`, because it says
+/// what keeps that archiver going.
+bool xprsIsArchiverObservation(XprsPacket p) =>
+    p.type == 'observation' &&
+    (p['d'] ?? '').trim().isEmpty &&
+    xprsServices(p).contains('archive');
 
 /// The operator's standing answer to "what do you keep, and for whom".
 ///

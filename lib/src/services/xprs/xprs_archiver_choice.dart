@@ -21,7 +21,10 @@
  *      archiver is that it is there when we are not, and a station we only
  *      ever heard over BLE is by definition one we have to be near;
  *   4. heard recently, or the claim is a memory rather than an offer;
- *   5. longest uptime where it is stated (10.6), then freshest.
+ *   5. room for new stations (13.0.2), then what keeps it going (13.0.4:
+ *      survives an outage, the uplink, an unlimited plan), from the cache
+ *      of announcements (13.0.5);
+ *   6. longest uptime where it is stated (10.6), then freshest.
  *
  * Keeping the choice is as important as making it: a station that re-picks
  * every hour spreads its mail over every volunteer it ever heard, and none of
@@ -40,6 +43,8 @@ class ArchiverOffer {
     required this.lastHeardMs,
     required this.bearer,
     this.uptimeS = 0,
+    this.room = true,
+    this.rank = 0,
   });
 
   final String callsign;
@@ -50,6 +55,13 @@ class ArchiverOffer {
 
   /// `uptime:` where the station stated one (10.6), 0 when it did not.
   final int uptimeS;
+
+  /// False on `room:no` (13.0.2): it does not take new stations.
+  final bool room;
+
+  /// What keeps it going, as one number (XprsKnownArchiver.rank, 13.0.4):
+  /// higher is better. Zero when nothing is known.
+  final int rank;
 
   /// An archiver reached over the internet is one we can lean on while we are
   /// nowhere near it. A LAN peer is the same argument at village scale; a
@@ -128,6 +140,8 @@ class XprsArchiverChoice {
     if (fresh.isEmpty) return null;
     fresh.sort((a, b) {
       if (a.offGrid != b.offGrid) return a.offGrid ? 1 : -1;
+      if (a.room != b.room) return a.room ? -1 : 1;
+      if (a.rank != b.rank) return b.rank.compareTo(a.rank);
       if (a.uptimeS != b.uptimeS) return b.uptimeS.compareTo(a.uptimeS);
       return b.lastHeardMs.compareTo(a.lastHeardMs);
     });

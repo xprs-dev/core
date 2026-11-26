@@ -840,7 +840,8 @@ class XprsArchive {
           if (e.tier == Tier.stranger &&
               fromc.isNotEmpty &&
               xprsIsPresenceType(p.type) &&
-              followedKinds.contains(p.type)) {
+              (followedKinds.contains(p.type) ||
+                  xprsIsArchiverObservation(p))) {
             kindCapped.add((fromc, p.type));
           }
           usRow += rowLap();
