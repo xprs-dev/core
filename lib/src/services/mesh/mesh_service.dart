@@ -77,6 +77,8 @@ import '../xprs/xprs_group_deposit.dart';
 import '../xprs/xprs_monitor.dart';
 import '../xprs/xprs_packet.dart';
 import '../xprs/xprs_qos.dart';
+import '../xprs/xprs_conditions.dart';
+import '../files/capacity_governor.dart';
 import '../xprs/xprs_sig.dart';
 import '../../platform/off_thread.dart';
 import '../receive/core_state.dart';
@@ -1857,6 +1859,7 @@ class MeshService {
       serve: arch?.serve,
       dial: arch?.dial,
       room: arch?.room,
+      conditions: _deviceIsSeparate ? const [] : _conditions(),
       // The place is the device's (it is where the station stands), so it
       // goes on the device's own observation when there is one.
       pos: _deviceIsSeparate ? null : at?.pos,
@@ -1892,11 +1895,27 @@ class MeshService {
       serve: arch.serve,
       dial: arch.dial,
       room: arch.room,
+      conditions: _conditions(),
       pos: at?.pos,
       accM: at?.acc,
       xr: at?.xr,
       signingKey: sign ? dev.scalar : null,
       ts: stamped ? xprsNowTs() : null,
+    );
+  }
+
+  /// What keeps this device going (13.0.4): stated in Settings > Hardware,
+  /// defaulted where not. It belongs to the device, so it rides the device's
+  /// X3 observation when there is one, like `pos:`.
+  List<MapEntry<String, String>> _conditions() {
+    final p = PreferencesService.instanceSync;
+    return xprsConditions(
+      platform: platform.platformName(),
+      seenUplink: xprsSeenUplink(CapacityGovernor.instance.lastNet.name),
+      source: p?.nodeSource,
+      backup: p?.nodeBackup,
+      uplink: p?.nodeUplinkWord,
+      planFor: p?.nodePlanFor,
     );
   }
 
@@ -2095,6 +2114,7 @@ class MeshService {
         return d.isEmpty ? null : d;
       })
       ..room = (() => _hasRoom() ? null : 'no')
+      ..conditions = _conditions
       // The groups index (12.9.7), recomposed at most every thirty minutes
       // and named on a line of the directory.
       ..indexRef = (() => _groupIndexRef(mediaArchive))

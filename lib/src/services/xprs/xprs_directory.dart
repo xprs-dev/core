@@ -243,6 +243,9 @@ class XprsDirectoryAnnouncer {
   String? Function()? dial;
   String? Function()? room;
 
+  /// `source:`, `backup:`, `uplink:`, `plan:` (13.0.4), in wire order.
+  List<MapEntry<String, String>> Function()? conditions;
+
   /// Keep [bytes] in the file store under [shaHex] and offer them to anyone
   /// asking for that digest (XprsFileServer.hold). The previous listing's
   /// digest is given so the host can stop offering it.
@@ -299,6 +302,9 @@ class XprsDirectoryAnnouncer {
     if (d != null && d.isNotEmpty) b.write(' dial:$d');
     final r = room?.call();
     if (r != null && r.isNotEmpty) b.write(' room:$r');
+    for (final c in conditions?.call() ?? const <MapEntry<String, String>>[]) {
+      b.write(' ${c.key}:${c.value}');
+    }
     b.write(' ts:${xprsNowTs(now)}');
     var p = XprsPacket.parse(b.toString());
     if (p == null) return null;

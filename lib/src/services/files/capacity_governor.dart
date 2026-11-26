@@ -21,6 +21,7 @@ import '../log_service.dart';
 import '../power_state.dart';
 import '../preferences_service.dart';
 import 'package:reticulum/reticulum.dart';
+import 'package:xprs_core/src/util/observable.dart';
 
 export 'package:reticulum/reticulum.dart' show NetKind, CapacityProfile, policyFor;
 
@@ -34,6 +35,10 @@ class CapacityGovernor {
   NetKind? _override;
 
   NetKind lastNet = NetKind.none;
+
+  /// [lastNet] as a notifier, for a screen that shows what the device is on
+  /// (Settings > Hardware follows Wi-Fi and cellular as they change).
+  final Observable<NetKind> netKind = Observable(NetKind.none);
   bool lastCharging = false;
   CapacityProfile? lastProfile;
 
@@ -89,6 +94,7 @@ class CapacityGovernor {
         lastProfile!.servingAllowed != profile.servingAllowed ||
         lastProfile!.dailyBudgetBytes != profile.dailyBudgetBytes;
     lastNet = net;
+    netKind.value = net;
     lastCharging = charging;
     lastProfile = profile;
     _apply?.call(profile);

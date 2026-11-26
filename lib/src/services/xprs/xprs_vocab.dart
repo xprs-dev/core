@@ -508,8 +508,9 @@ const Set<String> kXprsReadings = {
   'odometer',
   // a device's condition (section 11.7): what an X4 mostly says
   'state', 'level', 'target',
-  // what keeps it running (section 14.3), and where its production comes from
-  'source',
+  // what keeps it running (sections 14.3, 13.0.4), and where its production
+  // comes from; how it reaches the internet, and whether that is capped
+  'source', 'backup', 'uplink', 'plan',
   // energy (section 15.5.2): watts now, watt-hours accumulated
   'produces', 'consumes', 'grid', 'storage', 'charged', 'load',
   'lifeproduces', 'lifeconsumes', 'lifegridin', 'lifegridout', 'lifeload',

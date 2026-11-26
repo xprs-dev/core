@@ -709,6 +709,24 @@ class PreferencesService {
   int get nodeUplink => _prefs.getInt('node.uplink') ?? -1;
   set nodeUplink(int v) => _prefs.setInt('node.uplink', v);
 
+  // What keeps this station going, as XPRS words (XPRS.md 13.0.4): read by
+  // `xprsConditions` for every announcement. Null = never stated, so the
+  // default applies (grid; a phone's battery; the uplink we can see, which
+  // keeps following the network until the owner picks one).
+  String? get nodeSource => _prefs.getString('node.source');
+  set nodeSource(String? v) => _str('node.source', v);
+  String? get nodeBackup => _prefs.getString('node.backup');
+  set nodeBackup(String? v) => _str('node.backup', v);
+  String? get nodeUplinkWord => _prefs.getString('node.uplinkWord');
+  set nodeUplinkWord(String? v) => _str('node.uplinkWord', v);
+  /// The plan stated for one kind of uplink, so a phone that moves between
+  /// Wi-Fi and its mobile plan says the right one on each (null = the
+  /// default for that kind).
+  String? nodePlanFor(String uplink) => _prefs.getString('node.plan.$uplink');
+  void setNodePlanFor(String uplink, String? v) => _str('node.plan.$uplink', v);
+  void _str(String k, String? v) =>
+      v == null ? _prefs.remove(k) : _prefs.setString(k, v);
+
   int get nodeAutonomyHours => _prefs.getInt('node.autonomyHours') ?? 0;
   set nodeAutonomyHours(int v) => _prefs.setInt('node.autonomyHours', v);
 
