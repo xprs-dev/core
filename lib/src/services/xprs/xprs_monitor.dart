@@ -795,6 +795,13 @@ class XprsMonitor {
         'title': s.callsign,
         'subtitle': sub.toString(),
         'tags': tags,
+        // Seconds since it was last heard on each bearer: a wapp that only
+        // cares about one radio (Check-in: in person, over BLE5) asks this,
+        // not the newest bearer, which a LAN packet a moment ago overwrites.
+        'heard': {
+          for (final b in s.bearers.entries) b.key: (now - b.value) ~/ 1000,
+        },
+        if (s.rssi != 0) 'rssi': s.rssi,
         ..._posJson(s, forOwner),
         ...kind,
       };
