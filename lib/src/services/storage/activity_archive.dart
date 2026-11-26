@@ -9,12 +9,22 @@
 
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart' show sha1;
 
 import '../log_service.dart';
 import '../../storage/store_db.dart';
 
 import '../../profile/profile_storage.dart';
 import '../../platform/fs.dart';
+
+/// A post's short id: the first two bytes of sha1(`from|text`), as four hex
+/// digits. The same id the wapps give a group message, so a post that comes
+/// twice (live and from a backfill) is one row.
+String activityMid(String from, String text) {
+  final d = sha1.convert(utf8.encode('$from|$text')).bytes;
+  const hx = '0123456789abcdef';
+  return '${hx[d[0] >> 4]}${hx[d[0] & 15]}${hx[d[1] >> 4]}${hx[d[1] & 15]}';
+}
 
 class ActivityArchive {
   ActivityArchive._(this._dbPath);

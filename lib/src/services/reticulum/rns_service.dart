@@ -263,6 +263,17 @@ class RnsService {
   /// An internet uplink came up: the network is (back) here. The line lane
   /// uses it to stop waiting out a backoff (MeshService wires it).
   void Function()? onUplinkUp;
+
+  /// Every time an internet uplink comes up, for any number of listeners
+  /// ([onUplinkUp] is the line lane's own slot).
+  Stream<void> get uplinkUps => _uplinkUps.stream;
+  final StreamController<void> _uplinkUps = StreamController<void>.broadcast();
+
+  /// A node's relay announce heard for the first time this run: one more
+  /// peer a fetch can ask. Once per node ([_ObservedNode.relayHeard]).
+  Stream<void> get relayPeerFound => _relayPeerFound.stream;
+  final StreamController<void> _relayPeerFound =
+      StreamController<void>.broadcast();
   // Per-uplink last-inbound wall-clock, keyed by the uplink's via tag
   // ('tcp:host:port'). The global _lastInboundMs above masks a single wedged hub
   // when another hub is still trickling packets; this lets the watchdog spot and
@@ -1843,6 +1854,7 @@ class RnsService {
     _transport!.addInterface(c);
     _ifaces.add(c);
     onUplinkUp?.call();
+    _uplinkUps.add(null);
     return c;
   }
 
@@ -2504,6 +2516,10 @@ class RnsService {
         // The relay announce carries the peer's advertised uptime (warm-start
         // ranking) and its NOSTR pubkey (for the npub shown per device).
         final ra = RelayAnnouncement.decode(ann.appData);
+        if (!n.relayHeard) {
+          n.relayHeard = true;
+          _relayPeerFound.add(null);
+        }
         if (ra != null) {
           if (ra.uptimeSeconds > 0) n.uptimeSeconds = ra.uptimeSeconds;
           if (ra.pubkey != null && ra.pubkey!.isNotEmpty) {
@@ -13068,6 +13084,8 @@ class _ObservedNode {
   // one-shot hub connect-flood replay. Reset every run (cache hydration removed).
   int heardCount = 0;
   int firstHeardMs = 0;
+  // A relay announce of this node was heard this run (RnsService.relayPeerFound).
+  bool relayHeard = false;
   // The last time we heard this node WITHOUT the internet, and on what.
   //
   // `via`/`hops` above are last-write-wins per announce, and the transport
