@@ -576,6 +576,16 @@ class PreferencesService {
   String get xprsArchiverStats => _prefs.getString('xprs.archiverStats') ?? '';
   set xprsArchiverStats(String v) => _prefs.setString('xprs.archiverStats', v);
 
+  /// When this device first served as an archiver (ms since epoch; 0 = never),
+  /// for the Archiver page's "active for". Set once, never moved back.
+  int get xprsArchiverSinceMs => _prefs.getInt('xprs.archiverSince') ?? 0;
+  set xprsArchiverSinceMs(int v) => _prefs.setInt('xprs.archiverSince', v);
+
+  /// Bytes served to askers over this device's whole life as an archiver
+  /// (records and files); the daily log keeps only 60 days.
+  int get xprsServedBytesTotal => _prefs.getInt('xprs.servedBytes') ?? 0;
+  set xprsServedBytesTotal(int v) => _prefs.setInt('xprs.servedBytes', v);
+
   Future<void> setXprsServeHistory(bool v) async {
     await _prefs.setBool('xprs.serveHistory', v);
   }

@@ -95,6 +95,11 @@ class XprsHistoryServer {
 
   int answered = 0, refused429 = 0;
 
+  /// Bytes of stored records handed to askers since launch, on every lane
+  /// (radio replay, directed, socket). The Archiver page folds the deltas
+  /// into its daily log, as it does [answered].
+  int bytesServed = 0;
+
   /// The same answers split by what they were, so a caller refused and
   /// re-asking can be read off the station rather than guessed at: the C61
   /// answered one phone every 25 s for an evening and nothing said whether
@@ -601,6 +606,7 @@ class XprsHistoryServer {
         if (i < page.length) {
           // The stored wire, byte for byte — the author's packet, the
           // author's signature (11.2.1, 12.2).
+          bytesServed += page[i].length;
           if (directedOnly) {
             final n = i;
             unawaited(_sendDirected(from, page[n]).then((ok) {
@@ -857,9 +863,15 @@ class XprsHistoryServer {
       return out;
     }
     final more = rows.length > inlinePageSize;
+    final records = [
+      for (final r in rows.take(inlinePageSize)) r['wire'] as String,
+    ];
+    for (final w in records) {
+      bytesServed += w.length;
+    }
     return [
       if (_result(selfBase, from, cmdId, 202) case final p?) p.encode(),
-      for (final r in rows.take(inlinePageSize)) r['wire'] as String,
+      ...records,
       if (_result(selfBase, from, cmdId, more ? 206 : 200) case final p?)
         p.encode(),
     ];
