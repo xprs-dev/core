@@ -258,6 +258,12 @@ one throws `ProfileLockedException`. An isolate without the keyring gets the
 secret looked up beforehand and opens with `openStoreDbWithSecret` (the
 Nostr engine, the file export worker). No store imports zx directly.
 
+### `storeExists(db, query, args)` — `storage/store_db.dart`
+"Is there such a row?" as one value: `SELECT EXISTS(query)`. Use it instead
+of `db.select(...).isNotEmpty`, which builds a row per match and is what the
+guard's no-page-fetch-to-count rule flags. `MeshStore`'s duplicate and
+receipt checks and `XprsArchive`'s empty-spool probe use it.
+
 ### Batching writes
 Each autocommit is a generation (KBs of file, ms of time): a store written
 often wraps bursts in `db.transaction` (SQL) or `kv.batch` (KV; KV writes do
