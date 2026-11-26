@@ -361,6 +361,17 @@ The presence dot's verdict (heard on the air OR reachable over the internet)
 is computed here once; screens read it. A second place that combines the same
 sources is the bug "Who is on the mesh, decided once" (architecture.md) names.
 
+### A fetch the core times, a screen merges — `FeedBackfill` (`services/social/feed_backfill.dart`)
+
+The pattern for "keep pulling X from peers while a page is open": the core
+object owns the timer and the triggers, and calls back with read results;
+the page only merges them into its view. `FeedBackfill` recovers Activity
+posts (into the `ActivityArchive`) and group messages (handed to the page)
+every 3 minutes, and on `RnsService.uplinkUps` / `relayPeerFound` until
+peers first answer: events instead of a sub-minute poll. `BackfillNote` is a
+recovered note read once (callsign of its key, `activityMid`, `toRow()`);
+`NomadnetPoller` is the same shape for the Nomadnet feed.
+
 ### Notifications by topic — `XprsNotification.withSource`
 
 The core raises `core:<topic>` (`core:nostr`, `core:archiver`); the host maps a
