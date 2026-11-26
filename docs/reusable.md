@@ -270,6 +270,21 @@ often wraps bursts in `db.transaction` (SQL) or `kv.batch` (KV; KV writes do
 not join an SQL transaction). `XprsGossip`'s write buffer and reticulum's
 `ServeStats` are the buffered pattern.
 
+### Naming the index: `XprsArchive._byIndexRows(..., index:)`
+zx's planner takes the first index an equality fits, not the narrowest: for
+`toc = '' AND type = ?` it reads idx_pk_to (most of a spool) and sorts, 5 s
+for forty rows of 315,000. A statement that knows better says so with
+`FROM t INDEXED BY idx WHERE ...`. The archive does it for every ask of a
+few types (`rareTypes` in `query`: undirected, one author, one callsign, own
+rows), choosing by the per-type counts it already holds in memory. Any store
+with two indexes on one table should check its hot statements the same way.
+
+### Measuring a store on a real file — `tool/plan_probe.dart`, `tool/history_time.dart`
+`plan_probe.dart <file.zx>`: a statement's `EXPLAIN QUERY PLAN` and its time,
+twice. `history_time.dart <archive.zx> [callsign]`: what a page asks of an
+archive, first ask and asked again, and the per-type row counts. Run them on
+a COPY of a station's file before and after changing a query.
+
 ### The profile store — `EncryptedProfileStorage` (`profile.zx`)
 Loose files of an encrypted profile: KV `files` (path → mtime, kind,
 content), `dirs`, and `parts` for files copied in from outside, which stream

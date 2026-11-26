@@ -2310,6 +2310,9 @@ class RnsService {
   final Map<String, int> _firstSeenByHex = {}; // durable first-seen per id
   final Set<String> _obDirty = {}; // ids changed since the last flush
   Timer? _obFlushTimer;
+  bool _obWroteSinceCount = false;
+  int _obCountedMs = 0;
+  static const int _obCountEveryMs = 5 * 60 * 1000;
   Map<String, dynamic> _obStats = const {
     'total': 0,
     'xprs': 0,
@@ -2358,12 +2361,25 @@ class RnsService {
           'lastSeen': n.lastSeenMs,
         });
       }
-      if (rows.isNotEmpty) st.upsertMany(rows);
+      if (rows.isNotEmpty) {
+        st.upsertMany(rows);
+        _obWroteSinceCount = true;
+      }
       _obDirty.clear();
     }
     // Counted where the rows are written (its own thread when it runs): the
-    // status screens read the last answer.
-    unawaited(st.statsSoon().then((s) => _obStats = s));
+    // status screens read the last answer. Three of the five counts read
+    // every row, so it is asked only when rows were written since the last
+    // count, and at most every five minutes: asked with every flush it read
+    // the whole file (31 MB on the Pi's server) every twenty seconds, for a
+    // number nobody was looking at, and pushed what the station does read
+    // out of the page cache (2026-11-26).
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_obWroteSinceCount && now - _obCountedMs >= _obCountEveryMs) {
+      _obWroteSinceCount = false;
+      _obCountedMs = now;
+      unawaited(st.statsSoon().then((s) => _obStats = s));
+    }
   }
 
   // Note: the observed registry is NOT hydrated from disk on boot. Cache entries
@@ -5027,6 +5043,7 @@ class RnsService {
             _seedPeersFromStore();
             // The batch write and the counts on the store's own thread.
             unawaited(st.startWorker());
+            _obCountedMs = DateTime.now().millisecondsSinceEpoch;
             unawaited(st.statsSoon().then((s) => _obStats = s));
             _obFlushTimer = Timer.periodic(
               const Duration(seconds: 20),
