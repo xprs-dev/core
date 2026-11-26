@@ -15,10 +15,14 @@
  */
 library;
 
+import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_archive_policy.dart';
 import 'xprs_conditions.dart';
+import 'xprs_directory.dart';
+import 'xprs_monitor.dart';
 import 'xprs_packet.dart';
+import 'xprs_station_policy.dart';
 import 'xprs_vocab.dart';
 
 /// An announcement older than this is stale (13.0.5: three missed hourly
@@ -170,3 +174,60 @@ List<XprsKnownArchiver> xprsKnownArchivers({int? nowMs, int limit = 500}) {
   out.sort(xprsCompareArchivers);
   return out;
 }
+
+/// An archiver this device heard itself, as opposed to one it only knows from
+/// the cache: on a bearer of its own (XprsMonitor), or announced on Reticulum
+/// by a station that has also claimed `serve:archive` in a `t:service` of its
+/// own (a relay announcement alone says "mains power and an uplink", not "I
+/// archive"). What the automatic choice offers (12.3) and what the Archiver
+/// page shows as heard; one list, so the two cannot disagree.
+class XprsArchiverHeard {
+  const XprsArchiverHeard({
+    required this.callsign,
+    required this.lastMs,
+    required this.bearer,
+    this.uptimeS = 0,
+    this.uptime,
+    this.count,
+    this.room = true,
+  });
+
+  final String callsign;
+  final int lastMs;
+
+  /// The bearer it was last heard on; `rns` for Reticulum.
+  final String bearer;
+  final int uptimeS;
+
+  /// `uptime:` as the station wrote it, when heard on a bearer.
+  final String? uptime;
+  final int? count;
+  final bool room;
+}
+
+/// Every sighting of an archiver: one per bearer table, so a callsign heard
+/// both on a radio and on Reticulum appears twice. The choice needs that to
+/// tell an archiver reachable only by radio from one it can reach anywhere
+/// (12.3); a list for a person keeps the freshest per callsign.
+List<XprsArchiverHeard> xprsArchiversHeard() => [
+      for (final st in XprsMonitor.instance.stations.values)
+        if (st.services.contains('archive'))
+          XprsArchiverHeard(
+            callsign: st.callsign.trim().toUpperCase(),
+            lastMs: st.lastMs,
+            bearer: st.bearer,
+            uptimeS: xprsUptimeSeconds(st.uptime),
+            uptime: st.uptime,
+            count: st.count,
+            room: st.room != 'no',
+          ),
+      for (final a in RnsService.instance.announcedArchivers())
+        if (XprsDirectoryConsumer.instance.archiveClaimMs(a.callsign) != null)
+          XprsArchiverHeard(
+            callsign: a.callsign.trim().toUpperCase(),
+            lastMs: a.lastSeenMs,
+            bearer: 'rns',
+            uptimeS: a.uptimeS,
+            uptime: a.uptimeS > 0 ? xprsFmtDuration(a.uptimeS) : null,
+          ),
+    ];

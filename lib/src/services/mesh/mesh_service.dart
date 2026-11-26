@@ -2519,34 +2519,17 @@ class MeshService {
           rank: k.rank);
     }
 
-    final offers = <ArchiverOffer>[
-      for (final st in XprsMonitor.instance.stations.values)
-        if (st.services.contains('archive'))
-          ArchiverOffer(
-            callsign: NostrCrypto.bareCallsign(st.callsign),
-            lastHeardMs: st.lastMs,
-            bearer: st.bearer,
-            uptimeS: xprsUptimeSeconds(st.uptime),
-          ),
-      // And the ones that said so on Reticulum. A desktop with no radio and
-      // no station on its LAN hears no `serve:archive` at all, so it adopted
-      // nobody, asked nobody, and Search and the groups ranking stayed empty
-      // while archivers were announcing on the same hub. The transport says
-      // who is an archiver; nothing needs to be configured.
-      //
-      // Only one that has also CLAIMED to archive, in a `t:service
-      // serve:archive` of its own (it arrives as the answer to the directory
-      // ask). The relay announcement alone says "mains power and an uplink":
-      // a fresh station adopted a station started with no public archive,
-      // already gone, from the hub's copy of its last announcement, and
-      // leaned on it for hours.
-      for (final a in RnsService.instance.announcedArchivers())
-        if (XprsDirectoryConsumer.instance.archiveClaimMs(a.callsign) != null)
-          ArchiverOffer(
-          callsign: a.callsign,
-          lastHeardMs: a.lastSeenMs,
-          bearer: 'rns',
-          uptimeS: a.uptimeS,
+    // Heard on a bearer, or announced on Reticulum by a station that has
+    // claimed serve:archive itself (xprsArchiversHeard): a desktop with no
+    // radio hears no serve:archive at all, and a relay announcement alone
+    // once had a fresh station lean on a gone archiver for hours.
+    final offers = [
+      for (final h in xprsArchiversHeard())
+        ArchiverOffer(
+          callsign: NostrCrypto.bareCallsign(h.callsign),
+          lastHeardMs: h.lastMs,
+          bearer: h.bearer,
+          uptimeS: h.uptimeS,
         ),
     ];
     // What the operator configured, minus whatever WE adopted last time — an
