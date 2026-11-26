@@ -280,6 +280,21 @@ the profile key hierarchy and `SecureProfileFile`.
 reducer to their current contents), `FolderMeta`, `FolderRelay` (discovery by
 key, no indexer), `NtorrentRef`.
 
+Large files on disk (docs/plan-file-sharing.md):
+- `readFileRange(path, offset, length)` (`folders/disk_folder.dart`): one
+  seek and one bounded read. Every ranged read of a file on disk goes through
+  it (`DiskFolderSource.readRange`, `WebChatApi.openFile` for held disk files).
+- `DiskFolderSource(dir, indexPath:, recursive:)`: `indexPath` keeps the
+  hashes between runs (re-hashed only when size or mtime change);
+  `recursive: false` takes the top level only; `*.part` files are never indexed.
+- `XprsSharedFolder(dir, indexDir:)` (`xprs/xprs_shared_folder.dart`): a
+  directory held for `cmd:file` and `/api/xprs/file`, served on the files lane,
+  and published as a signed folder (7.7.3) when its listing changes. The
+  server's `share_dirs` uses it. The app's `/api/xprs/folder/publish` does the
+  same steps by hand and could call it.
+- `XprsFileServer.heldFile(sha)`: what the station holds for a digest, with
+  its path when it is on disk.
+
 ## I2P
 
 `I2pNode` ties a pure-Dart I2P node together (NTCP2, tunnel build and data,

@@ -7,6 +7,7 @@
  * Headless: dart:io + crypto only. Used by disk_folder_manager (owner sync) and
  * registered into the file node's serve source via CompositeFileSource.
  */
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:file/file.dart';
@@ -19,6 +20,29 @@ import 'package:xprs_core/src/platform/off_thread.dart';
 
 /// The hidden key file kept inside an owned folder (excluded from sharing).
 const String kFolderKeyFile = '.folder.json';
+
+/// [length] bytes of the file at [path] from [offset] (fewer at its end), or
+/// null when it cannot be read or [offset] is past the end. One seek and one
+/// bounded read: how a file on disk is served in ranges without holding it.
+/// [size], when known, saves a stat.
+Uint8List? readFileRange(String path, int offset, int length, {int? size}) {
+  RandomAccessFile? raf;
+  try {
+    final f = fs.file(path);
+    final total = size ?? f.lengthSync();
+    if (offset < 0 || length <= 0 || offset >= total) return null;
+    final end = (offset + length > total) ? total : offset + length;
+    raf = f.openSync();
+    raf.setPositionSync(offset);
+    return raf.readSync(end - offset);
+  } catch (_) {
+    return null;
+  } finally {
+    try {
+      raf?.closeSync();
+    } catch (_) {}
+  }
+}
 
 class DiskFile {
   final String sha; // sha256 hex (64)
@@ -72,14 +96,59 @@ class DiskFolderSource implements RangedFileSource {
   final Map<String, _HashEntry> _hashCache = {}; // abs path -> entry
   List<DiskFile> _files = const [];
 
-  DiskFolderSource(this.dirPath);
+  /// Where the hashes are kept between runs, or null for memory only. A
+  /// large folder (the maps, 140 GB) is hashed once: a restart reads this
+  /// and re-hashes only files whose size or modified time changed.
+  final String? indexPath;
+
+  /// Whether files in subfolders are part of the folder. A shared folder of
+  /// published files (`/srv/maps`) takes only its top level; its tools live
+  /// in a subfolder beside them.
+  final bool recursive;
+
+  DiskFolderSource(this.dirPath, {this.indexPath, this.recursive = true}) {
+    _loadIndex();
+  }
+
+  void _loadIndex() {
+    final p = indexPath;
+    if (p == null) return;
+    try {
+      final m = jsonDecode(fs.file(p).readAsStringSync());
+      if (m is! Map || m['v'] != 1 || m['files'] is! Map) return;
+      for (final e in (m['files'] as Map).entries) {
+        final v = e.value;
+        if (v is List && v.length == 3 && v[0] is int && v[1] is int && v[2] is String) {
+          _hashCache['${e.key}'] = _HashEntry(v[0] as int, v[1] as int, v[2] as String);
+        }
+      }
+    } catch (_) {
+      // no index yet, or a broken one: the next scan hashes and writes it
+    }
+  }
+
+  void _saveIndex() {
+    final p = indexPath;
+    if (p == null) return;
+    try {
+      final tmp = fs.file('$p.tmp');
+      tmp.parent.createSync(recursive: true);
+      tmp.writeAsStringSync(jsonEncode({
+        'v': 1,
+        'files': {
+          for (final e in _hashCache.entries) e.key: [e.value.size, e.value.mtimeMs, e.value.sha],
+        },
+      }));
+      tmp.renameSync(p);
+    } catch (_) {}
+  }
 
   List<DiskFile> get files => _files;
   int get fileCount => _files.length;
 
   /// (Re)build the index from the directory contents, on the calling isolate.
   /// Returns the file list.
-  List<DiskFile> scan() => _apply(_walk(dirPath, _cacheOut()));
+  List<DiskFile> scan() => _apply(_walk(dirPath, _cacheOut(), recursive));
 
   /// Same result as [scan], built on a worker isolate; used at startup and by
   /// the periodic owner sync. The walk (`listSync`, `statSync`) and the sha256
@@ -88,10 +157,10 @@ class DiskFolderSource implements RangedFileSource {
   /// file on the UI isolate: 12.8 s of main-isolate CPU in the first 30 s on
   /// the desktop, and typing lagged until it finished (architecture.md 2).
   Future<List<DiskFile>> scanAsync() async =>
-      _apply(await offThread(_walkOffThread, (dirPath, _cacheOut())));
+      _apply(await offThread(_walkOffThread, (dirPath, _cacheOut(), recursive)));
 
-  static _Walk _walkOffThread((String, Map<String, _Cached>) m) =>
-      _walk(m.$1, m.$2);
+  static _Walk _walkOffThread((String, Map<String, _Cached>, bool) m) =>
+      _walk(m.$1, m.$2, m.$3);
 
   Map<String, _Cached> _cacheOut() => {
         for (final e in _hashCache.entries)
@@ -99,6 +168,11 @@ class DiskFolderSource implements RangedFileSource {
       };
 
   List<DiskFile> _apply(_Walk walked) {
+    final changed = walked.cache.length != _hashCache.length ||
+        walked.cache.entries.any((e) {
+          final h = _hashCache[e.key];
+          return h == null || h.size != e.value.$1 || h.mtimeMs != e.value.$2 || h.sha != e.value.$3;
+        });
     _hashCache
       ..clear()
       ..addAll({
@@ -110,12 +184,13 @@ class DiskFolderSource implements RangedFileSource {
       ..clear()
       ..addAll(walked.byHash);
     _files = walked.files;
+    if (changed) _saveIndex();
     return _files;
   }
 
   /// Index [dirPath], reusing [cache] for files whose size and mtime are
   /// unchanged. Self-contained so it can run on any isolate.
-  static _Walk _walk(String dirPath, Map<String, _Cached> cache) {
+  static _Walk _walk(String dirPath, Map<String, _Cached> cache, bool recursive) {
     final out = <DiskFile>[];
     final byHash = <String, String>{};
     final kept = <String, _Cached>{};
@@ -124,7 +199,7 @@ class DiskFolderSource implements RangedFileSource {
       return (files: const <DiskFile>[], byHash: byHash, cache: kept);
     }
     final base = root.absolute.path;
-    for (final e in root.listSync(recursive: true, followLinks: false)) {
+    for (final e in root.listSync(recursive: recursive, followLinks: false)) {
       if (e is! File) continue;
       final abs = e.absolute.path;
       var rel = abs.startsWith(base) ? abs.substring(base.length) : abs;
@@ -134,6 +209,10 @@ class DiskFolderSource implements RangedFileSource {
       if (rel.isEmpty) continue;
       if (rel == kFolderKeyFile) continue;
       if (rel.split('/').any((s) => s.startsWith('.'))) continue;
+      // A file still being written (a download, a cut) is `<name>.part`
+      // until it is renamed into place: hashing it would be hashing bytes
+      // that are about to change.
+      if (rel.endsWith('.part')) continue;
       try {
         final stat = e.statSync();
         final size = stat.size;
@@ -204,21 +283,7 @@ class DiskFolderSource implements RangedFileSource {
   @override
   Uint8List? readRange(Uint8List fileHash, int offset, int length) {
     final path = _byHash[_hex(fileHash)];
-    if (path == null) return null;
-    RandomAccessFile? raf;
-    try {
-      final f = fs.file(path);
-      final size = f.lengthSync();
-      if (offset < 0 || offset >= size) return null;
-      final end = (offset + length > size) ? size : offset + length;
-      raf = f.openSync();
-      raf.setPositionSync(offset);
-      return raf.readSync(end - offset);
-    } catch (_) {
-      return null;
-    } finally {
-      raf?.closeSync();
-    }
+    return path == null ? null : readFileRange(path, offset, length);
   }
 
   @override

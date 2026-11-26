@@ -378,6 +378,10 @@ class XprsFileServer {
   /// Do we hold the bytes for this digest? (Pinned or any resolver.)
   bool holds(String shaHex) => _lookUp(shaHex.toLowerCase()) != null;
 
+  /// What this station holds for [shaHex] (pinned or any resolver), or null.
+  /// A file with a [XprsHeldFile.path] is on disk and can be read in ranges.
+  XprsHeldFile? heldFile(String shaHex) => _lookUp(shaHex.toLowerCase());
+
   /// The exact length in bytes of a file this station holds, or null. What a
   /// `202` and a `q:have` answer state as `size:`: a fetch by pieces needs
   /// the exact count, and a description's `size:` is rounded.

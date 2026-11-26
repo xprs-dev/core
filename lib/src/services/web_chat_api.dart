@@ -55,6 +55,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:reticulum/reticulum.dart' show HostedWriter, MediaArchive, NostrCrypto;
 
 import '../platform/key_value_store.dart';
+import 'folders/disk_folder.dart' show readFileRange;
 
 import 'xprs/xprs_profiles.dart';
 import 'xprs/xprs_group_act.dart' show xprsGroupNickShown;
@@ -1046,7 +1047,17 @@ class WebChatApi {
     if (sha == null) return no(400, 'not a file reference');
     final store = fileStore!();
     final meta = store?.getMeta(sha);
-    if (store == null || meta == null) return no(404, 'not held');
+    if (store == null || meta == null) {
+      // On disk ([openFile]): whole only up to what a page is served.
+      final held = XprsFileServer.instance.heldFile(sha);
+      if (held == null || held.path.isEmpty) return no(404, 'not held');
+      if (!_mayFetch(sha, session)) return no(403, 'not a public file');
+      if (held.size > fileMax) return no(413, 'larger than this page serves');
+      final bytes = readFileRange(held.path, 0, held.size, size: held.size);
+      if (bytes == null) return no(404, 'not held');
+      return WebChatReply.bytes(200, bytes, fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream',
+          headers: {'Cache-Control': _cacheOf(sha), 'ETag': '"$sha"', 'X-Content-Type-Options': 'nosniff'});
+    }
     if (!_mayFetch(sha, session)) return no(403, 'not a public file');
     if (meta.size > fileMax) return no(413, 'larger than this page serves');
     final bytes = store.get(sha);
@@ -1142,13 +1153,23 @@ class WebChatApi {
     final store = fileStore!();
     final meta = store?.getMeta(sha);
     final size = store?.sizeOf(sha);
-    if (store == null || meta == null || size == null) return no(404, 'not held');
-    if (!_mayFetch(sha, session)) return no(403, 'not a public file');
-    return WebChatFile._(null, size, fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream', {
+    final headers = {
       'Cache-Control': _cacheOf(sha),
       'ETag': '"$sha"',
       'X-Content-Type-Options': 'nosniff',
-    }, (o, n) => store.readRange(sha, o, n));
+    };
+    final type = fileTypes[xprsFileExt(ref)] ?? 'application/octet-stream';
+    if (store == null || meta == null || size == null) {
+      // A file the station holds on disk (a shared folder, the update
+      // mirror): read where it lies, a range at a time, never copied in.
+      final held = XprsFileServer.instance.heldFile(sha);
+      if (held == null || held.path.isEmpty) return no(404, 'not held');
+      if (!_mayFetch(sha, session)) return no(403, 'not a public file');
+      return WebChatFile._(null, held.size, type, headers,
+          (o, n) => readFileRange(held.path, o, n, size: held.size));
+    }
+    if (!_mayFetch(sha, session)) return no(403, 'not a public file');
+    return WebChatFile._(null, size, type, headers, (o, n) => store.readRange(sha, o, n));
   }
 
   /// The SHA-256 hex a reference names, when it has the 7.7 shape.
