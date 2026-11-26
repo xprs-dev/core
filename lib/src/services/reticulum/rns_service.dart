@@ -2409,7 +2409,7 @@ class RnsService {
     ('relay', kRelayApp, kRelayAspects),
     ('lxmf', kLxmfApp, kLxmfDeliveryAspects),
     ('lxmf-prop', kLxmfApp, kLxmfPropagationAspects),
-    ('rv', 'circles', ['rv']),
+    ('rv', _rvApp, _rvAspects),
     // NomadNet node (serves pages/files; often also an LXMF propagation node).
     ('node', 'nomadnetwork', ['node']),
   ];
@@ -4112,7 +4112,7 @@ class RnsService {
           // Short-code rendezvous beacons (circles/rv). Flood-exempt so a joiner
           // ALWAYS ingests the owner's beacon under a busy hub — that ingest is
           // exactly what makes the joiner's pathFor(rvDest) resolve the address.
-          _hex(RnsDestination.nameHash('circles', const ['rv'])),
+          _hex(RnsDestination.nameHash(_rvApp, _rvAspects)),
         ]);
         _mode = mode;
         // One serve source that fans out: the MediaArchive plus any owner disk
@@ -7737,7 +7737,8 @@ class RnsService {
   // OFTEN for a joiner's path request to land, so a host timer re-announces every
   // few seconds independent of the slow wapp tick. Entries not re-asserted for a
   // while (circle deleted / no longer owned) expire so this never grows unbounded.
-  final Map<String, ({Uint8List appData, int lastMs})> _rvActive = {};
+  final Map<String, ({Uint8List appData, int lastMs, String tag})> _rvActive =
+      {};
   Timer? _rvTimer;
   static const Duration _rvReannounceEvery = Duration(seconds: 8);
   static const int _rvActiveTtlMs = 90 * 1000;
@@ -7748,21 +7749,27 @@ class RnsService {
   // re-announced every 8s (flood-exempt) so the hub keeps a fresh route to us.
   final Map<String, RnsIdentity> _rvInboundDests = {};
 
-  /// The wapp that owns the rendezvous aspect. It is the RNS destination's own
-  /// app name (see [_emitRvAnnounce]), so it cannot be derived from the packet —
-  /// naming it once here is better than spelling it at each use.
-  static const String kRvWappTag = 'circles';
+  /// rvDestHashHex -> the wapp that announced it: a join request arriving
+  /// there goes to that wapp, whichever it is.
+  final Map<String, String> _rvInboundTags = {};
 
-  void _emitRvAnnounce(Uint8List seed, Uint8List appData) {
+  /// The rendezvous destination's Reticulum name (`circles.rv`). A wire
+  /// constant, like `lxmf.delivery`: it is in every rendezvous hash already
+  /// announced, so it is not renamed. Which wapp a rendezvous belongs to is
+  /// not derived from it; it is the wapp that called [rvAnnounce].
+  static const String _rvApp = 'circles';
+  static const List<String> _rvAspects = ['rv'];
+
+  void _emitRvAnnounce(Uint8List seed, Uint8List appData, String tag) {
     final t = _transport;
     if (!_up || t == null) return;
     unawaited(() async {
       final id = await _rvIdentity(seed);
-      final dest = RnsDestination.hash(id, 'circles', const ['rv']);
+      final dest = RnsDestination.hash(id, _rvApp, _rvAspects);
       _rvInboundDests[_hex(dest)] = id; // listen for inbound jr on this dest
-      final pkt = await RnsAnnounceBuilder.build(id, 'circles', const [
-        'rv',
-      ], appData: appData);
+      _rvInboundTags[_hex(dest)] = tag;
+      final pkt = await RnsAnnounceBuilder.build(id, _rvApp, _rvAspects,
+          appData: appData);
       t.sendAnnounce(pkt.pack(), pkt.destHash);
     }());
   }
@@ -8075,17 +8082,13 @@ class RnsService {
       return false;
     }
     final id = _rvInboundDests[_hex(p.destHash)];
-    if (id == null) return false;
+    final tag = _rvInboundTags[_hex(p.destHash)];
+    if (id == null || tag == null) return false;
     try {
       final plain = await id.decrypt(p.data);
-      // Through the same door every other wapp datagram uses, rather than
-      // reaching into a wapp's queue from here. The core used to write
-      // _wappInbox['circles'] directly, which meant this lane skipped the
-      // 'xprs' core tap, arrived with no bearer label, and named a wapp by
-      // string in the middle of the transport. The aspect name is still
-      // 'circles' — it is baked into the destination hash above — but it is
-      // now one argument to the shared delivery, not a private path.
-      _deliverWappDatagram(kRvWappTag, '', plain, via: 'rns');
+      // Through the same door every other wapp datagram uses, to the wapp
+      // that announced this rendezvous ([rvAnnounce]); the core names none.
+      _deliverWappDatagram(tag, '', plain, via: 'rns');
       LogService.instance.add(
         'RNS/rv: join request received on rendezvous dest ${_hex(p.destHash).substring(0, 8)} (${plain.length}B)',
       );
@@ -8104,7 +8107,7 @@ class RnsService {
     if (!_up || t == null) return;
     unawaited(() async {
       final id = await _rvIdentity(seed);
-      final dest = RnsDestination.hash(id, 'circles', const ['rv']);
+      final dest = RnsDestination.hash(id, _rvApp, _rvAspects);
       final enc = await id.encrypt(payload);
       if (enc.length + 24 > 500) {
         LogService.instance.add(
@@ -8133,7 +8136,8 @@ class RnsService {
     _rvActive.removeWhere((_, v) => now - v.lastMs > _rvActiveTtlMs);
     if (_rvActive.isEmpty) return;
     for (final e in _rvActive.entries) {
-      _emitRvAnnounce(_bytesFromHexOrEmpty(e.key), e.value.appData);
+      _emitRvAnnounce(
+          _bytesFromHexOrEmpty(e.key), e.value.appData, e.value.tag);
     }
     // While we have joinable circles, keep our delivery/propagation dests fresh
     // too so an applicant that just resolved our beacon can immediately path to
@@ -8163,14 +8167,18 @@ class RnsService {
   /// beacon so a host timer keeps re-announcing it every few seconds (decoupled
   /// from the slow wapp tick), so a joiner's path request can be answered fast —
   /// critical for a freshly-created circle whose beacon isn't cached on any hub.
-  void rvAnnounce(Uint8List seed, Uint8List appData) {
+  ///
+  /// [tag] is the wapp announcing it: a join request sent to the rendezvous
+  /// lands on that wapp's inbound queue.
+  void rvAnnounce(String tag, Uint8List seed, Uint8List appData) {
     final t = _transport;
-    if (!_up || t == null) return;
+    if (!_up || t == null || tag.isEmpty) return;
     _rvActive[_hex(seed)] = (
       appData: appData,
       lastMs: DateTime.now().millisecondsSinceEpoch,
+      tag: tag,
     );
-    _emitRvAnnounce(seed, appData);
+    _emitRvAnnounce(seed, appData, tag);
     _rvTimer ??= Timer.periodic(_rvReannounceEvery, (_) => _rvReannounceTick());
   }
 
@@ -8187,7 +8195,7 @@ class RnsService {
       _rvPending.add(key);
       unawaited(() async {
         final id = await _rvIdentity(seed);
-        final dest = RnsDestination.hash(id, 'circles', const ['rv']);
+        final dest = RnsDestination.hash(id, _rvApp, _rvAspects);
         // Run well past one owner re-announce interval so a beacon that lands
         // mid-window is caught; the wapp's discovery_tick re-arms this between
         // windows. With the owner re-announcing every ~8s and the beacon now
@@ -12923,6 +12931,7 @@ class RnsService {
     _rvTimer = null;
     _rvActive.clear();
     _rvInboundDests.clear();
+    _rvInboundTags.clear();
     _linkWatchdog?.cancel();
     _linkWatchdog = null;
     _notifTimer?.cancel();

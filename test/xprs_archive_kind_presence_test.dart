@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:reticulum/reticulum.dart';
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_archive.dart';
-import 'package:xprs_core/src/services/xprs/xprs_archive_policy.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 
 void main() {

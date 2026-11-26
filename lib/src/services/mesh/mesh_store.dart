@@ -211,8 +211,9 @@ class MeshStore {
     // carrier itself cares about is above [MeshUrgency.low] and still gets in,
     // and the sweep sheds the bottom first — see [sweep].
     if (urg == MeshUrgency.low && countPending() >= inTransitMax) return false;
-    final dup = db.select('SELECT 1 FROM mesh_store WHERE am = ?', [key]);
-    if (dup.isNotEmpty) return false;
+    if (storeExists(db, 'SELECT 1 FROM mesh_store WHERE am = ?', [key])) {
+      return false;
+    }
     db.execute(
       'INSERT INTO mesh_store(am,target,sender,wire,ts,size,urg,state,setk) '
       'VALUES(?,?,?,?,?,?,?,?,?)',
@@ -295,7 +296,7 @@ class MeshStore {
   bool holds(String key) {
     final db = _db;
     if (db == null || key.isEmpty) return false;
-    return db.select('SELECT 1 FROM mesh_store WHERE am = ?', [key]).isNotEmpty;
+    return storeExists(db, 'SELECT 1 FROM mesh_store WHERE am = ?', [key]);
   }
 
   /// End-to-end receipt / peer have-bloom hit: the target has [am] — drop
@@ -617,10 +618,11 @@ class MeshStore {
     final t = target.trim().toUpperCase();
     final names = _selfNames(selfCallsign, alsoSelf);
     if (db == null || t.isEmpty || names.isEmpty) return false;
-    return db.select(
+    return storeExists(
+        db,
         'SELECT 1 FROM mesh_store WHERE state = 0 AND target = ? '
-        'AND ${_mineSql(names)} LIMIT 1',
-        [t, ...names]).isNotEmpty;
+        'AND ${_mineSql(names)}',
+        [t, ...names]);
   }
 
   /// Distinct targets of in-transit frames WE originated (custodian path).
@@ -640,9 +642,8 @@ class MeshStore {
   bool isPending(String am) {
     final db = _db;
     if (db == null || am.isEmpty) return false;
-    return db.select(
-        'SELECT 1 FROM mesh_store WHERE am = ? AND state = 0 LIMIT 1',
-        [am]).isNotEmpty;
+    return storeExists(
+        db, 'SELECT 1 FROM mesh_store WHERE am = ? AND state = 0', [am]);
   }
 
   /// Count of frames we still owe delivery for (beacon pending trailer).
@@ -666,7 +667,7 @@ class MeshStore {
   bool wasReceived(String am) {
     final db = _db;
     if (db == null || am.isEmpty) return false;
-    return db.select('SELECT 1 FROM received_ams WHERE am = ?', [am]).isNotEmpty;
+    return storeExists(db, 'SELECT 1 FROM received_ams WHERE am = ?', [am]);
   }
 
   /// The beacon have-digest: bloom over ams received in the last ~24 h.

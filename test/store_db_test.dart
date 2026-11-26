@@ -102,4 +102,17 @@ void main() {
     expect(db.select('SELECT COUNT(*) c FROM t').single['c'], 1000);
     db.dispose();
   });
+
+  test('storeExists answers from one value, with and without a match', () {
+    final db = openMemoryStoreDb();
+    db.execute('CREATE TABLE t (k TEXT PRIMARY KEY, s INTEGER)');
+    expect(storeExists(db, 'SELECT 1 FROM t'), isFalse);
+    db.execute("INSERT INTO t VALUES ('a', 0), ('b', 1)");
+    expect(storeExists(db, 'SELECT 1 FROM t'), isTrue);
+    expect(storeExists(db, 'SELECT 1 FROM t WHERE k = ?', ['a']), isTrue);
+    expect(storeExists(db, 'SELECT 1 FROM t WHERE k = ?', ['z']), isFalse);
+    expect(
+        storeExists(db, 'SELECT 1 FROM t WHERE k = ? AND s = 0', ['b']), isFalse);
+    db.dispose();
+  });
 }

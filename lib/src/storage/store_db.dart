@@ -120,3 +120,12 @@ ZxSqlDb openStoreDbWithSecret(String absPath, String? secret,
 
 /// A store in memory (tests; a store without a path).
 ZxSqlDb openMemoryStoreDb() => ZxSqlDb.memory();
+
+/// Whether [query] (a `SELECT`) returns any row, asked of the database as
+/// one value: `SELECT EXISTS(...)`, which stops at the first match and
+/// builds one row whatever the table holds. Fetching rows to test
+/// `.isNotEmpty` builds a row object per match (docs/performance.md 4.2).
+bool storeExists(ZxSqlDb db, String query, [List<Object?> args = const []]) {
+  final r = db.select('SELECT EXISTS($query) AS e', args);
+  return r.isNotEmpty && r.first['e'] == 1;
+}
