@@ -2,7 +2,8 @@
 //
 // Regional and Global belong to no station and no group, so section 10 has
 // nobody to give authority in them. These binaries take it from a list: the
-// npubs in https://xprs.dev/moderators.json. A listed key signs the act
+// npubs in https://xprs.dev/moderators.json, read from there and from nowhere
+// else (no key is written into the program). A listed key signs the act
 // section 10.4.1 already has, addressed to nobody,
 //
 //   t:moderate f:X1WATT ts:... r:89a9c8 remove:message sig:...
@@ -49,13 +50,6 @@ class XprsPublicModerators {
   /// Where the list is published.
   static const String url = 'https://xprs.dev/moderators.json';
 
-  /// The list a binary carries, so a station that never reaches xprs.dev (a
-  /// board, a phone off the grid) still knows somebody. Replaced by the
-  /// published one whenever that is read.
-  static const String builtIn = '{"moderators":['
-      '{"npub":"npub1watt585dqju7agda06973etnhyad6n9l6wy2heamr0mxw0nmgl5sdrsnac"}'
-      ']}';
-
   /// A list is a handful of people; a file with more than this is not one.
   static const int maxEntries = 64;
   static const int maxBytes = 32 * 1024;
@@ -65,7 +59,11 @@ class XprsPublicModerators {
   /// The operator's switch. Off: no act is honoured and nothing is listed.
   bool honoured = true;
 
-  List<XprsPublicModerator> _list = _parse(builtIn) ?? const [];
+  /// Nobody until the published list has been read once: no key is written
+  /// into the program, so who moderates is decided at xprs.dev alone and a
+  /// build cannot carry a different answer. The copy last read is kept by
+  /// the host and stands while the site is out of reach.
+  List<XprsPublicModerator> _list = const [];
   List<XprsPublicModerator> get list => honoured ? _list : const [];
 
   /// The identifiers removed, newest last, bounded: what a page already
@@ -198,7 +196,12 @@ class XprsPublicModerators {
   /// year; a station that restarts hourly must not ask hourly.
   static const Duration refreshEvery = Duration(hours: 12);
 
+  /// After an ask that failed, the next one waits this long, so a site that
+  /// is down is not asked at every uplink that comes up.
+  static const Duration retryAfter = Duration(minutes: 10);
+
   bool _asking = false;
+  int _failedMs = 0;
 
   /// Read the switch and the list last kept, then ask xprs.dev when the last
   /// ask is older than [refreshEvery]. Called at start and whenever an
@@ -218,21 +221,26 @@ class XprsPublicModerators {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     if (!honoured || _asking) return;
     if (now - askedMs() < refreshEvery.inMilliseconds) return;
+    if (now - _failedMs < retryAfter.inMilliseconds) return;
     _asking = true;
     try {
       final text = await fetch(Uri.parse(url));
-      final good = text != null && refresh(text);
-      await keep(json: good ? text : null, askedMs: now);
+      if (text != null && refresh(text)) {
+        await keep(json: text, askedMs: now);
+      } else {
+        _failedMs = now; // not a list: the one held stands, asked again later
+      }
     } catch (_) {
-      // Unreachable: the list held stands, and the next uplink asks again.
+      _failedMs = now; // unreachable: the same
     } finally {
       _asking = false;
     }
   }
 
-  /// For tests: the built-in list again, nothing remembered.
+  /// For tests: nobody listed, nothing remembered.
   void reset() {
-    _list = _parse(builtIn) ?? const [];
+    _list = const [];
+    _failedMs = 0;
     _removed.clear();
     honoured = true;
     accepted = refused = 0;

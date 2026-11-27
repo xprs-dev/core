@@ -41,10 +41,10 @@ void main() {
   tearDown(mods.reset);
 
   group('the list and the verdict', () {
-    test('the binary carries the first moderator', () {
+    test('no key is in the program: until the list is read, nobody moderates', () {
       mods.reset();
-      expect(mods.list.single.npub,
-          'npub1watt585dqju7agda06973etnhyad6n9l6wy2heamr0mxw0nmgl5sdrsnac');
+      expect(mods.list, isEmpty);
+      expect(mods.judge(act(_mod), nowMs: now), isNull);
     });
 
     test('a listed key removes; an unlisted one does not', () {
@@ -140,10 +140,16 @@ void main() {
       mods.reset();
       await run(now + 2 * 3600 * 1000);
       expect(mods.judge(act(_other), nowMs: now), '89a9c8');
-      // Unreachable or junk: the list held stands.
+      // Unreachable or junk: the list held stands, and it is asked again
+      // after ten minutes rather than in twelve hours or at once.
       await run(now + 13 * 3600 * 1000, site: '<html>');
       expect(asked, 2);
       expect(mods.judge(act(_other), nowMs: now), '89a9c8');
+      await run(now + 13 * 3600 * 1000 + 60 * 1000, site: _list(_mod));
+      expect(asked, 2);
+      await run(now + 13 * 3600 * 1000 + 11 * 60 * 1000, site: _list(_mod));
+      expect(asked, 3);
+      expect(mods.judge(act(_mod), nowMs: now), '89a9c8');
     });
   });
 
