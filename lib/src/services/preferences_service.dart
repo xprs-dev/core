@@ -337,6 +337,24 @@ class PreferencesService {
   bool get xprsHostStation => _prefs.getBool('xprs.hostStation') ?? false;
   Future<void> setXprsHostStation(bool v) => _prefs.setBool('xprs.hostStation', v);
 
+  /// Honour the removals of the public rooms' moderators (XPRS.md 10.10.3,
+  /// the keys listed at xprs.dev/moderators.json). On unless the operator
+  /// says otherwise.
+  bool get xprsHonourPublicModerators =>
+      _prefs.getBool('xprs.publicMods.honour') ?? true;
+  Future<void> setXprsHonourPublicModerators(bool v) =>
+      _prefs.setBool('xprs.publicMods.honour', v);
+
+  /// The list as last read from xprs.dev, and when it was last asked for.
+  String get xprsPublicModeratorsJson =>
+      _prefs.getString('xprs.publicMods.json') ?? '';
+  int get xprsPublicModeratorsAskedMs =>
+      _prefs.getInt('xprs.publicMods.asked') ?? 0;
+  Future<void> setXprsPublicModerators({String? json, required int askedMs}) async {
+    if (json != null) await _prefs.setString('xprs.publicMods.json', json);
+    await _prefs.setInt('xprs.publicMods.asked', askedMs);
+  }
+
   /// The settings store itself, for a core service that keeps its own
   /// records beside the preferences (the station API's administrator).
   KeyValueStore get store => _prefs;

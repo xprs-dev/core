@@ -870,3 +870,26 @@ not known to be small.
   is told what the wire says; the owner's own screen gets what this reader may
   know. Use the flag rather than a second accessor when a row has a private
   reading.
+
+## A list of keys with authority: `XprsPublicModerators`
+
+`lib/src/services/xprs/xprs_public_moderators.dart` (XPRS.md 10.10.3). The
+pattern for "these binaries believe a published list of npubs":
+
+- **The class is the list and the verdict only**: `refresh(text)` takes the
+  JSON (and keeps the list held when the text is not one), `judge(packet)`
+  says whether a listed key signed it at its own date, `offer(packet)` also
+  remembers and announces on `removals`. No store, socket or clock inside, so
+  it runs in a test as it runs in a station.
+- **`xprsVerifyUnder(p, key)`** (`xprs_sig.dart`) checks a signature under
+  exactly one key. Use it whenever the authority is the KEY: `xprsVerify`
+  falls back to whoever holds the callsign in `f:`, which is right for "who
+  wrote this" and wrong for "is this one of the listed".
+- **`sync(...)`** is the refresh with everything injected (the switch, the
+  kept copy, when it was last asked, the fetch): the kept copy first, the
+  site at most every twelve hours. `xprsSyncPublicModerators()`
+  (`xprs_public_moderators_sync.dart`) is the host half over
+  `PreferencesService` and `package:http`; `MeshService` calls it at start and
+  on `RnsService.uplinkUps`, never on a timer.
+- **`XprsArchive.purgePublic(id)`** is the delete with a tombstone under `*`,
+  beside `purgeModerated(group, id)` for a group's record.

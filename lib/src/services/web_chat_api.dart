@@ -69,6 +69,7 @@ import 'xprs/xprs_id.dart';
 import 'names/names_keeper.dart';
 import 'xprs/xprs_packet.dart';
 import 'xprs/xprs_parts.dart';
+import 'xprs/xprs_public_moderators.dart';
 import 'xprs/xprs_mesh_policy.dart';
 import 'xprs/xprs_sig.dart';
 import 'web_chat_forum.dart';
@@ -1202,6 +1203,28 @@ class WebChatApi {
     if (p == null || !p.fits) return no(400, 'malformed');
     final from = (p['f'] ?? '').trim().toUpperCase();
     if (from.isEmpty) return no(400, 'no f:');
+    if (p.type == 'moderate' && XprsPublicModerators.shaped(p)) {
+      // About the public rooms (10.10.3): only a listed key's, and then it
+      // is the room's record, filed and aired like what it removes.
+      final mods = XprsPublicModerators.instance;
+      if (mods.judge(p, nowMs: now().millisecondsSinceEpoch) == null) {
+        return no(403, 'not a moderator of the public rooms');
+      }
+      final w = p.encode();
+      final door = receiveFrom;
+      if (door != null) {
+        door(w, local: isLocalPeer(peer));
+      } else {
+        receive(w);
+      }
+      // The door judges it again and deletes; said here too for a host whose
+      // door files without the funnel.
+      if (mods.offer(p, nowMs: now().millisecondsSinceEpoch)) {
+        XprsArchive.instance.purgePublic(p['r']!.trim().toLowerCase());
+      }
+      airVerbatim?.call(w);
+      return WebChatReply(200, {'ok': true, 'id': _idOf(p), 'wire': w});
+    }
     if (p.type == 'moderate') {
       // About this station or a room it hosts: the station's to judge. About
       // somebody else's group (10): an act its members and moderators sign
@@ -1314,11 +1337,16 @@ class WebChatApi {
   ({Set<String> removed, Set<String> away})? _moderation() {
     final g = groups;
     final st = _station;
-    if (g == null || st.isEmpty) return null;
+    final public = XprsPublicModerators.instance.removed;
+    if (g == null || st.isEmpty) {
+      return public.isEmpty ? null : (removed: {...public}, away: <String>{});
+    }
     final r = g.rosterOf(st);
     final t = now().millisecondsSinceEpoch;
     return (
       removed: {
+        // The public rooms' removals (10.10.3), newest kept when cut to fit.
+        ...public.toList().reversed,
         ...r.hidden,
         for (final m in r.moderation)
           if (m.kind == 'remove') m.target,
@@ -2392,6 +2420,12 @@ class WebChatApi {
       'claimable': admin == null && local,
       if (you) 'settings': {...settings, ..._placeSettings},
       if (groups != null) ..._moderationState(session, you),
+      // Whose removals this station honours in Regional and Global
+      // (10.10.3); the page offers Delete to a visitor whose key is one.
+      'public_moderators': [
+        for (final m in XprsPublicModerators.instance.list)
+          if (m.standsAt(now().millisecondsSinceEpoch)) m.npub,
+      ],
     });
   }
 

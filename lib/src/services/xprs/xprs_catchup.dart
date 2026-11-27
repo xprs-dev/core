@@ -1130,9 +1130,12 @@ class XprsCatchup {
     // (12.9.5, `kind:mailbox`): who is cared for by whom is what lets it
     // read its own load, point a newcomer at a peer with room, and route
     // 12.8.1 across the federation. A pocket device asks for messages only.
+    // And `moderate`: a removal in the public rooms (10.10.3) is the room's
+    // record, and a station that asked only for the messages would keep
+    // showing what every station nearer the moderator had taken down.
     final kinds = (PreferencesService.instanceSync?.xprsPublicArchiver ?? false)
-        ? 'message,mailbox'
-        : 'message';
+        ? 'message,moderate,mailbox'
+        : 'message,moderate';
     final wire = StringBuffer('t:command f:$self d:$archiver ts:${_ts(now)} '
         'cmd:history kind:$kinds since:${_ts(w.sinceMs)}');
     if (untilMs != null) wire.write(' until:${_ts(untilMs)}');
@@ -1270,7 +1273,7 @@ class XprsCatchup {
     if (ts == null || now - ts < _replayAge.inMilliseconds) return;
     final w = f.window;
     if (w != null) {
-      if (p.type != 'message' || p.has('via')) return;
+      if ((p.type != 'message' && p.type != 'moderate') || p.has('via')) return;
       final top = w.untilMs ?? (w.endMs + 1000);
       if (ts < w.sinceMs - 1000 || ts >= top) return;
       w.pageRows++;

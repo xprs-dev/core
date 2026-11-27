@@ -59,6 +59,7 @@ import '../xprs/xprs_shared_position.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_passphrases.dart';
 import '../xprs/xprs_publisher.dart';
+import '../xprs/xprs_public_moderators_sync.dart';
 import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_archiver_choice.dart';
 import '../xprs/xprs_mailbox.dart';
@@ -98,6 +99,7 @@ import 'package:xprs_core/src/platform/os.dart' as platform;
 class MeshService {
   /// The roster-change listener that tends the groups' reading keys.
   StreamSubscription<String>? _groupReadSub;
+  StreamSubscription<void>? _publicModsSub;
   MeshService._();
   static final MeshService instance = MeshService._();
 
@@ -1033,6 +1035,12 @@ class MeshService {
         _wireDirectory(mediaArchive);
         XprsLineLane.instance.onClientUp = _onLineUp;
         RnsService.instance.onUplinkUp = XprsLineLane.instance.nudge;
+        // The public rooms' moderators (10.10.3): the list kept, then the
+        // published one, asked for when an uplink says the site is reachable.
+        unawaited(xprsSyncPublicModerators());
+        _publicModsSub?.cancel();
+        _publicModsSub = RnsService.instance.uplinkUps
+            .listen((_) => unawaited(xprsSyncPublicModerators()));
         XprsGossip.instance.onSighting = (call, gateway) {
           final me = NostrCrypto.bareCallsign(tableCallsign);
           if (me.isEmpty || gateway == me) return;

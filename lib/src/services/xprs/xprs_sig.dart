@@ -196,6 +196,13 @@ bool _sameBytes(Uint8List a, Uint8List b) {
   return true;
 }
 
+/// The `sig:` on [p] under exactly [pubXonly] and no other key: for a caller
+/// whose authority is the KEY (a listed moderator, XPRS.md 10.10.3), where
+/// [xprsVerify] falling back to whoever holds the callsign in `f:` would let
+/// an unlisted key pass.
+XprsSigState xprsVerifyUnder(XprsPacket p, Uint8List pubXonly) =>
+    _verifyOne(p, pubXonly);
+
 XprsSigState _verifyOne(XprsPacket p, Uint8List? pubXonly) {
   final s = p['sig'];
   if (s == null) return XprsSigState.unsigned;

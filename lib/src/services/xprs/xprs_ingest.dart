@@ -42,6 +42,7 @@ import 'xprs_id.dart';
 import 'xprs_outbox.dart';
 import 'xprs_owned_stations.dart';
 import 'xprs_packet.dart';
+import 'xprs_public_moderators.dart';
 import 'xprs_presence.dart';
 import '../media/media_fetch.dart';
 import '../media/media_ref_index.dart';
@@ -339,6 +340,16 @@ class XprsIngest {
     return xprsReachAdmits(xprsScopeReach(p), xprsBearerReach(bearer));
   }
 
+  /// A listed moderator's removal in the public rooms (10.10.3): the archive
+  /// drops what it names, and the act itself is kept as the room's talk is,
+  /// so the stations that ask this one for the room are handed it too.
+  static bool _publicAct(XprsPacket p) {
+    if (p.type != 'moderate' || !XprsPublicModerators.shaped(p)) return false;
+    if (!XprsPublicModerators.instance.offer(p)) return false;
+    XprsArchive.instance.purgePublic(p['r']!.trim().toLowerCase());
+    return true;
+  }
+
   /// Whose traffic this is: ours, somebody we follow, or a stranger.
   ///
   /// One set lookup. The followed set is base callsigns, rebuilt by
@@ -574,6 +585,7 @@ class XprsIngest {
     _noteOwner(p, from, _base(selfCallsign));
 
     if (p.type == 'moderate') XprsGroups.instance.offer(p);
+    final publicAct = _publicAct(p);
 
     // The preference governs the ARCHIVER — other people's traffic. A packet
     // addressed to us is our own mail and is kept either way.
@@ -608,7 +620,7 @@ class XprsIngest {
       policy: policy,
       addressedToUs: forUs,
       followedStation: _followedStation(_base(from)),
-      room: _isRoomTalk(p, _archiveBearer(bearer)),
+      room: _isRoomTalk(p, _archiveBearer(bearer)) || publicAct,
       followedKind: _followedKind(p),
     );
     if (shelf != null) {
@@ -1200,6 +1212,7 @@ class XprsIngest {
     _noteOwner(p, fromC, self);
 
     if (p.type == 'moderate') XprsGroups.instance.offer(p);
+    final publicAct = _publicAct(p);
 
     // A RECEIPT OFF THE INTERNET LANE. This branch did not exist, so a
     // `t:receipt` arriving over Reticulum released nothing and was not even
@@ -1367,7 +1380,7 @@ class XprsIngest {
       internet: true,
       policy: policy,
       followedStation: _followedStation(fromC),
-      room: _isRoomTalk(p, 'rns'),
+      room: _isRoomTalk(p, 'rns') || publicAct,
       followedKind: _followedKind(p),
     );
     if (shelf == null) {

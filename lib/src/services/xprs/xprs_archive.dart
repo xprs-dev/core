@@ -1274,6 +1274,8 @@ class XprsArchive {
           forgetGroup(op[1] as String);
         case 'purge':
           purgeModerated(op[1] as String, op[2] as String);
+        case 'purgePublic':
+          purgePublic(op[1] as String);
         case 'typeIndex':
           // Only the thread builds it; were the thread gone, the next start
           // asks again rather than this isolate taking the seconds.
@@ -1558,6 +1560,61 @@ class XprsArchive {
     }
   }
 
+  /// A listed moderator's removal of [target] in the public rooms (10.10.3),
+  /// already judged by [XprsPublicModerators]: drop the undirected message
+  /// and its edits, whoever wrote them. Only a `t:message`, and never one
+  /// said in the Local room, which is its station's to run (10.10); a call
+  /// for help is another type and cannot be reached (10.7). Remembered under
+  /// `*` so a copy arriving later is refused.
+  void purgePublic(String target) {
+    final db = _db;
+    if (db == null || !_idRe.hasMatch(target)) return;
+    if (_queues) {
+      _op(['purgePublic', target]);
+      return;
+    }
+    try {
+      if (storeExists(db,
+          'SELECT 1 FROM withdrawn WHERE id = ? AND fromc = ?', [target, '*'])) {
+        return;
+      }
+      final held = db.select(
+          "SELECT type, wire FROM packets WHERE toc = '' AND id = ? LIMIT 1",
+          [target]);
+      if (held.isNotEmpty &&
+          (held.first['type'] != 'message' ||
+              _isLocalWire('${held.first['wire']}'))) {
+        return;
+      }
+      final ids = [
+        target,
+        for (final r in db.select(
+            "SELECT id FROM packets ${_typeIndex ? 'INDEXED BY idx_pk_type ' : ''}WHERE type = 'message' "
+            "AND toc = '' "
+            "AND (wire LIKE '% edit:' || ? || ' %' OR wire LIKE '% edit:' || ?) "
+            'LIMIT 64',
+            [target, target]))
+          r['id'] as String,
+      ];
+      final now = DateTime.now().millisecondsSinceEpoch;
+      db.transaction(() {
+        for (final id in ids) {
+          _delete(db,
+              "DELETE FROM packets WHERE toc = '' AND id = ? AND type = 'message'",
+              [id]);
+          db.execute(
+              'INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)',
+              [id, '*', now]);
+        }
+        _saveCounts(db);
+      });
+    } catch (e) {
+      LogService.instance.add('XPRS archive: public purge failed: $e');
+    }
+  }
+
+  static bool _isLocalWire(String wire) => wire.contains(' scope:local ');
+
   /// True when [p] is an original or an edit that a verified withdrawal of
   /// the same author already destroyed. A withdrawal itself is never refused.
   bool _isWithdrawn(ZxSqlDb db, XprsPacket p, String fromc) {
@@ -1565,6 +1622,16 @@ class XprsArchive {
     final root = (p['edit'] ?? '').trim().toLowerCase();
     final ids = [xprsIdentifier(p), if (_idRe.hasMatch(root)) root];
     final to = _base(p['d'] ?? '');
+    // `*` alone is the public rooms' record (10.10.3), which reaches a
+    // `t:message` said beyond its station's Local room and nothing else.
+    if (to.isEmpty &&
+        (p.type != 'message' || (p['scope'] ?? '') == 'local')) {
+      return storeExists(
+          db,
+          'SELECT 1 FROM withdrawn WHERE id IN (${[for (final _ in ids) '?'].join(',')}) '
+          'AND fromc = ?',
+          [...ids, fromc]);
+    }
     for (final id in ids) {
       final r = db.select(
           'SELECT 1 FROM withdrawn WHERE id = ? AND (fromc = ? OR fromc = ?) '
