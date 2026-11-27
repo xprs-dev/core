@@ -784,7 +784,13 @@ class XprsHistoryServer {
   /// Empty when [cmd] is not a history command addressed to us.
   static const int inlinePageSize = 50;
 
-  List<String> serveInline(XprsPacket cmd, {required String selfBase}) {
+  ///
+  /// [bearer] is what the socket is: `lan` for a caller on this station's own
+  /// network, `tcp` for one from the internet. What is said in a station's
+  /// Local and Regional rooms is never served out of range (9.11), on this
+  /// door as on the paced one, which had the rule alone.
+  List<String> serveInline(XprsPacket cmd,
+      {required String selfBase, String bearer = 'lan'}) {
     if (cmd.type != 'command' || (cmd['cmd'] ?? '') != 'history') return [];
     // Where an answer's time goes, said when it is felt (the stall watch
     // named this handler holding the Pi's server for seconds, 2026-11-23).
@@ -798,7 +804,7 @@ class XprsHistoryServer {
     }
 
     try {
-      return _serveInline(cmd, selfBase: selfBase, lap: lap);
+      return _serveInline(cmd, selfBase: selfBase, lap: lap, bearer: bearer);
     } finally {
       if (sw.elapsedMilliseconds >= 100) {
         // With what was asked: a slow answer is a slow KIND of ask.
@@ -810,7 +816,9 @@ class XprsHistoryServer {
   }
 
   List<String> _serveInline(XprsPacket cmd,
-      {required String selfBase, required void Function(String) lap}) {
+      {required String selfBase,
+      required void Function(String) lap,
+      String bearer = 'lan'}) {
     // The device's X3 is the archiver; the person's X1 is still served for
     // the stations that chose it before the move (see [_onPacket]).
     final person = selfBase;
@@ -853,6 +861,18 @@ class XprsHistoryServer {
             !_fellowMember(cmd['only'], from, person) &&
             _ownOnlyFor(from, selfBase: selfBase),
         mailFor: from); // 12.1, as on every other lane
+    // 9.11, as on the paced door: nothing leaves on a bearer its scope does
+    // not admit, nor anything this station heard out of its range.
+    rows.removeWhere((r) {
+      final pk = XprsPacket.parse(r['wire'] as String? ?? '');
+      if (pk == null) return false;
+      final reach = xprsScopeReach(pk);
+      if (!xprsReachAdmits(reach, xprsBearerReach(bearer))) return true;
+      final own = r['own'] == true || r['own'] == 1;
+      return !own &&
+          !xprsReachAdmits(
+              reach, xprsBearerReach(r['bearer'] as String? ?? ''));
+    });
     if (hostedRoom != null) {
       rows.removeWhere((r) => _withheldRoomRow(r, onlyBase, from));
     }

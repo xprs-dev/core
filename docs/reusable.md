@@ -913,3 +913,37 @@ pattern for "these binaries believe a published list of npubs":
   effect or the list changed; `MeshService` wires `removals` and
   `listChanges` to it. `xprsSetHonourPublicModerators(on)` is the settings
   switch: kept, applied, announced.
+
+## One archiver telling the others: `XprsArchiverPush`, `XprsFileIndex`, `handTo`
+
+XPRS.md 12.9.8 and 12.9.2. Three pieces, each reusable on its own:
+
+- **`XprsPublisher.handTo(call, wire)`** is the one ladder for a wire meant
+  for ONE station: the socket this station dialled, its LXMF address, the
+  station lane (a server or a board often has no LXMF address under its
+  callsign). Use it for anything directed; the forwarder and the mailbox each
+  had their own shorter ladder, and mail for a person at another server went
+  nowhere.
+- **`XprsArchiverPush.offer(packet, bearer:)`** (`xprs_archiver_push.dart`):
+  the funnel feeds it every accepted packet; it hands the ones that are this
+  archiver's to hand on (a publication of global scope, fresh, first-hand,
+  verified, of the listed kinds) to its peers, once, marked with `via:`.
+  `wants()` is the pure rule. Peers, the key check and the send are injected.
+  A new kind that every archiver should have at once is one word in `kinds`.
+- **`XprsFileIndex`** (`xprs_file_index.dart`): `landed(sha, size, ext)` makes
+  the `t:file` record of a file this archiver holds (bounded per minute),
+  `offer(packet)` notes another archiver's record as a holder
+  (`MediaArchive.addSource`, pruned with `pruneSources`). `xprsKnownHolders`
+  then answers "who has this hash".
+- **`XprsMonitor.noteRemote(call, present: false)`**: learn what a station
+  says without counting it as in reach. Anything that feeds the monitor a
+  packet its author did not send here itself (a relay, a replay) passes
+  `present: false`.
+- **The bench readings** (`xprs_bench_status.dart`, loopback only):
+  `/api/xprs/archiver?call=X` adds `holders_of` and `heard_by`,
+  `/api/xprs/files?sha256=` adds `holders_of`, and both carry the counters
+  (`handedOn` with why a packet was not handed on, `forwarder`, `index`).
+- **The test**: `portal/test/interop_federation.py` starts three real server
+  stations and plays visitors at each. Add a scenario there for anything two
+  archivers owe each other.
+

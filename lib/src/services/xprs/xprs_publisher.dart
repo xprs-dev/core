@@ -54,6 +54,7 @@ import 'xprs_group_keys.dart';
 import 'xprs_id.dart';
 import 'xprs_monitor.dart';
 import 'xprs_mailbox.dart';
+import 'xprs_archiver_push.dart';
 import 'xprs_packet.dart';
 import 'xprs_qos.dart';
 import 'xprs_sig.dart';
@@ -1052,6 +1053,29 @@ class XprsPublisher {
     }
   }
 
+  /// Hand [wire] to the station [call], directed, on the first lane that
+  /// can carry it: the socket this station dialled (13.0.2), its LXMF
+  /// address, or the station lane (a server or an ESP32 is often known only
+  /// by its `xprs/wapp` destination and has no LXMF address under its
+  /// callsign). False when this station has no way to address [call] now.
+  ///
+  /// One ladder for everything one archiver hands another: a forwarded
+  /// letter (12.8.1), a publication handed on (12.9.8). The forwarder had
+  /// the LXMF rung alone, so mail for a person at another SERVER fell back
+  /// to a broadcast the internet does not carry, and stayed where it was.
+  Future<bool> handTo(String call, String wire) async {
+    if (XprsLineLane.instance.sendTo(call, wire)) return true;
+    final bytes = Uint8List.fromList(utf8.encode(wire));
+    final hex = RnsService.instance.lxmfDestForCallsign(call);
+    if (hex.isNotEmpty) {
+      return RnsService.instance.wappSendTo('xprs', hex, bytes);
+    }
+    if (RnsService.instance.isWappStation(call)) {
+      return RnsService.instance.wireToStation(call, bytes);
+    }
+    return false;
+  }
+
   /// Hand a COPY of our own publication to the archivers this operator chose
   /// (XPRS.md 12: "a station keeps its own publications and hands a COPY to
   /// the archivers its operator chose", 34.3, 12.3/12.4).
@@ -1993,6 +2017,13 @@ class XprsPublisher {
     // room message are publications too; directed mail is not (it has a `d:`
     // and its own custody path, armed above), and depositArchivers skips it.
     if (ours && !datagram) depositArchivers([wire], what: p.type);
+    // 12.9.8: an always-on archiver's own publications reach the other
+    // archivers as a visitor's do (its record of a file it holds, its
+    // person's removal in the public rooms).
+    if (ours && !datagram) {
+      final own = XprsPacket.parse(wire);
+      if (own != null) XprsArchiverPush.instance.offer(own, bearer: 'own');
+    }
     // A wire we wrote that references a file we hold says so to the network,
     // as every other send path does (XprsSend.onFileShared): the hash is
     // advertised, so any holder can be asked for it later. Advertised only:

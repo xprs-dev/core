@@ -31,6 +31,8 @@ import 'package:reticulum/reticulum.dart';
 import '../log_service.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
+import 'xprs_archiver_push.dart';
+import 'xprs_file_index.dart';
 import 'xprs_archive_policy.dart';
 import 'xprs_directory.dart' show XprsDirectoryConsumer;
 import 'xprs_mesh_policy.dart';
@@ -589,6 +591,9 @@ class XprsIngest {
 
     if (p.type == 'moderate') XprsGroups.instance.offer(p);
     final publicAct = _publicAct(p);
+    // 12.9.8: what an always-on archiver takes first-hand, the others get.
+    XprsArchiverPush.instance.offer(p, bearer: bearer);
+    if (p.type == 'file') XprsFileIndex.instance.offer(p);
 
     // The preference governs the ARCHIVER — other people's traffic. A packet
     // addressed to us is our own mail and is kept either way.
@@ -1159,7 +1164,15 @@ class XprsIngest {
     if (fromC.isEmpty || (self.isNotEmpty && fromC == self)) return;
     // A station reached us over Reticulum: on the list, under that name and
     // no other (the air is [heard]'s, and stays so).
-    XprsMonitor.instance.noteRemote(fromC, saying: p);
+    // Only when it came from that station, now: a packet somebody else
+    // relayed (`via:`) or replayed from an archive (an old `ts:`) says what
+    // its author does, not that its author is in reach.
+    final sentTs = xprsParseTs(p['ts']);
+    final firstHand = (p['via'] ?? '').trim().isEmpty &&
+        sentTs != null &&
+        (DateTime.now().millisecondsSinceEpoch - sentTs).abs() <=
+            10 * 60 * 1000;
+    XprsMonitor.instance.noteRemote(fromC, saying: p, present: firstHand);
     // Inline-file chunks cross the internet the same way (§7.7.6, §12.12.1's
     // directed lane): reassemble and store when whole, and file none of them.
     XprsInlineAsm.instance.feed(p);
@@ -1216,6 +1229,8 @@ class XprsIngest {
 
     if (p.type == 'moderate') XprsGroups.instance.offer(p);
     final publicAct = _publicAct(p);
+    XprsArchiverPush.instance.offer(p, bearer: 'rns');
+    if (p.type == 'file') XprsFileIndex.instance.offer(p);
 
     // A RECEIPT OFF THE INTERNET LANE. This branch did not exist, so a
     // `t:receipt` arriving over Reticulum released nothing and was not even

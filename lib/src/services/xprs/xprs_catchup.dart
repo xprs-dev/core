@@ -1133,8 +1133,10 @@ class XprsCatchup {
     // And `moderate`: a removal in the public rooms (10.10.3) is the room's
     // record, and a station that asked only for the messages would keep
     // showing what every station nearer the moderator had taken down.
+    // And `file`, between archivers: the records of which files each holds
+    // (12.9.2), for the ones a hand-on (12.9.8) missed.
     final kinds = (PreferencesService.instanceSync?.xprsPublicArchiver ?? false)
-        ? 'message,moderate,mailbox'
+        ? 'message,moderate,mailbox,file'
         : 'message,moderate';
     final wire = StringBuffer('t:command f:$self d:$archiver ts:${_ts(now)} '
         'cmd:history kind:$kinds since:${_ts(w.sinceMs)}');

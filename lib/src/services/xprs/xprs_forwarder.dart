@@ -24,12 +24,9 @@
  * directed Reticulum where the gateway resolves; the radio custody lanes keep
  * doing what they always did for gateways in radio reach.
  */
-import 'dart:convert';
-import 'dart:typed_data';
 
 import '../log_service.dart';
 import '../preferences_service.dart';
-import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_gossip.dart';
 import 'xprs_id.dart';
@@ -268,11 +265,9 @@ class XprsForwarder {
   Future<bool> _send(String gateway, String wire, {required String id}) async {
     final injected = sendTo;
     if (injected != null) return injected(gateway, wire);
-    final hex = RnsService.instance.lxmfDestForCallsign(gateway);
-    if (hex.isNotEmpty) {
-      return RnsService.instance
-          .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)));
-    }
+    // Directed, on whichever lane reaches that station (a server is often
+    // known only on the station lane, with no LXMF address).
+    if (await XprsPublisher.instance.handTo(gateway, wire)) return true;
     // One broadcast per packet, whichever gateway asked for it first.
     final aired = '$id|*';
     if (_sent.containsKey(aired)) return true;

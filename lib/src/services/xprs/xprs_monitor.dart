@@ -669,7 +669,15 @@ class XprsMonitor {
   /// [stationsJson] -- and nowhere else: not the traffic ring, not the
   /// in-earshot table, not the this-hour memory. A station also heard on the
   /// air is listed as local and not here; the air is the better answer.
-  void noteRemote(String callsign, {int? nowMs, XprsPacket? saying}) {
+  ///
+  /// [present] false: the packet is [callsign]'s but did not come from it
+  /// now (another station handed it on, or replayed it from its archive).
+  /// What it says it does is still learned; that it is in reach is not. A
+  /// replayed or handed-on packet used to mark its author as heard over
+  /// the internet for ten minutes, and a holder of that author's mail then
+  /// kept it, believing it could deliver the mail itself.
+  void noteRemote(String callsign,
+      {int? nowMs, XprsPacket? saying, bool present = true}) {
     final c = callsign.trim().toUpperCase();
     if (c.isEmpty) return;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -689,6 +697,10 @@ class XprsMonitor {
       st.lastMs = now;
       st.bearers['rns'] = now;
       _stations[c] = st;
+    }
+    if (!present) {
+      _bump();
+      return;
     }
     _remote.remove(c); // re-insert: the map keeps insertion order, oldest first
     _remote[c] = now;

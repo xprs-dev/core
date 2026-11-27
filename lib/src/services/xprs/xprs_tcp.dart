@@ -245,7 +245,8 @@ class XprsTcp {
         XprsHistoryServer.instance.markAnswered(xprsIdentifier(p));
       }
       final page =
-          XprsHistoryServer.instance.serveInline(p, selfBase: selfBase);
+          XprsHistoryServer.instance.serveInline(p,
+              selfBase: selfBase, bearer: local ? 'lan' : 'tcp');
       if (page.isNotEmpty) {
         served++;
         for (final w in page) {

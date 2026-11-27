@@ -59,6 +59,8 @@ import '../xprs/xprs_shared_position.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_passphrases.dart';
 import '../xprs/xprs_publisher.dart';
+import '../xprs/xprs_archiver_push.dart';
+import '../xprs/xprs_file_index.dart';
 import '../xprs/xprs_public_moderators.dart';
 import '../xprs/xprs_public_moderators_sync.dart';
 import '../xprs/xprs_station_policy.dart';
@@ -219,6 +221,70 @@ class MeshService {
   /// The name we AIR: an operator's licensed callsign when they have one, else
   /// the one their key derives (XPRS.md 6.4.1). One name on the air.
   String get tableCallsign => _table?.selfCallsign ?? '';
+
+  /// True when [p] verifies under the key this station holds for its
+  /// author. Our own packets are ours: a station never hears its own
+  /// identity, and it signed them a moment ago.
+  bool _signedByItsAuthor(XprsPacket p) {
+    final from = NostrCrypto.bareCallsign(p['f'] ?? '').toUpperCase();
+    if (from.isEmpty) return false;
+    if (from == NostrCrypto.bareCallsign(tableCallsign).toUpperCase() ||
+        _aliases.contains(from)) {
+      return p.has('sig');
+    }
+    // A removal in the public rooms is its moderator's by the listed key,
+    // whatever this station knows of the callsign it wears (10.10.3).
+    if (p.type == 'moderate' && XprsPublicModerators.shaped(p)) {
+      return XprsPublicModerators.instance.removed
+          .contains((p['r'] ?? '').trim().toLowerCase());
+    }
+    return xprsVerify(p, XprsArchive.instance.keyResolver?.call(from)) ==
+        XprsSigState.verified;
+  }
+
+  /// The other archivers this station can address over the internet, the
+  /// ones its operator named first, then the ones that look always on
+  /// (12.9.4), then every other station announcing the archive role there.
+  /// Read when a packet is handed on, a few times a minute at most.
+  List<String> _archiverPeers() {
+    final named = <String>[
+      for (final c
+          in PreferencesService.instanceSync?.xprsNamedArchivers ?? const <String>[])
+        NostrCrypto.bareCallsign(c).toUpperCase(),
+    ];
+    final deep = <String>[], rest = <String>[];
+    for (final c in [
+      ...RnsService.instance.announcedCallsigns(prefix: 'X2'),
+      ...RnsService.instance.announcedCallsigns(prefix: 'X3'),
+    ]) {
+      final base = NostrCrypto.bareCallsign(c).toUpperCase();
+      if (base.isEmpty || named.contains(base)) continue;
+      if (DeviceIdentity.instance.isDevice(base)) continue;
+      // A station announced on Reticulum under an X2 or X3 name and not
+      // yet heard saying what it serves is still asked for the rooms by the
+      // catch-up; it is handed to as well, after the ones known better.
+      final st = XprsMonitor.instance.stations[base];
+      if (st == null) {
+        rest.add(base);
+        continue;
+      }
+      final always = xprsLooksAlwaysOn(
+          callsign: base,
+          services: st.services,
+          bearer: st.bearer,
+          count: st.count ?? 0,
+          uptimeSeconds: xprsUptimeSeconds(st.uptime),
+          named: const {});
+      if (always) {
+        deep.add(base);
+      } else if (st.services.contains('archive')) {
+        rest.insert(0, base);
+      } else {
+        rest.add(base);
+      }
+    }
+    return {...named, ...deep, ...rest}.toList();
+  }
 
   /// Names we no longer air but still answer to, bare and uppercase.
   ///
@@ -649,7 +715,22 @@ class MeshService {
         // progress. Every lane ends in this archive, so onPut is where "the
         // file is here now" is said once — to whoever asked (MediaFetch) and,
         // through the core.media topic, to the wapps.
-        mediaArchive.onPut = MediaFetch.instance.notePut;
+        mediaArchive.onPut = (sha, size, ext) {
+          MediaFetch.instance.notePut(sha, size, ext);
+          // 12.9.2: an always-on archiver says which files it holds.
+          XprsFileIndex.instance.landed(sha, size, ext);
+        };
+        XprsFileIndex.instance
+          ..enabled =
+              (() => PreferencesService.instanceSync?.xprsAlwaysOn ?? false)
+          ..self = (() => NostrCrypto.bareCallsign(tableCallsign))
+          ..publish = ((c) => unawaited(XprsPublisher.instance.publishWire(c)))
+          ..keep = ((sha, holder) =>
+              mediaArchive.addSource(sha, 'callsign', holder))
+          ..prune = ((n) => mediaArchive.pruneSources('callsign', n))
+          ..holdersOf =
+              ((sha) => xprsKnownHolders(mediaArchive, sha, max: XprsFileIndex.maxHolders))
+          ..verified = _signedByItsAuthor;
         MediaFetch.instance
           ..archive = (() => mediaArchive)
           ..selfCallsign = (() => tableCallsign);
@@ -1014,6 +1095,14 @@ class MeshService {
                     'xprs', hex, Uint8List.fromList(utf8.encode(wire)))) {
               return true;
             }
+            // A server or a board is often known only on the station lane
+            // (no LXMF address under its callsign): one packet, to it.
+            if (hex.isEmpty &&
+                RnsService.instance.isWappStation(call) &&
+                await RnsService.instance.wireToStation(
+                    call, Uint8List.fromList(utf8.encode(wire)))) {
+              return true;
+            }
             // The directed lane failing is ordinary — a letterbox we know of
             // is not a link we have right now — and it must not end the
             // attempt: measured on the bench, the deposit reported failure
@@ -1038,6 +1127,15 @@ class MeshService {
         _wireDirectory(mediaArchive);
         XprsLineLane.instance.onClientUp = _onLineUp;
         RnsService.instance.onUplinkUp = XprsLineLane.instance.nudge;
+        // 12.9.8: an always-on public archiver hands what it takes
+        // first-hand to the other archivers it knows.
+        XprsArchiverPush.instance
+          ..enabled =
+              (() => PreferencesService.instanceSync?.xprsAlwaysOn ?? false)
+          ..self = (() => NostrCrypto.bareCallsign(tableCallsign))
+          ..peers = _archiverPeers
+          ..verified = _signedByItsAuthor
+          ..sendTo = XprsPublisher.instance.handTo;
         // The public rooms' moderators (10.10.3): the list kept, then the
         // published one, asked for when an uplink says the site is reachable.
         unawaited(xprsSyncPublicModerators());

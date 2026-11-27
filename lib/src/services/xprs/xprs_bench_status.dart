@@ -20,8 +20,11 @@ import '../mesh/mesh_bulk_spool.dart';
 import '../mesh/mesh_service.dart';
 import '../preferences_service.dart';
 import 'xprs_archive.dart';
+import 'xprs_archiver_push.dart';
+import 'xprs_file_index.dart';
 import 'xprs_catchup.dart';
 import 'xprs_files.dart';
+import 'xprs_forwarder.dart';
 import 'xprs_gossip.dart';
 import 'xprs_line_io.dart';
 import 'xprs_publisher.dart';
@@ -78,6 +81,10 @@ Map<String, dynamic> xprsArchiverStatusMap() {
       'directoryAsks': XprsCatchup.instance.directoryAsks,
     },
     'gossip': XprsGossip.instance.statusJson(),
+    // 12.8.1: held mail moved toward where its recipient is.
+    'forwarder': XprsForwarder.instance.json,
+    // 12.9.8: what was handed to the other archivers as it arrived.
+    'handedOn': XprsArchiverPush.instance.json,
   };
 }
 
@@ -90,11 +97,37 @@ Map<String, dynamic> xprsFilesStatusMap() => {
     };
 
 /// The reading for [path], or null when it is not one of these.
-Map<String, dynamic>? xprsBenchStatus(String path) => switch (path) {
-      kXprsArchiverStatusPath => xprsArchiverStatusMap(),
-      kXprsFilesStatusPath => xprsFilesStatusMap(),
+///
+/// `?sha256=<64 hex>` on the files reading adds `holders_of`: the stations
+/// this one knows to hold that file (12.9.2). `?call=` on the archiver
+/// reading adds where that callsign is believed to be.
+Map<String, dynamic>? xprsBenchStatus(String path,
+        {Map<String, String> query = const {}}) =>
+    switch (path) {
+      kXprsArchiverStatusPath => {
+          ...xprsArchiverStatusMap(),
+          // `?call=X1ABCD`: where this station believes that callsign is:
+          // the archivers it declared its mailbox (12.9.5) and the stations
+          // that said they hear it (12.9.4).
+          if ((query['call'] ?? '').trim().isNotEmpty) ..._whereIs(query['call']!),
+        },
+      kXprsFilesStatusPath => {
+          ...xprsFilesStatusMap(),
+          'index': XprsFileIndex.instance.json,
+          if ((query['sha256'] ?? '').length == 64)
+            'holders_of': xprsBenchHoldersOf(query['sha256']!),
+        },
       _ => null,
     };
+
+/// The stations this one knows to hold the file [shaHex], best first: what
+/// it would name in `m:try` and ask on a fetch. For a test of the file index.
+List<String> xprsBenchHoldersOf(String shaHex) {
+  final media = MeshService.instance.media;
+  if (media == null) return const [];
+  return xprsKnownHolders(media, shaHex.toLowerCase(),
+      max: XprsFileIndex.maxHolders);
+}
 
 /// The path of the fetch action below (the app's remote API has the same).
 const String kXprsFileFetchPath = '/api/xprs/file';
@@ -110,14 +143,19 @@ Future<Map<String, dynamic>> xprsBenchFetchFile(
   final sha = (body['sha256'] ?? '').toString().trim().toLowerCase();
   final ext = (body['ext'] ?? '').toString().trim();
   final self = NostrCrypto.bareCallsign(MeshService.instance.tableCallsign);
-  if (from.isEmpty || sha.length != 64) {
-    return {'ok': false, 'error': 'from and sha256 (64 hex) are required'};
+  if (sha.length != 64) {
+    return {'ok': false, 'error': 'sha256 (64 hex) is required'};
+  }
+  // Without `from`: whoever this station knows to hold it (12.9.2).
+  final holders = from.isNotEmpty ? [from] : xprsBenchHoldersOf(sha);
+  if (holders.isEmpty) {
+    return {'ok': false, 'error': 'no holder known for that file'};
   }
   if (self.isEmpty) return {'ok': false, 'error': 'no callsign yet'};
   final secs = int.tryParse('${body['timeoutSeconds'] ?? ''}') ?? 120;
   final sw = Stopwatch()..start();
   final path = await XprsFileFetch.instance.fetch(
-    archiver: from,
+    archiver: holders.first,
     shaHex: sha,
     selfCallsign: self,
     ext: ext,
@@ -126,7 +164,20 @@ Future<Map<String, dynamic>> xprsBenchFetchFile(
   return {
     'ok': path != null,
     if (path != null) 'path': path,
+    'from': holders.first,
     if (path == null) 'error': 'not fetched (refused, unanswered or timed out)',
     'elapsedMs': sw.elapsedMilliseconds,
+  };
+}
+
+Map<String, dynamic> _whereIs(String call) {
+  final c = NostrCrypto.bareCallsign(call).toUpperCase();
+  return {
+    'call': c,
+    'holders_of': XprsArchive.instance.holdersFor(c),
+    'heard_by': [
+      for (final s in XprsGossip.instance.whereIs(c))
+        {'gateway': s.gateway, 'bearer': s.bearer, 'ts': s.tsMs, 'live': s.live},
+    ],
   };
 }
