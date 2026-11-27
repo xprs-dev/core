@@ -3,6 +3,7 @@
 // held until a receipt.
 import 'package:test/test.dart';
 import 'package:xprs_core/src/services/xprs/xprs_mailbox.dart';
+import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 
 void main() {
   late List<HeldMail> store;
@@ -63,6 +64,55 @@ void main() {
     ];
     expect(await XprsMailbox.instance.sweepHeld(), 1);
     expect(dropped, ['r']);
+  });
+
+  // The way back (2026-11-27): a receipt is carried to the writer like any
+  // mail, handed over once (nothing acknowledges a receipt), and not past
+  // three days.
+  String stamp(DateTime t) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    final u = t.toUtc();
+    return '${u.year}-${two(u.month)}-${two(u.day)}_'
+        '${two(u.hour)}:${two(u.minute)}:${two(u.second)}';
+  }
+
+  test('a receipt is handed to its writer once, then dropped', () async {
+    final ts = stamp(DateTime.now().subtract(const Duration(hours: 5)));
+    store = [row('k', 't:receipt f:X1U3K8 d:X3APDH ts:$ts r:9d0664 s:ack')];
+    expect(await XprsMailbox.instance.sweepHeld(), 1);
+    expect(dropped, ['k']);
+    expect(await XprsMailbox.instance.sweepHeld(), 0);
+    expect(sent, hasLength(1));
+  });
+
+  test('a receipt older than three days is dropped, not sent', () async {
+    final ts = stamp(DateTime.now().subtract(const Duration(days: 4)));
+    store = [row('old', 't:receipt f:X1U3K8 d:X3APDH ts:$ts r:9d0664 s:ack')];
+    expect(await XprsMailbox.instance.sweepHeld(), 0);
+    expect(sent, isEmpty);
+    expect(dropped, ['old']);
+    expect(XprsMailboxCounters.receiptsExpired, 1);
+  });
+
+  test('staleReceipt judges receipts only, by their ts', () {
+    final now = DateTime.utc(2026, 11, 27, 12).millisecondsSinceEpoch;
+    XprsPacket p(String w) => XprsPacket.parse(w)!;
+    expect(
+        XprsMailbox.staleReceipt(
+            p('t:receipt f:A1 d:B1 ts:2026-11-23_12:00:00 r:abcdef s:ack'),
+            nowMs: now),
+        isTrue);
+    expect(
+        XprsMailbox.staleReceipt(
+            p('t:receipt f:A1 d:B1 ts:2026-11-25_12:00:00 r:abcdef s:ack'),
+            nowMs: now),
+        isFalse);
+    expect(
+        XprsMailbox.staleReceipt(
+            p('t:message f:A1 d:B1 ts:2026-11-01_12:00:00 m:old'),
+            nowMs: now),
+        isFalse,
+        reason: 'mail is kept by the store\'s own limits, not this one');
   });
 
   test('mail stays held until a receipt', () async {

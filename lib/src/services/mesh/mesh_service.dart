@@ -1541,6 +1541,12 @@ class MeshService {
     // own outbound never left custody. An author re-sending its own packet
     // airs it exactly as written.
     if ((p['f'] ?? '').trim().toUpperCase() == self) return p.encode();
+    // Nor does the addressee relay what reached it (2026-11-27). Mail that
+    // has arrived is at the end of its road; repeating it spent the room's
+    // advert window on a message nobody else could use, measured on the
+    // bench as the recipient re-airing a delivered 1:1 twice in a minute.
+    final to = NostrCrypto.bareCallsign(p['d'] ?? '').toUpperCase();
+    if (to.isNotEmpty && to == self) return null;
     // 13.2.2: when the sender named the relays, only a named one repeats it.
     //
     // On a bearer where every station hears every other, 13.2.1 leaves exactly
@@ -2671,6 +2677,12 @@ class MeshService {
         // hand them over.
         final held = XprsPacket.parse(wire);
         if (held == null || !xprsIsMail(held)) continue;
+        // A receipt older than three days is not worth the air any more.
+        if (XprsMailbox.staleReceipt(held)) {
+          _dropHeld(m.key);
+          XprsMailboxCounters.receiptsExpired++;
+          continue;
+        }
         final out = _relayable(wire);
         if (out == null) continue;
         // Attempt recorded BEFORE the air, so a throw or a refused bearer

@@ -60,6 +60,7 @@ class XprsMailboxCounters {
   static int sweepSkipped = 0;
   static int asksHandedOver = 0;
   static int asksSuperseded = 0;
+  static int receiptsExpired = 0;
 
   static Map<String, int> get json => {
         'deposited': deposited,
@@ -72,12 +73,13 @@ class XprsMailboxCounters {
         'sweepSkipped': sweepSkipped,
         'asksHandedOver': asksHandedOver,
         'asksSuperseded': asksSuperseded,
+        'receiptsExpired': receiptsExpired,
       };
 
   static void debugReset() {
     deposited = depositFailed = depositSkipped = depositNoArchiver = 0;
     declared = receiptsToHolders = sweepDelivered = sweepSkipped = 0;
-    asksHandedOver = asksSuperseded = 0;
+    asksHandedOver = asksSuperseded = receiptsExpired = 0;
   }
 }
 
@@ -392,7 +394,13 @@ class XprsMailbox {
     var done = 0;
     for (final m in rows) {
       final q = _askKey(m);
-      final once = q != null || _isAnswer(m);
+      final hp = XprsPacket.parse(m.wire);
+      if (hp != null && staleReceipt(hp)) {
+        drop?.call(m.key);
+        XprsMailboxCounters.receiptsExpired++;
+        continue;
+      }
+      final once = q != null || _isAnswer(m) || hp?.type == 'receipt';
       if (q != null && !asked.add(q)) {
         drop?.call(m.key);
         XprsMailboxCounters.asksSuperseded++;
@@ -451,8 +459,30 @@ class XprsMailbox {
   /// Is [p] handed over once and then let go (12.8.2)? An ask or the answer
   /// to one: nothing ever comes back to end its custody. Every path that
   /// releases held packets asks this, the sweep and the release on hearing.
+  ///
+  /// A receipt too (2026-11-27): it is what ends the writer's retry ladder,
+  /// so it is carried back like any mail, but nothing ever acknowledges a
+  /// receipt, and a holder kept handing the same one to the writer at every
+  /// sighting until it aged out. Handed to the writer once, it is delivered;
+  /// another holder, or the next sighting of a copy still held elsewhere,
+  /// covers the one the writer missed.
   static bool handOverOnce(XprsPacket p) =>
-      p.type == 'command' || p.type == 'result';
+      p.type == 'command' || p.type == 'result' || p.type == 'receipt';
+
+  /// How long a carried receipt is worth handing over (2026-11-27). A writer
+  /// gone longer than this has long since given the message up or learned
+  /// of it another way; after it the receipt is dropped, not sent.
+  static const Duration receiptMaxAge = Duration(days: 3);
+
+  /// Is [p] a receipt older than [receiptMaxAge]? A receipt with no readable
+  /// `ts:` is not judged old.
+  static bool staleReceipt(XprsPacket p, {int? nowMs}) {
+    if (p.type != 'receipt') return false;
+    final ts = xprsParseTs(p['ts']);
+    if (ts == null) return false;
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    return now - ts > receiptMaxAge.inMilliseconds;
+  }
 
   /// `asker>target|cmd|kind|only|file` for a held command, null for mail.
   static String? _askKey(HeldMail m) {
