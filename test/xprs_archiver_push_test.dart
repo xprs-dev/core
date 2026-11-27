@@ -64,12 +64,38 @@ void main() {
       expect(offer('t:receipt f:X1BOBB d:X1ANNA ts:${at(5)} r:aabbcc s:ack'), 0);
     });
 
-    test("another archiver's hand-on is not handed on again", () {
+    test("another archiver's hand-on is passed along, never back and never twice", () {
+      // Archivers do not all know each other (a hub passes few announces),
+      // so what X3ONE handed here goes on to X3TWO, and not back to X3ONE.
       final w = 't:message f:X1ANNA ts:${at(5)} m:hello';
       final handed = xprsAppendVia(pk(w), 'X3ONE');
-      expect(push.offer(handed, bearer: 'rns', nowMs: now), 0);
-      // The same packet relayed on a radio is first-hand for this archiver.
-      expect(push.offer(handed, bearer: 'lora', nowMs: now), 2);
+      expect(push.offer(handed, bearer: 'rns', nowMs: now), 1);
+      expect(sent.single.$1, 'X3TWO');
+      expect(sent.single.$2, contains('via:X3ONE,X3HERE'));
+      expect(push.offer(handed, bearer: 'rns', nowMs: now), 0, reason: 'once');
+      // It has been through here: nothing more.
+      final back = xprsAppendVia(
+          xprsAppendVia(pk('t:message f:X1ANNA ts:${at(5)} m:again'), 'X3HERE'),
+          'X3ONE');
+      expect(push.offer(back, bearer: 'rns', nowMs: now), 0);
+    });
+
+    test('the hop budget every relay keeps ends it', () {
+      var p = pk('t:message f:X1ANNA ts:${at(5)} m:far');
+      for (final hop in ['X3AAA', 'X3BBB', 'X3CCC']) {
+        p = xprsAppendVia(p, hop);
+      }
+      expect(push.offer(p, bearer: 'rns', nowMs: now), 0);
+    });
+
+    test('a station that handed something here is handed to first', () {
+      push.peers = () => [for (var i = 0; i < 40; i++) 'X3P${i.toString().padLeft(3, '0')}'];
+      final fromNew = xprsAppendVia(pk('t:message f:X1ANNA ts:${at(5)} m:one'), 'X3NEWA');
+      push.offer(fromNew, bearer: 'rns', nowMs: now);
+      sent.clear();
+      expect(offer('t:message f:X1ANNA ts:${at(4)} m:two'), XprsArchiverPush.maxPeers);
+      expect(sent.first.$1, 'X3NEWA',
+          reason: 'it hands on, so it is an archiver like this one');
     });
 
     test('a deposit from a station that chose this archiver is first-hand', () {

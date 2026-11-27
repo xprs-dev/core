@@ -17,12 +17,12 @@
 // Local talk never does: it belongs to the archiver it was said at (9.11).
 // Mail never does either; it has its own custody (12.7).
 //
-// It cannot loop and it cannot flood: a copy handed on carries `via:` with
-// this station's name, and a packet that arrived over the internet already
-// carrying a `via:` is somebody's hand-on and is not handed on again; each
-// packet is handed on once; only fresh packets are (a replayed month of
-// history is not news); and only packets whose signature this station
-// checked.
+// It cannot loop and it cannot flood. Archivers do not all know each other
+// (a hub passes few of its clients' announces), so a hand-on is passed
+// along: but each archiver hands a packet on ONCE (by its identifier),
+// never to a station already in its `via:`, never past the hop budget every
+// relay keeps (9.1), only while the packet is fresh (a replayed month of
+// history is not news), and only a packet whose signature it checked.
 //
 // The class decides and counts; who the peers are and how a wire reaches
 // one are injected (MeshService), so it runs in a test as in a station.
@@ -80,6 +80,10 @@ class XprsArchiverPush {
   final LinkedHashSet<String> _done = LinkedHashSet<String>();
   final Map<String, int> _identityAt = <String, int>{};
 
+  /// The stations that handed this one something, oldest first.
+  final LinkedHashSet<String> _handers = LinkedHashSet<String>();
+  List<String> get handers => _handers.toList();
+
   /// Is [p], arrived on [bearer], something to hand on? Says nothing about
   /// the signature (the costly part), and remembers nothing.
   static bool wants(XprsPacket p, {required String bearer, required int nowMs}) {
@@ -89,8 +93,9 @@ class XprsArchiverPush {
     // A piece of a file (7.7.6) is bytes, not a statement about a file.
     if (p.type == 'file' && (p.has('off') || p.has('b'))) return false;
     if (!xprsReachAdmits(xprsScopeReach(p), XprsReach.global)) return false;
-    // Over the internet with a `via:`: another archiver's hand-on.
-    if (bearer == 'rns' && (p['via'] ?? '').trim().isNotEmpty) return false;
+    // The hop budget every relay keeps (9.1): a hand-on that has crossed
+    // its hops stops here.
+    if (!xprsMayRelay(p)) return false;
     final ts = xprsParseTs(p['ts']);
     if (ts == null || (nowMs - ts).abs() > freshMs) return false;
     return true;
@@ -107,6 +112,17 @@ class XprsArchiverPush {
       notArchiver++;
       return 0;
     }
+    final me = (self?.call() ?? '').trim().toUpperCase();
+    final hops = [for (final h in xprsVia(p)) h.trim().toUpperCase()];
+    // Whoever handed it to us hands on: it is an archiver like this one,
+    // and is handed to before the stations only known by an announce.
+    if (bearer == 'rns' && hops.isNotEmpty && hops.last != me) {
+      _handers
+        ..remove(hops.last)
+        ..add(hops.last);
+      if (_handers.length > 64) _handers.remove(_handers.first);
+    }
+    if (hops.contains(me)) return 0; // it has been through here
     final id = xprsIdentifier(p);
     if (_done.contains(id)) return 0;
     if (!(verified?.call(p) ?? false)) {
@@ -124,14 +140,18 @@ class XprsArchiverPush {
     }
     if (_done.length >= _remembered) _done.remove(_done.first);
     _done.add(id);
-    final me = (self?.call() ?? '').trim().toUpperCase();
     final from = (p['f'] ?? '').split('-').first.trim().toUpperCase();
     final wire = _withVia(p, me);
     if (wire == null) return 0;
     var n = 0;
-    for (final call in peers?.call() ?? const <String>[]) {
+    final seen = <String>{};
+    for (final call in [
+      ..._handers.toList().reversed,
+      ...peers?.call() ?? const <String>[],
+    ]) {
       final c = call.trim().toUpperCase();
-      if (c.isEmpty || c == me || c == from) continue;
+      if (c.isEmpty || c == me || c == from || hops.contains(c)) continue;
+      if (!seen.add(c)) continue;
       if (n >= maxPeers) break;
       n++;
       unawaited(send(c, wire).catchError((_) => false));
@@ -165,12 +185,14 @@ class XprsArchiverPush {
         'notArchiver': notArchiver,
         'unverified': unverified,
         'noPeer': noPeer,
+        'handers': _handers.length,
       };
 
   /// For tests.
   void reset() {
     _done.clear();
     _identityAt.clear();
+    _handers.clear();
     handed = packets = notArchiver = unverified = noPeer = 0;
   }
 }
