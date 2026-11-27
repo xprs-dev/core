@@ -236,6 +236,27 @@ void main() {
       expect([for (final r in a.query(only: 'X1BOBB', types: const ['message'], limit: 5)) '${r['id']}'],
           [mail]);
     });
+
+    test('a removal naming what is out of reach is not remembered as one', () {
+      final talk = put('t:message f:X1CARO ts:2026-11-27_10:00:00 scope:regional m:talk', _carol);
+      final sos = put('t:sos f:X1CARO ts:2026-11-27_10:00:01 m:help', _carol);
+      a.flush();
+      expect(a.publicOutOfReach(sos), isTrue);
+      expect(a.publicOutOfReach(talk), isFalse);
+      expect(a.publicOutOfReach('000000'), isFalse, reason: 'not held: it may still arrive');
+      XprsPacket rm(String id) =>
+          _signed('t:moderate f:X1MODR ts:2026-11-27_11:00:00 r:$id remove:message', _mod);
+      expect(mods.offer(rm(sos), nowMs: now, outOfReach: a.publicOutOfReach), isTrue,
+          reason: "still a listed moderator's act");
+      expect(mods.offer(rm(talk), nowMs: now, outOfReach: a.publicOutOfReach), isTrue);
+      expect(mods.removed, [talk]);
+      // What was removed is known again after a restart, from the archive.
+      a.purgePublic(talk);
+      a.flush();
+      mods.reset();
+      mods.remember(a.publicRemoved().reversed);
+      expect(mods.removed, contains(talk));
+    });
   });
 
   group('the receive funnel', () {

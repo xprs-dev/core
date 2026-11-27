@@ -59,6 +59,7 @@ import '../xprs/xprs_shared_position.dart';
 import '../xprs/xprs_group_keys.dart';
 import '../xprs/xprs_passphrases.dart';
 import '../xprs/xprs_publisher.dart';
+import '../xprs/xprs_public_moderators.dart';
 import '../xprs/xprs_public_moderators_sync.dart';
 import '../xprs/xprs_station_policy.dart';
 import '../xprs/xprs_archiver_choice.dart';
@@ -100,6 +101,8 @@ class MeshService {
   /// The roster-change listener that tends the groups' reading keys.
   StreamSubscription<String>? _groupReadSub;
   StreamSubscription<void>? _publicModsSub;
+  StreamSubscription<String>? _publicModsToldSub;
+  StreamSubscription<void>? _publicModsListSub;
   MeshService._();
   static final MeshService instance = MeshService._();
 
@@ -1041,6 +1044,13 @@ class MeshService {
         _publicModsSub?.cancel();
         _publicModsSub = RnsService.instance.uplinkUps
             .listen((_) => unawaited(xprsSyncPublicModerators()));
+        // A wapp showing those rooms is told, and reads the verdict again.
+        _publicModsToldSub?.cancel();
+        _publicModsListSub?.cancel();
+        _publicModsToldSub = XprsPublicModerators.instance.removals.listen(
+            (_) => CoreState.instance.changed(CoreState.moderation));
+        _publicModsListSub = XprsPublicModerators.instance.listChanges.listen(
+            (_) => CoreState.instance.changed(CoreState.moderation));
         XprsGossip.instance.onSighting = (call, gateway) {
           final me = NostrCrypto.bareCallsign(tableCallsign);
           if (me.isEmpty || gateway == me) return;

@@ -893,3 +893,23 @@ pattern for "these binaries believe a published list of npubs":
   on `RnsService.uplinkUps`, never on a timer.
 - **`XprsArchive.purgePublic(id)`** is the delete with a tombstone under `*`,
   beside `purgeModerated(group, id)` for a group's record.
+- **Checks that fail are budgeted**: anybody can air a packet shaped like a
+  listed key's act, and each costs a curve check per listed key
+  (performance.md 8.15). `judge` spends from a per-minute budget of failed
+  checks and tries a callsign's known key first, on a second budget; past
+  it a packet is not checked (`unchecked`). Copy this for any "is this
+  signed by one of a list" door.
+- **`offer(p, outOfReach:)`**: the archive says whether the target is held
+  and is nothing this authority reaches (`XprsArchive.publicOutOfReach`); the
+  act is still accepted and handed on, but its target is not remembered as
+  removed. `remember(ids)` restores what was removed before a restart from
+  the archive's tombstones (`XprsArchive.publicRemoved`).
+- **`XprsPublicModOps`** (`xprs_public_mod_ops.dart`) is the half that needs
+  the profile's key and the transmitter: `listed` (is our key on the list) and
+  `remove(id)` (sign, apply here, air). The app's HAL answers the three
+  closed-group verbs for the group `*` with it, so the Chat wapp needed no new
+  verb.
+- **`CoreState.moderation`** (`core.moderation`) tells wapps a removal took
+  effect or the list changed; `MeshService` wires `removals` and
+  `listChanges` to it. `xprsSetHonourPublicModerators(on)` is the settings
+  switch: kept, applied, announced.

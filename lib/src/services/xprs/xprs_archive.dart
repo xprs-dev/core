@@ -1615,6 +1615,45 @@ class XprsArchive {
 
   static bool _isLocalWire(String wire) => wire.contains(' scope:local ');
 
+  /// True when [id] is held here and is nothing a public moderator reaches
+  /// (10.10.3): an alert, a call for help, mail, or something said in the
+  /// Local room. False when it is a public room's message, and when it is
+  /// not held (a removal may arrive before what it removes). One keyed read.
+  bool publicOutOfReach(String id) {
+    final db = _db;
+    if (db == null || !_idRe.hasMatch(id)) return false;
+    try {
+      final held =
+          db.select('SELECT type, toc, wire FROM packets WHERE id = ? LIMIT 8', [id]);
+      if (held.isEmpty) return false;
+      return !held.any((r) =>
+          r['type'] == 'message' &&
+          '${r['toc'] ?? ''}'.isEmpty &&
+          !_isLocalWire('${r['wire']}'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// The identifiers the public rooms' moderators removed (10.10.3), newest
+  /// first, as this archive remembers them: what [XprsPublicModerators]
+  /// starts from after a restart, so a wapp holding its own copy of a room
+  /// is still told. One read at start, of a table that ages out.
+  List<String> publicRemoved({int limit = 512}) {
+    final db = _db;
+    if (db == null) return const [];
+    try {
+      return [
+        for (final r in db.select(
+            'SELECT id FROM withdrawn WHERE fromc = ? ORDER BY ts DESC LIMIT ?',
+            ['*', limit]))
+          r['id'] as String,
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// True when [p] is an original or an edit that a verified withdrawal of
   /// the same author already destroyed. A withdrawal itself is never refused.
   bool _isWithdrawn(ZxSqlDb db, XprsPacket p, String fromc) {

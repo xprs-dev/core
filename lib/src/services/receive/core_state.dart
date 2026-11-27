@@ -72,6 +72,12 @@ class CoreState {
   /// so it is announced like any other core state.
   static const groups = 'core.groups';
 
+  /// The public rooms' moderation moved (XPRS.md 10.10.3): a listed
+  /// moderator removed a message, or the published list changed. A wapp
+  /// reads `hal_xprs_group_moderation("*")` and `hal_xprs_group_role_at("*")`
+  /// again on it; what a removal looks like is the wapp's.
+  static const moderation = 'core.moderation';
+
   /// Somebody became findable by name, or changed their name: a verified
   /// `t:identity` was stored, heard or replayed by an archiver (XPRS.md
   /// 12.9.4). Search reads `XprsArchive.names` again on it.
@@ -101,6 +107,7 @@ class CoreState {
     media,
     tasks,
     groups,
+    moderation,
     names,
     station,
   ];

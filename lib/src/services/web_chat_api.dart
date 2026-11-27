@@ -950,7 +950,7 @@ class WebChatApi {
     if (mod != null) {
       rows = [
         for (final r in rows)
-          if (!mod.removed.contains('${r['id']}') &&
+          if ((!mod.removed.contains('${r['id']}') || _publicSpares(r)) &&
               !(mod.away.contains(_base('${r['from'] ?? ''}')) &&
                   !_safety.contains('${r['type']}')))
             r,
@@ -1219,7 +1219,9 @@ class WebChatApi {
       }
       // The door judges it again and deletes; said here too for a host whose
       // door files without the funnel.
-      if (mods.offer(p, nowMs: now().millisecondsSinceEpoch)) {
+      if (mods.offer(p,
+          nowMs: now().millisecondsSinceEpoch,
+          outOfReach: XprsArchive.instance.publicOutOfReach)) {
         XprsArchive.instance.purgePublic(p['r']!.trim().toLowerCase());
       }
       airVerbatim?.call(w);
@@ -2292,6 +2294,15 @@ class WebChatApi {
   static final RegExp _callRe = RegExp(r'^[A-Z0-9]{3,12}(-[A-Z0-9]{1,3})?$');
 
   /// An undirected row written for the Local room (`scope:local`).
+  /// A row a public moderator's removal names but does not reach (10.10.3):
+  /// only an undirected message said beyond the Local room is theirs. A
+  /// removal can arrive before its target, so the row is judged when served.
+  static bool _publicSpares(Map<String, dynamic> r) =>
+      XprsPublicModerators.instance.removed.contains('${r['id']}') &&
+      (r['type'] != 'message' ||
+          '${r['to'] ?? ''}'.isNotEmpty ||
+          _isLocalRow(r));
+
   static bool _isLocalRow(Map<String, dynamic> r) {
     final p = XprsPacket.parse('${r['wire'] ?? ''}');
     return p != null && xprsScope(p).scope == XprsScope.local;

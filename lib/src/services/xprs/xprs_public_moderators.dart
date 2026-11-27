@@ -69,7 +69,7 @@ class XprsPublicModerators {
   /// The identifiers removed, newest last, bounded: what a page already
   /// showing a message is told to take down.
   final Set<String> _removed = <String>{};
-  Iterable<String> get removed => _removed;
+  Set<String> get removed => _removed;
 
   /// A removal was accepted: its target's identifier. The archive deletes on
   /// this; a screen redraws on it.
@@ -88,9 +88,19 @@ class XprsPublicModerators {
     if (text.length > maxBytes) return false;
     final l = _parse(text);
     if (l == null) return false;
+    final moved = l.length != _list.length ||
+        [for (final m in l) '${m.npub}|${m.sinceMs}|${m.untilMs}'].join(',') !=
+            [for (final m in _list) '${m.npub}|${m.sinceMs}|${m.untilMs}']
+                .join(',');
     _list = l;
+    if (moved) _listChanges.add(null);
     return true;
   }
+
+  /// The list held is another one now: who may remove has changed.
+  Stream<void> get listChanges => _listChanges.stream;
+  final StreamController<void> _listChanges =
+      StreamController<void>.broadcast();
 
   static List<XprsPublicModerator>? _parse(String text) {
     try {
@@ -216,7 +226,13 @@ class XprsPublicModerators {
 
   /// Feed one packet from the funnel. True when it was a listed moderator's
   /// removal: its target is remembered and [removals] says so.
-  bool offer(XprsPacket p, {int? nowMs}) {
+  ///
+  /// [outOfReach] says whether the target is held and is nothing a public
+  /// moderator reaches (the archive knows; this class has no store). Such an
+  /// act is still a listed moderator's, and is kept and handed on like any
+  /// other, but its target is not remembered as removed: a call for help
+  /// named by one must not vanish from a screen (10.7).
+  bool offer(XprsPacket p, {int? nowMs, bool Function(String id)? outOfReach}) {
     if (!shaped(p)) return false;
     final id = judge(p, nowMs: nowMs);
     if (id == null) {
@@ -224,6 +240,7 @@ class XprsPublicModerators {
       return false;
     }
     accepted++;
+    if (outOfReach != null && outOfReach(id)) return true;
     if (_removed.remove(id) || _removed.length < _maxRemoved) {
       _removed.add(id);
     } else {
@@ -233,6 +250,16 @@ class XprsPublicModerators {
     }
     _removals.add(id);
     return true;
+  }
+
+  /// What was removed before this start, as the archive remembers it (its
+  /// tombstones), oldest first. Says nothing on [removals]: nothing happened
+  /// now.
+  void remember(Iterable<String> ids) {
+    for (final id in ids) {
+      if (_removed.length >= _maxRemoved) break;
+      if (_idRe.hasMatch(id)) _removed.add(id);
+    }
   }
 
   static bool _same(Uint8List a, Uint8List b) {

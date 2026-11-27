@@ -345,7 +345,10 @@ class XprsIngest {
   /// so the stations that ask this one for the room are handed it too.
   static bool _publicAct(XprsPacket p) {
     if (p.type != 'moderate' || !XprsPublicModerators.shaped(p)) return false;
-    if (!XprsPublicModerators.instance.offer(p)) return false;
+    if (!XprsPublicModerators.instance
+        .offer(p, outOfReach: XprsArchive.instance.publicOutOfReach)) {
+      return false;
+    }
     XprsArchive.instance.purgePublic(p['r']!.trim().toLowerCase());
     return true;
   }
