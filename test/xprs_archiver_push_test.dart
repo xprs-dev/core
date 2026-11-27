@@ -147,6 +147,37 @@ void main() {
           2);
     });
 
+    test('a record whose author has no key here waits for the key', () {
+      final known = <String>{};
+      final asked = <(String, String)>[];
+      final taken = <String>[];
+      push
+        ..verified = ((p) => known.contains((p['f'] ?? '').toUpperCase()))
+        ..keyUnknown = ((c) => !known.contains(c))
+        ..askKey = ((c, hander) => asked.add((c, hander)))
+        ..again = ((p, _) => taken.add(p.type));
+      final rec = xprsAppendVia(
+          pk('t:file f:X3FARR ts:${at(5)} '
+              'file:${xprsFileRefOf('ab' * 32, 'png')} size:100'),
+          'X3ONE');
+      expect(push.offer(rec, bearer: 'rns', nowMs: now), 0);
+      expect(asked, [('X3FARR', 'X3ONE')], reason: 'asked of who handed it on');
+      expect(push.offer(rec, bearer: 'rns', nowMs: now + 1000), 0);
+      expect(asked, hasLength(1), reason: 'asked once');
+      known.add('X3FARR');
+      push.keyLearned('X3FARR', nowMs: now + 5000);
+      expect(taken, contains('file'), reason: 'the file index gets it now');
+      expect(sent, isNotEmpty, reason: 'and it is passed along');
+      // One that waited too long is not taken.
+      push.reset();
+      known.clear();
+      taken.clear();
+      push.offer(rec, bearer: 'rns', nowMs: now);
+      known.add('X3FARR');
+      push.keyLearned('X3FARR', nowMs: now + XprsArchiverPush.parkMs + 1000);
+      expect(taken, isEmpty);
+    });
+
     test('the author and this station are not handed their own packet', () {
       expect(offer('t:mailbox f:X3ONE ts:${at(5)} hold:X3HERE', bearer: 'rns'), 1);
       expect(sent.single.$1, 'X3TWO');

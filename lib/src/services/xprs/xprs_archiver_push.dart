@@ -127,6 +127,7 @@ class XprsArchiverPush {
     if (_done.contains(id)) return 0;
     if (!(verified?.call(p) ?? false)) {
       unverified++;
+      _park(p, bearer, now);
       return 0;
     }
     if (p.type == 'identity') {
@@ -165,6 +166,64 @@ class XprsArchiverPush {
     return n;
   }
 
+  // ---- a packet whose author's key is not known yet ---------------------
+  //
+  // A hand-on can arrive before the key that checks it: the archiver that
+  // wrote a file record may never have announced to this one. Dropping it
+  // left the file unknown here until the next catch-up. So it waits a
+  // short while, the key is asked for ([askKey]), and when the key arrives
+  // ([keyLearned], the funnel's event) it is offered again.
+
+  /// How many wait, and for how long.
+  static const int maxParked = 64;
+  static const int parkMs = 2 * 60 * 1000;
+
+  /// True when no key is held for [call] (so waiting can help: a packet
+  /// that fails under a key we hold is forged, and is not kept).
+  bool Function(String call)? keyUnknown;
+
+  /// Ask for [call]'s key, of [hander] first: the station that handed the
+  /// packet on checked it, so it holds the key.
+  void Function(String call, String hander)? askKey;
+
+  /// Offer a packet to everything that takes verified packets, again.
+  void Function(XprsPacket p, String bearer)? again;
+
+  final List<({XprsPacket p, String bearer, String from, int at})> _parked = [];
+  int parked = 0, unparked = 0;
+
+  void _park(XprsPacket p, String bearer, int now) {
+    final from = (p['f'] ?? '').split('-').first.trim().toUpperCase();
+    if (from.isEmpty || !(keyUnknown?.call(from) ?? false)) return;
+    _parked.removeWhere((e) => now - e.at > parkMs);
+    if (_parked.length >= maxParked) _parked.removeAt(0);
+    final first = !_parked.any((e) => e.from == from);
+    _parked.add((p: p, bearer: bearer, from: from, at: now));
+    parked++;
+    if (first) {
+      final hops = xprsVia(p);
+      askKey?.call(from, hops.isEmpty ? '' : hops.last.trim().toUpperCase());
+    }
+  }
+
+  /// The key of [call] was just learned: what waited for it is taken.
+  void keyLearned(String call, {int? nowMs}) {
+    if (_parked.isEmpty) return;
+    final c = call.split('-').first.trim().toUpperCase();
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final mine = [
+      for (final e in _parked)
+        if (e.from == c && now - e.at <= parkMs) e,
+    ];
+    if (mine.isEmpty) return;
+    _parked.removeWhere((e) => e.from == c);
+    for (final e in mine) {
+      unparked++;
+      offer(e.p, bearer: e.bearer, nowMs: now);
+      again?.call(e.p, e.bearer);
+    }
+  }
+
   /// [p] as it leaves here: the same signed bytes with this station added to
   /// `via:` (4.9: outside the signature and the identifier). Null when it
   /// no longer fits one packet.
@@ -186,6 +245,8 @@ class XprsArchiverPush {
         'unverified': unverified,
         'noPeer': noPeer,
         'handers': _handers.length,
+        'parked': parked,
+        'unparked': unparked,
       };
 
   /// For tests.
@@ -193,6 +254,8 @@ class XprsArchiverPush {
     _done.clear();
     _identityAt.clear();
     _handers.clear();
+    _parked.clear();
+    parked = unparked = 0;
     handed = packets = notArchiver = unverified = noPeer = 0;
   }
 }

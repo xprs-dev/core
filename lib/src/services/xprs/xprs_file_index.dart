@@ -116,7 +116,11 @@ class XprsFileIndex {
     if (from.isEmpty || from == me) return false;
     final held = holdersOf?.call(sha) ?? const <String>[];
     if (held.contains(from) || held.length >= maxHolders) return false;
-    if (!(verified?.call(p) ?? false)) return false;
+    if (!(verified?.call(p) ?? false)) {
+      // Its author's key may still be on its way: the archivers' hand-on
+      // keeps the record and offers it again (XprsArchiverPush.keyLearned).
+      return false;
+    }
     k(sha, from);
     noted++;
     // What others say they hold has no end; the store keeps the newest.

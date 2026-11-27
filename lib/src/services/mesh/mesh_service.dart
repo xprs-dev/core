@@ -770,7 +770,10 @@ class MeshService {
         // the plaintext of a sealed 1:1 is kept nowhere: the courier holds it
         // and offers it again the moment a door opens.
         MeshCourier.instance.listenForDoors();
-        XprsIngest.onKeyLearned = MeshCourier.instance.keyLearned;
+        XprsIngest.onKeyLearned = (c) {
+          MeshCourier.instance.keyLearned(c);
+          XprsArchiverPush.instance.keyLearned(c);
+        };
         // Poll every station in reach once a minute, off the native heartbeat
         // so it survives a pocket (docs/performance.md section 8.2).
         XprsCatchup.instance.start(cs);
@@ -1202,7 +1205,18 @@ class MeshService {
           ..self = (() => NostrCrypto.bareCallsign(tableCallsign))
           ..peers = _archiverPeers
           ..verified = _signedByItsAuthor
-          ..sendTo = XprsPublisher.instance.handTo;
+          ..sendTo = XprsPublisher.instance.handTo
+          ..keyUnknown =
+              ((c) => XprsArchive.instance.keyResolver?.call(c) == null)
+          ..askKey = ((c, hander) => XprsFetch.instance.requestKey(c,
+              reason: 'a record handed on',
+              first: [if (hander.isNotEmpty) hander]))
+          // What waited for a key is taken by the others that needed it
+          // verified: who holds which file, and the mailbox declaration.
+          ..again = ((p, bearer) {
+            if (p.type == 'file') XprsFileIndex.instance.offer(p);
+            if (p.type == 'mailbox') XprsArchive.instance.recordMailboxDecl(p);
+          });
         // The public rooms' moderators (10.10.3): the list kept, then the
         // published one, asked for when an uplink says the site is reachable.
         unawaited(xprsSyncPublicModerators());
