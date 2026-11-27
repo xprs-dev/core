@@ -650,12 +650,19 @@ class MeshCustodyDelegate implements MeshSessionDelegate {
     //
     // Only when the message is actually in the store: a refused offer (quota,
     // oversize, carry-for-others off) must never become a message nobody sent.
+    // ...and AIRED as well (2026-11-27). Holding the advert back saved the
+    // street a frame, and cost the one thing store-and-forward rests on: a
+    // station nearby overhearing the message and keeping a copy. "Next to
+    // us" means heard a moment ago, which is also the moment somebody walks
+    // away -- on the bench TANK2 wrote to the C61 just after the C61 left,
+    // kept the message for the dial, aired it once at 120 s after TANK2 had
+    // left too, and no station ever held it. The dial still carries it in
+    // seconds when the peer IS there; the airings are what reach it when not.
     if (outbound && parked && _pointToPointTarget(to)) {
       _pokeOnce(to);
-      _noteSuppressed(am, wire);
-      LogService.instance
-          .add('Mesh: $to is next to us — handing $am over, not airing it');
-      return true;
+      LogService.instance.add('Mesh: $to is next to us — handing $am over, '
+          'and airing it for whoever keeps a copy');
+      return false;
     }
     // First contact: the peer is in reach on an address we can dial, but it
     // has never told us (in an MSP HELLO) whether it takes custody. Air the
@@ -803,7 +810,6 @@ class MeshCustodyDelegate implements MeshSessionDelegate {
   /// Frames we held back from the air, so [sweepSuppressed] can put one on the
   /// air if the session lane has not delivered it in time.
   static final Map<String, _Suppressed> _suppressed = {};
-  static const int _suppressedMax = 64;
 
   /// How long the point-to-point lane gets before we air the frame after all.
   ///
@@ -813,13 +819,7 @@ class MeshCustodyDelegate implements MeshSessionDelegate {
   /// parks a backup — so this deadline is what keeps the trade honest.
   static const Duration suppressedGrace = Duration(seconds: 120);
 
-  static void _noteSuppressed(String am, Uint8List wire) {
-    if (am.isEmpty) return;
-    if (_suppressed.length >= _suppressedMax) {
-      _suppressed.remove(_suppressed.keys.first);
-    }
-    _suppressed[am] = _Suppressed(wire, DateTime.now());
-  }
+
 
   /// Air, ONCE, any suppressed frame the session lane has not delivered inside
   /// [suppressedGrace]. Called from the transfer scheduler's existing tick —

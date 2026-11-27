@@ -714,7 +714,7 @@ class XprsPublisher {
     MeshTransferScheduler.instance.pokeFor(dest);
     LogService.instance.add(
         'XPRS: $dest is next to us — ${_sessionPending.length} wire(s) handed '
-        'to the session, not aired');
+        'to the session');
     return true;
   }
 
@@ -848,8 +848,15 @@ class XprsPublisher {
         return false;
       }
       if (b.name == 'ble5' && dest.isNotEmpty && _sessionTakes(dest)) {
-        report[b.name] = 'session';
-        return false;
+        // Mail is aired as well (2026-11-27): the session carries it in
+        // seconds when the peer is there, and the airings are what let a
+        // station nearby keep a copy for a peer that has just walked away
+        // (MeshCustodyDelegate.onAirFrame, the same trade). An ask or its
+        // answer is two stations' business and stays off the street.
+        if (p0 == null || !xprsIsMail(p0)) {
+          report[b.name] = 'session';
+          return false;
+        }
       }
       final bearerReach = xprsBearerReach(b.name);
       if (!xprsReachAdmits(reach, bearerReach) ||
