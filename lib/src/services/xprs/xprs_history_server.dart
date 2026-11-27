@@ -801,8 +801,10 @@ class XprsHistoryServer {
       return _serveInline(cmd, selfBase: selfBase, lap: lap);
     } finally {
       if (sw.elapsedMilliseconds >= 100) {
+        // With what was asked: a slow answer is a slow KIND of ask.
         LogService.instance.add('perf: inline history for '
-            '${cmd['f']} took ${sw.elapsedMilliseconds}ms (${laps.join(' ')})');
+            '${cmd['f']} took ${sw.elapsedMilliseconds}ms (${laps.join(' ')}) '
+            'kind:${cmd['kind'] ?? ''} only:${cmd['only'] ?? ''}');
       }
     }
   }

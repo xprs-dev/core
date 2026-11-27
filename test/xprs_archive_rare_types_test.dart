@@ -1,10 +1,12 @@
-// An ask for a few types is read on the index by type, NAMED in the statement:
-// zx's planner otherwise takes the index by addressee for `toc = ''` (most of
-// a spool) or the author's own range (a station's beacons), and walks it.
-// Measured on the Pi's server, 2026-11-26, a 315,000-row archive: 5 s for its
-// forty blog rows, 3.5 s for the seven files of a station with 44,000 rows of
-// its own, on every page that opened; 3 ms each on idx_pk_type
-// (tool/plan_probe.dart, tool/history_time.dart).
+// An ask for a few types is read on an index that has the type in it, NAMED
+// in the statement: zx's planner otherwise takes the index by addressee for
+// `toc = ''` (most of a spool), or a callsign's whole range, and walks it.
+// Measured on the Pi's server, 2026-11-26 and 27, a 315,000-row archive of
+// which 189,000 are commands: 5 s for its forty blog rows, 3.5 s for the seven
+// files of a station with 44,000 rows of its own, 4 s to find that none of the
+// 54,000 rows addressed to it is a service; a few ms each on idx_pk_type,
+// idx_pk_ft and idx_pk_tt (tool/plan_probe.dart, tool/history_time.dart,
+// tool/station_asks_time.dart).
 //
 // The rows are the same as before; these check that, for each way of asking.
 import 'dart:io';
@@ -58,6 +60,49 @@ void main() {
             'AND type = ? ORDER BY pts DESC LIMIT ?',
             ['', 'file', 5]),
         contains('idx_pk_type'));
+  });
+
+  test("a callsign's rows of a type are a range of their own, sent and received", () {
+    expect(
+        a.debugPlan(
+            'SELECT id FROM packets INDEXED BY idx_pk_ft WHERE 1=1 AND fromc = ? '
+            'AND type = ? ORDER BY pts DESC LIMIT ?',
+            ['X3SELF', 'file', 5]),
+        contains('idx_pk_ft'));
+    expect(
+        a.debugPlan(
+            'SELECT id FROM packets INDEXED BY idx_pk_tt WHERE 1=1 AND toc = ? '
+            'AND type = ? ORDER BY pts DESC LIMIT ?',
+            ['X3SELF', 'file', 5]),
+        contains('idx_pk_tt'));
+    expect(a.callTypeIndexReady, isTrue);
+  });
+
+  test('about one callsign, of a kind the file is full of', () {
+    // Three messages by X1N3, and the 67 beacons that hear it.
+    final rows = a.query(
+        only: 'X1N3', types: const ['message', 'observation'], limit: 100);
+    expect(rows.where((r) => r['type'] == 'message').map((r) => r['from']).toSet(),
+        {'X1N3'});
+    expect(rows.where((r) => r['type'] == 'message').length, 3);
+    expect(rows.where((r) => r['type'] == 'observation').length, 67);
+    final times = [for (final r in rows) r['ts'] as int];
+    expect(times, [...times]..sort((x, y) => y.compareTo(x)), reason: 'newest first');
+    // The station's own beacons, the newest ten.
+    final own = a.query(only: 'X3SELF', types: const ['observation'], limit: 10);
+    expect(own.length, 10);
+    expect(own.every((r) => r['from'] == 'X3SELF'), isTrue);
+    expect(own.first['wire'], contains('ts:${ts(599)}'));
+  });
+
+  test("a stranger's ask for a kind the station is full of: its own, newest first", () {
+    final rows = a.query(types: const ['observation'], ownOnly: true, limit: 10);
+    expect(rows.length, 10);
+    expect(rows.every((r) => r['own'] == true), isTrue);
+    expect(rows.first['wire'], contains('ts:${ts(599)}'));
+    expect(
+        a.query(types: const ['message'], ownOnly: true, limit: 10), isEmpty,
+        reason: "others' talk is not this station's to serve a stranger");
   });
 
   test("one author's rows of a type, undirected: newest first, nobody else's", () {

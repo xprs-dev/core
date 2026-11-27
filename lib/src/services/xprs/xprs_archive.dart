@@ -82,6 +82,9 @@ class XprsArchive {
   /// The index by type is in the file and type-filtered asks use it.
   bool get typeIndexReady => _typeIndex;
 
+  /// The indexes by callsign and type are in the file.
+  bool get callTypeIndexReady => _callTypeIndex;
+
   /// How this connection would run [sql] (tests: is an index used here, after
   /// another isolate made it).
   String debugPlan(String sql, [List<Object?> args = const []]) => [
@@ -207,6 +210,13 @@ class XprsArchive {
   /// Set on the writer thread when it built the index, for [_apply].
   bool _typeIndexBuilt = false;
 
+  /// `idx_pk_ft(fromc, type, pts)` and `idx_pk_tt(toc, type, pts)` are in the
+  /// file: one callsign's rows of a type, as an index range. Built once by
+  /// the writer thread, like [_typeIndex]; until then such an ask walks the
+  /// callsign's whole range, as before.
+  bool _callTypeIndex = false;
+  bool _callTypeIndexBuilt = false;
+
   /// Bumped by every [init] and [close]: a reply from the thread of a store
   /// that has since been closed is not applied to the next one.
   int _gen = 0;
@@ -227,11 +237,6 @@ class XprsArchive {
     return out;
   }
 
-  /// A callsign's rows of some types are read by type when the file holds no
-  /// more than this many rows of those types (a row read is ~0.1 ms on a Pi,
-  /// so half a second at the worst, against seconds for a station's own rows).
-  static const int _rareTypesMax = 5000;
-
   /// A type-filtered ask is one index range per type up to this many types:
   /// every readable kind at once (ten, the page's "everything" ask) is still
   /// ten short ranges, where the fallback is a walk of the undirected rows.
@@ -239,6 +244,11 @@ class XprsArchive {
 
   static const String _typeIndexSql =
       'CREATE INDEX IF NOT EXISTS idx_pk_type ON packets(type, pts)';
+
+  static const List<String> _callTypeIndexSql = [
+    'CREATE INDEX IF NOT EXISTS idx_pk_ft ON packets(fromc, type, pts)',
+    'CREATE INDEX IF NOT EXISTS idx_pk_tt ON packets(toc, type, pts)',
+  ];
 
   static const int _pendingMax = 512;
   static const int _flushEarlyAt = 64;
@@ -287,6 +297,14 @@ class XprsArchive {
       if (!_typeIndex && !offThreadWrites) {
         db.execute(_typeIndexSql);
         _typeIndex = true;
+      }
+      _callTypeIndex = [
+        for (final n in const ['idx_pk_ft', 'idx_pk_tt'])
+          storeExists(db, 'SELECT 1 FROM zx_schema WHERE name = ?', [n])
+      ].every((there) => there);
+      if (!_callTypeIndex && !offThreadWrites) {
+        _callTypeIndexSql.forEach(db.execute);
+        _callTypeIndex = true;
       }
       db.execute('''
         CREATE TABLE IF NOT EXISTS mailbox_decl(
@@ -383,6 +401,7 @@ class XprsArchive {
             // Once in the file's life: the thread builds it, this isolate
             // goes on drawing.
             if (!_typeIndex) _op(const ['typeIndex']);
+            if (!_callTypeIndex) _op(const ['callTypeIndex']);
           }
         }));
       }
@@ -1115,6 +1134,7 @@ class XprsArchive {
     }
     if (r['names'] == true) CoreState.instance.changed(CoreState.names);
     if (r['typeIndex'] == true) _typeIndex = true;
+    if (r['callTypeIndex'] == true) _callTypeIndex = true;
     final stored = r['stored'] as List? ?? const [];
     if (stored.isNotEmpty) CoreState.instance.changed(CoreState.archive);
     final hook = onFiled;
@@ -1228,6 +1248,14 @@ class XprsArchive {
           _typeIndexBuilt = true;
           LogService.instance.add('XPRS archive: index by type built once, '
               'in ${sw.elapsedMilliseconds} ms');
+        case 'callTypeIndex':
+          final db = _db;
+          if (!_isWriter || db == null) return;
+          final sw = Stopwatch()..start();
+          _callTypeIndexSql.forEach(db.execute);
+          _callTypeIndexBuilt = true;
+          LogService.instance.add('XPRS archive: indexes by callsign and type '
+              'built once, in ${sw.elapsedMilliseconds} ms');
       }
     } catch (e) {
       LogService.instance.add('XPRS archive: ${op[0]} failed: $e');
@@ -1356,6 +1384,7 @@ class XprsArchive {
       'held': _heldDelta,
       'names': _namesChanged,
       'typeIndex': _typeIndexBuilt,
+      'callTypeIndex': _callTypeIndexBuilt,
       'logs': logs,
       'ms': sw.elapsedMilliseconds,
       'slowest': slowest,
@@ -2476,32 +2505,36 @@ class XprsArchive {
         (from == null || from.trim().isEmpty) &&
         fromKind == null &&
         (to == null || to.every((d) => d.trim().isEmpty));
-    // ONE AUTHOR'S ROWS OF A RARE TYPE, the same way. `fromc = ? AND type IN
-    // (file)` on idx_pk_from walked everything that author ever said: a
-    // station's own row count is its beacons (44,000 on the Pi's server, read
-    // in 3.5 s to find seven files, on every page that opened its map,
-    // 2026-11-26). When the file holds few rows of the asked types
-    // ([_counts], in memory), they are walked instead and the author is the
-    // filter. Past [_rareTypesMax] the author's own range is the better of
-    // the two and the old plan stands.
-    final rareTypes = _typeIndex &&
+    // ONE CALLSIGN'S ROWS OF A FEW TYPES: an index range per type, exact.
+    // idx_pk_from and idx_pk_to hold everything a callsign ever said or was
+    // sent, and a station's is its beacons and the asks addressed to it: of
+    // the Pi's 315,000 rows, 189,000 were commands, 44,000 by the station and
+    // 54,000 to it. `fromc = ? AND type IN (file)` walked the 44,000 to find
+    // seven files (3.5 s on every page that opened its map), `toc = ? AND
+    // type IN (service)` the 54,000 to find none (4 s per history request,
+    // 2026-11-27). On (fromc, type, pts) and (toc, type, pts) each is the
+    // rows asked for and no others (tool/station_asks_time.dart).
+    final onlyCall =
+        only != null && only.trim().isNotEmpty ? _base(only) : null;
+    final ownNames = <String>{
+      if (ownOnly && _selfBase.isNotEmpty) _selfBase.toUpperCase(),
+      if (ownOnly) ...selfAlsoKnownAs,
+      if (ownOnly && archiverName.isNotEmpty) _base(archiverName).toUpperCase(),
+    };
+    final callTyped = _callTypeIndex &&
         types != null &&
         types.isNotEmpty &&
         types.length <= _typeRangesMax &&
         rankFor == null &&
+        fromKind == null &&
         (id == null || id.trim().isEmpty) &&
-        countOf(types: types) <= _rareTypesMax;
-    final fromByType = !byType &&
-        rareTypes &&
-        from != null &&
-        from.trim().isNotEmpty &&
-        !ownOnly &&
-        (only == null || only.trim().isEmpty) &&
-        fromKind == null;
+        (onlyCall != null ||
+            ownNames.isNotEmpty ||
+            (from != null && from.trim().isNotEmpty));
     // A caller that only reads conversations (message + reaction) must not
     // have its window eaten by the observation chatter, which outnumbers
     // everything else on a busy bench.
-    if (types != null && types.isNotEmpty && !byType && !fromByType) {
+    if (types != null && types.isNotEmpty && !byType && !callTyped) {
       where.write(' AND type IN (${List.filled(types.length, '?').join(',')})');
       args.addAll(types);
     }
@@ -2513,6 +2546,29 @@ class XprsArchive {
       where.write(' AND pts < ?');
       args.add(untilMs);
     }
+    if (callTyped) {
+      final kinds = {...types};
+      // [onlyCall] is the 12.6 question: sent by it, addressed to it, or an
+      // observation ABOUT it, which names it in `hears:` (see below).
+      return _byIndex(db, where, args, [
+        if (onlyCall != null) ...[
+          for (final t in kinds) ...[
+            ('fromc = ? AND type = ?', [onlyCall, t], 'idx_pk_ft'),
+            ('toc = ? AND type = ?', [onlyCall, t], 'idx_pk_tt'),
+          ],
+          if (kinds.contains('observation'))
+            ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall],
+                'idx_pk_type'),
+        ] else if (ownNames.isNotEmpty)
+          // `own = 1` has no index: our rows are the ones under our names.
+          for (final n in ownNames)
+            for (final t in kinds)
+              ('fromc = ? AND type = ?', [n, t], 'idx_pk_ft')
+        else
+          // `fromc = ?` is in [where] already.
+          for (final t in kinds) ('type = ?', [t], 'idx_pk_ft'),
+      ], lim);
+    }
     // ONE CALLSIGN, ASKED AS SEPARATE LOOKUPS. `fromc=? OR toc=? OR (an
     // observation naming it)` cannot use idx_pk_from or idx_pk_to, so the
     // planner walked every row in the window: a history request for a
@@ -2520,30 +2576,12 @@ class XprsArchive {
     // answer 404 (2 to 10 s, the Pi's server, 2026-11-23, named by the stall
     // watch). Each half is an indexed range on its own; observations are read
     // only when the ask includes them. Merged here, newest first.
-    final onlyCall =
-        only != null && only.trim().isNotEmpty ? _base(only) : null;
-    if (onlyCall != null && rareTypes) {
-      // Few rows of the asked types in the file: they are walked, and the
-      // callsign is the filter (a station asked about by name has tens of
-      // thousands of rows of its own, nearly all beacons).
-      // An observation ABOUT the callsign names it in `hears:` (see below).
-      final about = types.contains('observation');
-      where.write(' AND (fromc = ? OR toc = ?'
-          "${about ? " OR (type = 'observation' AND instr(wire, ?) > 0)" : ''})");
-      return _byIndex(
-          db,
-          where,
-          [...args, onlyCall, onlyCall, if (about) onlyCall],
-          [for (final t in {...types}) ('type = ?', [t])],
-          lim,
-          index: 'idx_pk_type');
-    }
     if (onlyCall != null && rankFor == null) {
       return _byIndex(db, where, args, [
-        ('fromc = ?', [onlyCall]),
-        ('toc = ?', [onlyCall]),
+        ('fromc = ?', [onlyCall], null),
+        ('toc = ?', [onlyCall], null),
         if (types == null || types.contains('observation'))
-          ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall]),
+          ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall], null),
       ], lim);
     }
     // THIS STATION'S OWN PUBLICATIONS, the same way: `own = 1` has no index,
@@ -2551,26 +2589,9 @@ class XprsArchive {
     // so it walked the whole window to find a handful (7 to 49 s on the Pi's
     // server, each a 404, 2026-11-23). Our rows are the ones under our own
     // names, and idx_pk_from serves each name.
-    if (ownOnly && rankFor == null) {
-      final names = <String>{
-        if (_selfBase.isNotEmpty) _selfBase.toUpperCase(),
-        ...selfAlsoKnownAs,
-        if (archiverName.isNotEmpty) _base(archiverName).toUpperCase(),
-      };
-      if (names.isNotEmpty && rareTypes) {
-        // The same choice as above: a stranger asking a busy station for its
-        // talk read all its beacons to find a handful of messages (3.5 s per
-        // inline history request on the Pi's server, 2026-11-26).
-        where.write(
-            ' AND fromc IN (${List.filled(names.length, '?').join(',')})');
-        return _byIndex(db, where, [...args, ...names],
-            [for (final t in {...types}) ('type = ?', [t])], lim,
-            index: 'idx_pk_type');
-      }
-      if (names.isNotEmpty) {
-        return _byIndex(
-            db, where, args, [for (final n in names) ('fromc = ?', [n])], lim);
-      }
+    if (ownNames.isNotEmpty && rankFor == null) {
+      return _byIndex(db, where, args,
+          [for (final n in ownNames) ('fromc = ?', [n], null)], lim);
     }
     if (onlyCall != null) {
       final c = onlyCall;
@@ -2614,14 +2635,13 @@ class XprsArchive {
         ..add(me);
     }
     final List<Map<String, Object?>> rows;
-    if (byType || fromByType) {
+    if (byType) {
       // The index is NAMED. Left to choose, zx's planner takes idx_pk_to for
       // `toc = ''` (most of the file) and sorts: 5 s for the forty blog rows
       // of a 315,000-row archive, 3 ms on idx_pk_type (tool/plan_probe.dart).
       // The type index existed for three days and was never the plan.
-      rows = _byIndexRows(
-          db, where, args, [for (final t in {...types}) ('type = ?', [t])], lim,
-          index: 'idx_pk_type');
+      rows = _byIndexRows(db, where, args,
+          [for (final t in {...types}) ('type = ?', [t], 'idx_pk_type')], lim);
     } else {
       args.add(lim);
       rows = db.select(
@@ -2644,26 +2664,20 @@ class XprsArchive {
   /// [where] narrowed by each of [halves] in turn, every one an indexed
   /// range, merged newest first: what an OR across columns cannot be.
   List<Map<String, dynamic>> _byIndex(ZxSqlDb db, StringBuffer where,
-          List<Object?> args, List<(String, List<Object?>)> halves, int lim,
-          {String? index}) =>
-      [
-        for (final r in _byIndexRows(db, where, args, halves, lim, index: index))
-          _rowOf(r)
-      ];
+          List<Object?> args, List<_Half> halves, int lim) =>
+      [for (final r in _byIndexRows(db, where, args, halves, lim)) _rowOf(r)];
 
-  /// [index]: the index every half is read on, when the planner's own choice
-  /// is known to be the wrong one (see [query]).
   List<Map<String, Object?>> _byIndexRows(ZxSqlDb db, StringBuffer where,
-      List<Object?> args, List<(String, List<Object?>)> halves, int lim,
-      {String? index}) {
-    final cols =
+      List<Object?> args, List<_Half> halves, int lim) {
+    const cols =
         'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
-        'FROM packets ${index == null ? '' : 'INDEXED BY $index '}WHERE ';
+        'FROM packets ';
     final byId = <Object?, Map<String, Object?>>{};
-    for (final h in halves) {
+    for (final (clause, its, index) in halves) {
       for (final r in db.select(
-          '$cols$where AND ${h.$1} ORDER BY pts DESC LIMIT ?',
-          [...args, ...h.$2, lim])) {
+          '$cols${index == null ? '' : 'INDEXED BY $index '}'
+          'WHERE $where AND $clause ORDER BY pts DESC LIMIT ?',
+          [...args, ...its, lim])) {
         byId[r['id']] = r;
       }
     }
@@ -2835,3 +2849,9 @@ class _RoomRows {
   List<(int, Map<String, dynamic>)> rows;
   final Set<String> fresh = {};
 }
+
+/// One indexed range of a merged ask ([XprsArchive._byIndexRows]): its
+/// clause, the clause's arguments, and the index it is read on. The index is
+/// named when the planner's own choice is known to be the wrong one (it takes
+/// the first index an equality fits); null leaves the choice to it.
+typedef _Half = (String, List<Object?>, String?);
