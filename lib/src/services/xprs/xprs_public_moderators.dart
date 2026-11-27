@@ -152,13 +152,66 @@ class XprsPublicModerators {
     if (ts == null) return null;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     if (ts > now + _futureSlackMs) return null;
+    final id = p['r']!.trim().toLowerCase();
+    final from = (p['f'] ?? '').trim().toUpperCase();
+
+    // A callsign that signed an accepted act before: its key is tried first,
+    // so a moderator's next act costs one check however long the list is.
+    final before = _keyOf[from];
+    if (before != null) {
+      for (final m in _list) {
+        if (!m.standsAt(ts) || !_same(m.key, before)) continue;
+        if (!_spend(_knownChecks, now)) break;
+        if (xprsVerifyUnder(p, m.key) == XprsSigState.verified) {
+          _knownChecks.failed--;
+          return id;
+        }
+      }
+    }
     for (final m in _list) {
       if (!m.standsAt(ts)) continue;
+      if (before != null && _same(m.key, before)) continue;
+      if (!_spend(_checks, now)) return null;
       if (xprsVerifyUnder(p, m.key) == XprsSigState.verified) {
-        return p['r']!.trim().toLowerCase();
+        _checks.failed--;
+        if (_keyOf.length >= maxEntries) _keyOf.remove(_keyOf.keys.first);
+        _keyOf[from] = m.key;
+        return id;
       }
     }
     return null;
+  }
+
+  // A packet shaped like a removal costs one curve check per listed key on
+  // the isolate that receives it, and anybody can air such packets with any
+  // signature (docs/performance.md 8.15). So the checks that FAIL are
+  // budgeted per minute: past the budget a shaped packet is not checked
+  // until the minute is over ([unchecked] counts them). A real act dropped
+  // that way comes back with the room's catch-up. Two budgets, so a flood
+  // under invented callsigns does not silence a moderator already known.
+  static const int failedChecksPerMinute = 24;
+  static const int knownFailedChecksPerMinute = 12;
+  final _Budget _checks = _Budget(failedChecksPerMinute);
+  final _Budget _knownChecks = _Budget(knownFailedChecksPerMinute);
+  final Map<String, Uint8List> _keyOf = <String, Uint8List>{};
+
+  /// Shaped packets left unchecked because the minute's budget was spent.
+  int unchecked = 0;
+
+  /// Take one check from [b]; false when this minute has none left. The
+  /// check is counted as failed until the caller gives it back.
+  bool _spend(_Budget b, int now) {
+    if (now - b.sinceMs >= 60000 || now < b.sinceMs) {
+      b
+        ..sinceMs = now
+        ..failed = 0;
+    }
+    if (b.failed >= b.max) {
+      unchecked++;
+      return false;
+    }
+    b.failed++;
+    return true;
   }
 
   /// Feed one packet from the funnel. True when it was a listed moderator's
@@ -242,7 +295,16 @@ class XprsPublicModerators {
     _list = const [];
     _failedMs = 0;
     _removed.clear();
+    _keyOf.clear();
+    _checks.failed = _knownChecks.failed = 0;
     honoured = true;
-    accepted = refused = 0;
+    accepted = refused = unchecked = 0;
   }
+}
+
+class _Budget {
+  _Budget(this.max);
+  final int max;
+  int sinceMs = 0;
+  int failed = 0;
 }

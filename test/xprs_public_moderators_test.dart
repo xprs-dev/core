@@ -66,6 +66,33 @@ void main() {
       expect(mods.judge(act(_other, f: 'X1MODR'), nowMs: now), isNull);
     });
 
+    test('a flood of forged removals costs a bounded number of checks a minute', () {
+      // Each forged act is a different packet, so no remembered verdict
+      // helps: only the budget stops the curve work.
+      XprsPacket forged(int i) => _signed(
+          't:moderate f:X1FLOD ts:2026-11-27_11:00:${(i % 60).toString().padLeft(2, '0')} '
+          'r:${(i + 0x100000).toRadixString(16)} remove:message',
+          _other);
+      for (var i = 0; i < 40; i++) {
+        expect(mods.offer(forged(i), nowMs: now), isFalse);
+      }
+      expect(mods.unchecked,
+          40 - XprsPublicModerators.failedChecksPerMinute);
+      // A moderator already known is still heard through the flood...
+      mods.reset();
+      mods.refresh(_list(_mod));
+      expect(mods.offer(act(_mod), nowMs: now), isTrue);
+      for (var i = 0; i < 40; i++) {
+        mods.offer(forged(i), nowMs: now);
+      }
+      expect(
+          mods.offer(act(_mod, ts: '2026-11-27_11:30:00'), nowMs: now), isTrue);
+      // ...and the next minute starts with a whole budget.
+      final before = mods.unchecked;
+      expect(mods.offer(forged(99), nowMs: now + 61000), isFalse);
+      expect(mods.unchecked, before);
+    });
+
     test('only a removal addressed to nobody is such an act', () {
       bool shaped(String w) => XprsPublicModerators.shaped(XprsPacket.parse(w)!);
       expect(shaped('t:moderate f:X1MODR ts:2026-11-27_11:00:00 r:89a9c8 remove:message'), isTrue);
