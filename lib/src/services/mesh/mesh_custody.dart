@@ -633,6 +633,9 @@ class MeshCustodyDelegate implements MeshSessionDelegate {
         wire: wire,
         am: am,
         urg: urg,
+        // Our own outbound copy is sending, not carrying: none of the
+        // limits on other people's mail apply to it.
+        ours: from.toUpperCase() == self,
         setKey: setKey)) {
       parked = true;
       MeshCustodyCounters.parked++;

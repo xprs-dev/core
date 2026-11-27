@@ -87,6 +87,34 @@ class MeshStore {
   /// keep our OWN outbound copies (that is not carrying, it is sending) but
   /// accept nothing on behalf of anyone else.
   bool carryForOthers = true;
+
+  /// How much of one stranger this device will hold (2026-11-27). Carrying
+  /// other people's mail is what makes a station left in a room useful, and
+  /// a phone has room for a great deal of it; what it must not do is let one
+  /// sender, or a crowd of callsigns made up on the spot, fill the store.
+  /// Three limits, all decided here at the door, on mail that is not ours:
+  ///
+  /// - [perSenderMax]: rows held for one sender at once (in transit);
+  /// - [perSenderPerHour]: rows taken from one sender in a clock hour;
+  /// - [othersPerHour]: rows taken from everybody but us in a clock hour,
+  ///   which is what bounds a thousand invented callsigns at once.
+  ///
+  /// A refusal is a "quota" answer to a custody offer (see [holds]), so the
+  /// giver keeps its copy rather than the message belonging to nobody.
+  int perSenderMax = 200;
+  int perSenderPerHour = 60;
+  int othersPerHour = 600;
+
+  /// The hour the counts below belong to (seconds / 3600).
+  int _hour = -1;
+  final Map<String, int> _takenFrom = {};
+  int _takenAll = 0;
+
+  /// What the three limits turned away, for `/api/status` (performance.md
+  /// 8.10: counters, not a log line per packet).
+  int refusedSenderHeld = 0;
+  int refusedSenderRate = 0;
+  int refusedOthersRate = 0;
   static const int retentionS = 7 * 24 * 3600;
   // received_ams window feeding the bloom (~24 h keeps the filter sparse).
   static const int receivedWindowS = 24 * 3600;
@@ -96,6 +124,10 @@ class MeshStore {
   /// Open (and migrate) the store. Safe to call again for a new path when the
   /// active profile changes.
   void init(String path) {
+    // A store opened anew (another profile) starts its hour afresh.
+    _hour = -1;
+    _takenFrom.clear();
+    _takenAll = 0;
     close();
     try {
       fs.directory(fs.file(path).parent.path).createSync(recursive: true);
@@ -125,6 +157,9 @@ class MeshStore {
           'CREATE INDEX IF NOT EXISTS idx_store_target ON mesh_store(target, state)');
       db.execute(
           'CREATE INDEX IF NOT EXISTS idx_store_setk ON mesh_store(setk)');
+      // The per-sender limit's probe (_admitOthers) reads by sender.
+      db.execute('CREATE INDEX IF NOT EXISTS idx_store_sender '
+          'ON mesh_store(sender, state)');
       db.execute('''
         CREATE TABLE IF NOT EXISTS received_ams(
           am TEXT PRIMARY KEY,
@@ -214,13 +249,15 @@ class MeshStore {
     if (storeExists(db, 'SELECT 1 FROM mesh_store WHERE am = ?', [key])) {
       return false;
     }
+    final from = sender.toUpperCase();
+    if (!ours && !_admitOthers(db, from)) return false;
     db.execute(
       'INSERT INTO mesh_store(am,target,sender,wire,ts,size,urg,state,setk) '
       'VALUES(?,?,?,?,?,?,?,?,?)',
       [
         key,
         target.toUpperCase(),
-        sender.toUpperCase(),
+        from,
         wire,
         _now(),
         wire.length,
@@ -229,6 +266,41 @@ class MeshStore {
         setKey,
       ],
     );
+    return true;
+  }
+
+  /// The three limits on somebody else's mail ([perSenderMax] and the two
+  /// hourly ones). Counted only when a row is actually taken, so a duplicate
+  /// or a refusal costs the sender nothing and the map holds at most
+  /// [othersPerHour] callsigns.
+  bool _admitOthers(ZxSqlDb db, String from) {
+    final hour = _now() ~/ 3600;
+    if (hour != _hour) {
+      _hour = hour;
+      _takenFrom.clear();
+      _takenAll = 0;
+    }
+    if (_takenAll >= othersPerHour) {
+      refusedOthersRate++;
+      return false;
+    }
+    final taken = _takenFrom[from] ?? 0;
+    if (taken >= perSenderPerHour) {
+      refusedSenderRate++;
+      return false;
+    }
+    // The [perSenderMax]th row exists: one keyed probe, not a COUNT.
+    if (perSenderMax <= 0 ||
+        storeExists(
+            db,
+            'SELECT 1 FROM mesh_store WHERE sender = ? AND state = 0 '
+            'LIMIT 1 OFFSET ?',
+            [from, perSenderMax - 1])) {
+      refusedSenderHeld++;
+      return false;
+    }
+    _takenFrom[from] = taken + 1;
+    _takenAll++;
     return true;
   }
 

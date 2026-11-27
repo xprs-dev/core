@@ -2717,6 +2717,14 @@ class MeshService {
       // Whether this device carries other people's mail (see setQuotaPref's
       // 'scfEnabled'). 1 by default.
       'enabled': MeshStore.instance.carryForOthers ? 1 : 0,
+      // The limits on other people's mail (MeshStore.perSenderMax and the two
+      // hourly ones) and what each turned away.
+      'perSenderMax': MeshStore.instance.perSenderMax,
+      'perSenderPerHour': MeshStore.instance.perSenderPerHour,
+      'othersPerHour': MeshStore.instance.othersPerHour,
+      'refusedSenderHeld': MeshStore.instance.refusedSenderHeld,
+      'refusedSenderRate': MeshStore.instance.refusedSenderRate,
+      'refusedOthersRate': MeshStore.instance.refusedOthersRate,
     };
   }
 
