@@ -281,6 +281,15 @@ for undirected asks of a few types, `idx_pk_ft` / `idx_pk_tt` for one
 callsign's rows of a type (sent / received). Any store with two indexes on
 one table should check its hot statements the same way.
 
+### A list inside a column, asked by member: `heard_by` and `XprsArchive._heardRows`
+"Which rows name X in their list" has no index on the rows' own table. The
+archive keeps `heard_by(callc, byc, pts, id)`, one line per member, and reads
+a range of it newest first, then each row by id through the ask's own WHERE
+(`_heardRows`: paged, so a filter that turns rows away still fills the page).
+Filled once by the writer thread (`_fillHeardBy`, its index created last as
+the mark that it is whole), written on insert, pruned of gone rows once a
+start. The same shape fits any "members of a list field" question.
+
 ### Measuring a store on a real file — `tool/plan_probe.dart`, `tool/history_time.dart`, `tool/station_asks_time.dart`
 `plan_probe.dart <file.zx>`: a statement's `EXPLAIN QUERY PLAN` and its time,
 twice. `history_time.dart <archive.zx> [callsign]`: what a page asks of an

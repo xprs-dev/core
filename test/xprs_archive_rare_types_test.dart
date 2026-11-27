@@ -95,6 +95,35 @@ void main() {
     expect(own.first['wire'], contains('ts:${ts(599)}'));
   });
 
+  test('the sightings held of a callsign: by who each observation hears', () {
+    expect(a.heardByReady, isTrue);
+    List<Map<String, dynamic>> of(String c, {int? since, int? until, int limit = 100}) =>
+        a.query(only: c, types: const ['observation'], sinceMs: since, untilMs: until, limit: limit);
+    // X1N3 is heard by 67 of the station's beacons; X1N30 by none (a name
+    // that only begins the same is not that name).
+    expect(of('X1N3').length, 67);
+    expect(of('X1N30'), isEmpty);
+    expect(of('X1N3', limit: 5).map((r) => r['wire']),
+        everyElement(contains('hears:X1N3 ')));
+    final five = of('X1N3', limit: 5);
+    expect('${five.first['wire']}', contains('ts:${ts(597)}'));
+    // A window: beacons 300, 309 .. 399 hear it, twelve; its end is not in it.
+    expect(of('X1N3', since: xprsParseTs(ts(300)), until: xprsParseTs(ts(400))).length, 12);
+    expect(of('X1N3', since: xprsParseTs(ts(300)), until: xprsParseTs(ts(399))).length, 11);
+    // Several heard at once, and a row since gone.
+    put('t:observation f:X3FARR ts:${ts(710)} hears:X1AAAA,X1BBBB-2,X1N3 link:lora');
+    a.flush();
+    expect(of('X1BBBB').single['from'], 'X3FARR');
+    expect(of('X1N3').length, 68);
+    expect(of('X1BOBB').single['from'], 'X3FARR');
+    // As a stranger: this station's own sightings only.
+    expect(
+        a.query(only: 'X1N3', types: const ['observation'], ownOnly: true, limit: 100).length,
+        67);
+    expect(a.query(only: 'X1BOBB', types: const ['observation'], ownOnly: true, limit: 100),
+        isEmpty);
+  });
+
   test("a stranger's ask for a kind the station is full of: its own, newest first", () {
     final rows = a.query(types: const ['observation'], ownOnly: true, limit: 10);
     expect(rows.length, 10);

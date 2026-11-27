@@ -85,6 +85,9 @@ class XprsArchive {
   /// The indexes by callsign and type are in the file.
   bool get callTypeIndexReady => _callTypeIndex;
 
+  /// Who each observation hears is listed ([_heardBy]).
+  bool get heardByReady => _heardBy;
+
   /// How this connection would run [sql] (tests: is an index used here, after
   /// another isolate made it).
   String debugPlan(String sql, [List<Object?> args = const []]) => [
@@ -217,6 +220,14 @@ class XprsArchive {
   bool _callTypeIndex = false;
   bool _callTypeIndexBuilt = false;
 
+  /// `heard_by` holds every observation in the file: who each one hears, so
+  /// "the sightings held of X" (12.9.4) is an index range and not a read of
+  /// every observation for X in its wire. Filled ONCE by the writer thread
+  /// ([_fillHeardBy]) and kept by every flush after; its index is created
+  /// last, so the index being there says the table is whole.
+  bool _heardBy = false;
+  bool _heardByBuilt = false;
+
   /// Bumped by every [init] and [close]: a reply from the thread of a store
   /// that has since been closed is not applied to the next one.
   int _gen = 0;
@@ -249,6 +260,14 @@ class XprsArchive {
     'CREATE INDEX IF NOT EXISTS idx_pk_ft ON packets(fromc, type, pts)',
     'CREATE INDEX IF NOT EXISTS idx_pk_tt ON packets(toc, type, pts)',
   ];
+
+  static const String _heardBySet =
+      'INSERT INTO heard_by(callc,byc,pts,id) VALUES(?,?,?,?)';
+
+  static const String _heardBySql =
+      'CREATE TABLE IF NOT EXISTS heard_by('
+      'callc TEXT NOT NULL, byc TEXT NOT NULL, pts INTEGER NOT NULL, '
+      'id TEXT NOT NULL)';
 
   static const int _pendingMax = 512;
   static const int _flushEarlyAt = 64;
@@ -305,6 +324,13 @@ class XprsArchive {
       if (!_callTypeIndex && !offThreadWrites) {
         _callTypeIndexSql.forEach(db.execute);
         _callTypeIndex = true;
+      }
+      db.execute(_heardBySql);
+      _heardBy = storeExists(
+          db, "SELECT 1 FROM zx_schema WHERE name = 'idx_heard_by'");
+      if (!_heardBy && !offThreadWrites) {
+        _fillHeardBy(db);
+        _heardBy = true;
       }
       db.execute('''
         CREATE TABLE IF NOT EXISTS mailbox_decl(
@@ -402,6 +428,7 @@ class XprsArchive {
             // goes on drawing.
             if (!_typeIndex) _op(const ['typeIndex']);
             if (!_callTypeIndex) _op(const ['callTypeIndex']);
+            if (!_heardBy) _op(const ['heardBy']);
           }
         }));
       }
@@ -754,6 +781,7 @@ class XprsArchive {
         RETURNING heard, tier, length(wire) b''');
       final tomb = db.prepare(
           'INSERT OR IGNORE INTO withdrawn(id,fromc,ts) VALUES(?,?,?)');
+      final hears = db.prepare(_heardBySet);
       // Where the rows' time goes, kept only while a slice is being timed:
       // the check of the signature, the withdrawn lookups, the row itself,
       // and the one row that cost the most (its type, never its words).
@@ -838,6 +866,12 @@ class XprsArchive {
           ]).first;
           final tierNow = res['tier'] as int;
           final bytes = (res['b'] as num).toInt();
+          if (res['heard'] == 1 && p.type == 'observation') {
+            final pts = xprsParseTs(p['ts']) ?? e.nowMs;
+            for (final c in _heardIn(p)) {
+              hears.execute([c, fromc, pts, id]);
+            }
+          }
           if (_isWriter) {
             _notes
               ..add(p.type)
@@ -884,6 +918,7 @@ class XprsArchive {
       } finally {
         ins.dispose();
         tomb.dispose();
+        hears.dispose();
         oldTier.dispose();
       }
       if (laps != null && lapSw != null && lapSw.elapsedMilliseconds >= 50) {
@@ -1135,6 +1170,7 @@ class XprsArchive {
     if (r['names'] == true) CoreState.instance.changed(CoreState.names);
     if (r['typeIndex'] == true) _typeIndex = true;
     if (r['callTypeIndex'] == true) _callTypeIndex = true;
+    if (r['heardBy'] == true) _heardBy = true;
     final stored = r['stored'] as List? ?? const [];
     if (stored.isNotEmpty) CoreState.instance.changed(CoreState.archive);
     final hook = onFiled;
@@ -1256,6 +1292,14 @@ class XprsArchive {
           _callTypeIndexBuilt = true;
           LogService.instance.add('XPRS archive: indexes by callsign and type '
               'built once, in ${sw.elapsedMilliseconds} ms');
+        case 'heardBy':
+          final db = _db;
+          if (!_isWriter || db == null) return;
+          final sw = Stopwatch()..start();
+          final n = _fillHeardBy(db);
+          _heardByBuilt = true;
+          LogService.instance.add('XPRS archive: who each observation hears, '
+              '$n of them, listed once in ${sw.elapsedMilliseconds} ms');
       }
     } catch (e) {
       LogService.instance.add('XPRS archive: ${op[0]} failed: $e');
@@ -1385,6 +1429,7 @@ class XprsArchive {
       'names': _namesChanged,
       'typeIndex': _typeIndexBuilt,
       'callTypeIndex': _callTypeIndexBuilt,
+      'heardBy': _heardByBuilt,
       'logs': logs,
       'ms': sw.elapsedMilliseconds,
       'slowest': slowest,
@@ -1826,6 +1871,15 @@ class XprsArchive {
         });
       } catch (e) {
         LogService.instance.add('XPRS archive: age prune failed: $e');
+      }
+      // What [_delete] took, here and since the last start, is no longer
+      // heard by anybody. Seconds on a large spool (9 s for 360,000 lines on
+      // a Pi): once a start, apart from the prune's own transaction.
+      try {
+        db.execute('DELETE FROM heard_by WHERE id NOT IN '
+            "(SELECT id FROM packets WHERE type = 'observation')");
+      } catch (e) {
+        LogService.instance.add('XPRS archive: heard_by prune failed: $e');
       }
     }
     // Byte cap, every 20th flush (~7 min of dense traffic). One bounded
@@ -2553,10 +2607,13 @@ class XprsArchive {
       return _byIndex(db, where, args, [
         if (onlyCall != null) ...[
           for (final t in kinds) ...[
-            ('fromc = ? AND type = ?', [onlyCall, t], 'idx_pk_ft'),
+            // Asked of our own rows only (`own = 1`, which no index knows):
+            // what somebody else sent is none of them, and is not read.
+            if (ownNames.isEmpty || ownNames.contains(onlyCall))
+              ('fromc = ? AND type = ?', [onlyCall, t], 'idx_pk_ft'),
             ('toc = ? AND type = ?', [onlyCall, t], 'idx_pk_tt'),
           ],
-          if (kinds.contains('observation'))
+          if (kinds.contains('observation') && !_heardBy)
             ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall],
                 'idx_pk_type'),
         ] else if (ownNames.isNotEmpty)
@@ -2567,7 +2624,11 @@ class XprsArchive {
         else
           // `fromc = ?` is in [where] already.
           for (final t in kinds) ('type = ?', [t], 'idx_pk_ft'),
-      ], lim);
+      ], lim, also: [
+        if (onlyCall != null && kinds.contains('observation') && _heardBy)
+          ..._heardRows(db, where, args, onlyCall, sinceMs, untilMs, lim,
+              by: ownNames),
+      ]);
     }
     // ONE CALLSIGN, ASKED AS SEPARATE LOOKUPS. `fromc=? OR toc=? OR (an
     // observation naming it)` cannot use idx_pk_from or idx_pk_to, so the
@@ -2580,9 +2641,13 @@ class XprsArchive {
       return _byIndex(db, where, args, [
         ('fromc = ?', [onlyCall], null),
         ('toc = ?', [onlyCall], null),
-        if (types == null || types.contains('observation'))
+        if ((types == null || types.contains('observation')) && !_heardBy)
           ("type = 'observation' AND instr(wire, ?) > 0", [onlyCall], null),
-      ], lim);
+      ], lim, also: [
+        if ((types == null || types.contains('observation')) && _heardBy)
+          ..._heardRows(db, where, args, onlyCall, sinceMs, untilMs, lim,
+              by: ownNames),
+      ]);
     }
     // THIS STATION'S OWN PUBLICATIONS, the same way: `own = 1` has no index,
     // and a stranger's history request is answered from our own rows only,
@@ -2664,18 +2729,27 @@ class XprsArchive {
   /// [where] narrowed by each of [halves] in turn, every one an indexed
   /// range, merged newest first: what an OR across columns cannot be.
   List<Map<String, dynamic>> _byIndex(ZxSqlDb db, StringBuffer where,
-          List<Object?> args, List<_Half> halves, int lim) =>
-      [for (final r in _byIndexRows(db, where, args, halves, lim)) _rowOf(r)];
+          List<Object?> args, List<_Half> halves, int lim,
+          {List<Map<String, Object?>> also = const []}) =>
+      [
+        for (final r in _byIndexRows(db, where, args, halves, lim, also: also))
+          _rowOf(r)
+      ];
 
+  static const String _rowCols =
+      'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
+      'FROM packets ';
+
+  /// [also]: rows already read another way ([_heardRows]), merged in.
   List<Map<String, Object?>> _byIndexRows(ZxSqlDb db, StringBuffer where,
-      List<Object?> args, List<_Half> halves, int lim) {
-    const cols =
-        'SELECT id,ts,pts,type,fromc,toc,bearer,rssi,mine,own,sig,heard,wire '
-        'FROM packets ';
-    final byId = <Object?, Map<String, Object?>>{};
+      List<Object?> args, List<_Half> halves, int lim,
+      {List<Map<String, Object?>> also = const []}) {
+    final byId = <Object?, Map<String, Object?>>{
+      for (final r in also) r['id']: r
+    };
     for (final (clause, its, index) in halves) {
       for (final r in db.select(
-          '$cols${index == null ? '' : 'INDEXED BY $index '}'
+          '$_rowCols${index == null ? '' : 'INDEXED BY $index '}'
           'WHERE $where AND $clause ORDER BY pts DESC LIMIT ?',
           [...args, ...its, lim])) {
         byId[r['id']] = r;
@@ -2685,6 +2759,126 @@ class XprsArchive {
       ..sort((a, b) => (b['pts'] as int).compareTo(a['pts'] as int));
     if (rows.length > lim) rows.length = lim;
     return rows;
+  }
+
+  // ── Who each observation hears ──────────────────────────────────────────
+
+  /// The callsigns an observation's `hears:` names, bare.
+  static Set<String> _heardIn(XprsPacket p) => {
+        for (final c in (p['hears'] ?? '').split(','))
+          if (c.trim().isNotEmpty) _base(c).toUpperCase(),
+      };
+
+  /// [heard_by] from every observation in the file, then its index: seconds
+  /// on a large spool, so the writer thread's, once ([_heardBy]). Returns how
+  /// many observations it read.
+  static int _fillHeardBy(ZxSqlDb db) {
+    // Whatever a build that did not finish left.
+    db.execute('DELETE FROM heard_by');
+    final ins = db.prepare(_heardBySet);
+    var n = 0;
+    try {
+      // A page at a time, newest first. A page ends inside a millisecond's
+      // rows as easily as between two: the next starts AT that millisecond
+      // and skips what it has seen of it.
+      const page = 2000;
+      int? at;
+      var seenAt = <Object?>{};
+      while (true) {
+        final rows = db.select(
+            "SELECT id,pts,fromc,wire FROM packets WHERE type = 'observation' "
+            '${at == null ? '' : 'AND pts <= ? '}ORDER BY pts DESC LIMIT ?',
+            [if (at != null) at, page + seenAt.length]);
+        final fresh = [
+          for (final r in rows)
+            if (r['pts'] != at || !seenAt.contains(r['id'])) r
+        ];
+        if (fresh.isEmpty) break;
+        db.transaction(() {
+          for (final r in fresh) {
+            final p = XprsPacket.parse(r['wire'] as String);
+            if (p == null) continue;
+            for (final c in _heardIn(p)) {
+              ins.execute([c, r['fromc'], r['pts'], r['id']]);
+            }
+          }
+        });
+        n += fresh.length;
+        final last = fresh.last['pts'] as int;
+        seenAt = {
+          if (last == at) ...seenAt,
+          for (final r in fresh)
+            if (r['pts'] == last) r['id'],
+        };
+        at = last;
+      }
+    } finally {
+      ins.dispose();
+    }
+    // By whom as well: a stranger is served this station's own sightings.
+    db.execute('CREATE INDEX IF NOT EXISTS idx_heard_who '
+        'ON heard_by(callc, byc, pts)');
+    db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_heard_by ON heard_by(callc, pts)');
+    return n;
+  }
+
+  /// The observations that hear [call], newest first, that [where] lets
+  /// through: [heard_by] says which, each is then one row by its id. With
+  /// [by], only those these stations made (our own names, for a stranger).
+  /// A row gone since ([_delete]) is simply not there; the next start's prune
+  /// takes its line out.
+  List<Map<String, Object?>> _heardRows(ZxSqlDb db, StringBuffer where,
+      List<Object?> args, String call, int? sinceMs, int? untilMs, int lim,
+      {Set<String> by = const {}}) {
+    final out = <Map<String, Object?>>[];
+    final row = db.prepare('${_rowCols}WHERE id = ? AND $where');
+    try {
+      for (final who in by.isEmpty ? const <String?>[null] : by) {
+        // Newest first, a page at a time until [lim] rows came through
+        // [where] or the callsign's lines ran out. A page starts AT the
+        // millisecond the last one ended in, past what was read of it.
+        var before = untilMs == null ? null : untilMs - 1;
+        var readAt = <Object?>{};
+        var found = 0;
+        while (found < lim) {
+          final asked = lim + readAt.length;
+          final ids = db.select(
+              'SELECT id,pts FROM heard_by INDEXED BY '
+              '${who == null ? 'idx_heard_by' : 'idx_heard_who'} '
+              'WHERE callc = ?'
+              '${who == null ? '' : ' AND byc = ?'}'
+              '${sinceMs == null ? '' : ' AND pts >= ?'}'
+              '${before == null ? '' : ' AND pts <= ?'} '
+              'ORDER BY pts DESC LIMIT ?',
+              [
+                call.toUpperCase(),
+                if (who != null) who,
+                if (sinceMs != null) sinceMs,
+                if (before != null) before,
+                asked,
+              ]);
+          for (final r in ids) {
+            if (r['pts'] == before && readAt.contains(r['id'])) continue;
+            final hit = row.select([r['id'], ...args]).firstOrNull;
+            if (hit == null) continue;
+            out.add(hit);
+            if (++found >= lim) break;
+          }
+          if (ids.length < asked) break;
+          final last = ids.last['pts'] as int;
+          readAt = {
+            if (last == before) ...readAt,
+            for (final r in ids)
+              if (r['pts'] == last) r['id'],
+          };
+          before = last;
+        }
+      }
+    } finally {
+      row.dispose();
+    }
+    return out;
   }
 
   static Map<String, dynamic> _rowOf(Map<String, Object?> r) => {

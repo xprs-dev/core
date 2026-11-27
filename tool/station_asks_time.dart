@@ -5,14 +5,18 @@
 import 'package:xprs_core/src/services/xprs/xprs_archive.dart';
 
 Future<void> main(List<String> a) async {
+  final opening = Stopwatch()..start();
   final x = XprsArchive.instance..init(a.first);
+  print('opened in ${opening.elapsedMilliseconds} ms');
   // A file from before the indexes: the writer thread builds them, once.
   final built = Stopwatch()..start();
-  while (!(x.typeIndexReady && x.callTypeIndexReady) && built.elapsed.inSeconds < 120) {
+  while (!(x.typeIndexReady && x.callTypeIndexReady && x.heardByReady) &&
+      built.elapsed.inSeconds < 300) {
     await Future<void>.delayed(const Duration(milliseconds: 200));
   }
   print('indexes: by type ${x.typeIndexReady}, by callsign and type '
-      '${x.callTypeIndexReady} (${built.elapsedMilliseconds} ms)');
+      '${x.callTypeIndexReady}, who hears whom ${x.heardByReady} '
+      '(${built.elapsedMilliseconds} ms)');
   final asker = a.length > 1 ? a[1] : 'X1WATT';
   final station = a.length > 2 ? a[2] : 'X3PTZM';
   x.selfCallsign = station;
