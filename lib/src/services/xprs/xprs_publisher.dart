@@ -1087,9 +1087,14 @@ class XprsPublisher {
     // station dialled, or the one the other station dialled into this one.
     // An archiver that others dial was reaching them only by a Reticulum
     // route it often did not hold, with their sockets open the whole time.
-    final onLine = relayedBy(wire);
-    if (XprsLinePeers.instance.sendTo(call, onLine) ||
-        XprsLineLane.instance.sendTo(call, onLine)) {
+    // Somebody else's packet leaves marked as relayed, on every lane: the
+    // station that takes it must not conclude its author is here. Marked on
+    // the sockets alone, a visitor's words deposited over Reticulum still
+    // put her "in reach" of the archiver they were left with, which then
+    // kept her mail to deliver itself.
+    wire = relayedBy(wire);
+    if (XprsLinePeers.instance.sendTo(call, wire) ||
+        XprsLineLane.instance.sendTo(call, wire)) {
       return true;
     }
     final bytes = Uint8List.fromList(utf8.encode(wire));
@@ -1147,14 +1152,16 @@ class XprsPublisher {
     final archivers =
         PreferencesService.instanceSync?.xprsArchivers ?? const <String>[];
     if (archivers.isEmpty) return;
-    for (final w in wires) {
-      final p = XprsPacket.parse(w);
+    for (final wIn in wires) {
+      final p = XprsPacket.parse(wIn);
       if (p == null || (p['d'] ?? '').trim().isNotEmpty) continue;
       // The deposit travels over Reticulum, the internet: only what its scope
       // lets onto the internet goes (XPRS.md 9.11). A Local- or Regional-room
       // message stays on the air it was said on.
       if (!xprsReachAdmits(xprsScopeReach(p), XprsReach.global)) continue;
       _placeFile(archivers, p['file'] ?? '');
+      // A visitor's packet this station deposits is relayed, and says so.
+      final w = relayedBy(wIn);
       for (final call in archivers) {
         final send = depositTo;
         if (send != null) {
@@ -1167,7 +1174,7 @@ class XprsPublisher {
         // a deposit leaves at all. The deposit used to go straight to LXMF,
         // which on that phone meant a path request on the radio, a failed
         // delivery and a retry ladder, every five minutes.
-        if (XprsLineLane.instance.sendTo(call, relayedBy(w))) {
+        if (XprsLineLane.instance.sendTo(call, w)) {
           deposited++;
           depositedLine++;
           continue;

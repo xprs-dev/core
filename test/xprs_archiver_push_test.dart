@@ -1,7 +1,9 @@
 // What one archiver hands the others as it arrives (XPRS.md 12.9.8), and
 // which archiver holds which file (12.9.2).
 import 'package:test/test.dart';
+import 'package:xprs_core/src/services/xprs/xprs_archive.dart';
 import 'package:xprs_core/src/services/xprs/xprs_archiver_push.dart';
+import 'package:xprs_core/src/services/xprs/xprs_publisher.dart';
 import 'package:xprs_core/src/services/xprs/xprs_file_index.dart';
 import 'package:xprs_core/src/services/xprs/xprs_folder.dart' show xprsFileRefOf;
 import 'package:xprs_core/src/services/xprs/xprs_monitor.dart';
@@ -269,6 +271,23 @@ void main() {
           isFalse,
           reason: 'an unsigned claim names nobody');
       expect(holders[sha], ['X3ONE']);
+    });
+  });
+
+  group('what a station passes on', () {
+    test("somebody else's packet is marked as relayed; its own is not", () {
+      final a = XprsArchive.instance;
+      final was = a.selfCallsign;
+      a.selfCallsign = 'X3HERE';
+      addTearDown(() => a.selfCallsign = was);
+      final pub = XprsPublisher.instance;
+      final theirs = pk('t:message f:X1ANNA ts:${at(5)} m:hello').encode();
+      final marked = pub.relayedBy(theirs);
+      expect(marked, contains('via:X3HERE'));
+      expect(marked, contains(' m:hello'));
+      expect(pub.relayedBy(marked), marked, reason: 'named once');
+      final ours = pk('t:mailbox f:X3HERE ts:${at(5)} hold:X3ONE').encode();
+      expect(pub.relayedBy(ours), ours);
     });
   });
 
