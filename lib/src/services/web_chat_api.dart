@@ -305,6 +305,13 @@ class WebChatApi {
       required List<String> types,
       required int limit})? roomRows;
 
+  /// Where the store's filing stands, and the identifiers filed after such a
+  /// mark (null when it cannot say): `cursor` in a listing and `after` in
+  /// the next ask (spec/API-HTTP.md), so that a page asking again is told
+  /// only what this station took in since. Both, or neither.
+  final String Function()? cursor;
+  final Set<String>? Function(String cursor)? filedAfter;
+
   /// How many messages this station holds for a room (a group's callsign or
   /// name): a number asked of the store, never a page counted.
   final int Function(String room)? roomCount;
@@ -339,6 +346,8 @@ class WebChatApi {
     this.keep,
     this.roomRows,
     this.roomCount,
+    this.cursor,
+    this.filedAfter,
     this.groupRank,
     this.airVerbatim,
     this.fileStore,
@@ -742,7 +751,8 @@ class WebChatApi {
     }
     final limit =
         (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
-    final rows = [
+    final mark = cursor?.call();
+    final rows = _filedSince(q, [
       for (final r in publicRows(
         sinceMs: _when(q['since']),
         untilMs: _when(q['until']),
@@ -751,12 +761,13 @@ class WebChatApi {
         limit: limit,
       ))
         if (_base('${r['to'] ?? ''}') == _base(call)) r,
-    ];
+    ]);
     return WebChatReply(200, {
       'ok': true,
       'count': rows.length,
       'held': held(readable.toList()),
       'time': 'synced',
+      if (mark != null) 'cursor': mark,
       'rows': rows,
     });
   }
@@ -768,6 +779,20 @@ class WebChatApi {
     final g = v.trim();
     if (g.startsWith('X5')) return _callRe.hasMatch(g) && !g.contains('-') ? g : null;
     return xprsIsOpenGroupName(g) ? g : null;
+  }
+
+  /// `after=`: the rows of a listing that were filed after the asker's
+  /// mark, or all of them when the store cannot say.
+  List<Map<String, dynamic>> _filedSince(
+      Map<String, String> q, List<Map<String, dynamic>> rows) {
+    final mark = q['after'];
+    if (mark == null || mark.isEmpty) return rows;
+    final ids = filedAfter?.call(mark);
+    if (ids == null) return rows;
+    return [
+      for (final r in rows)
+        if (ids.contains('${r['id']}')) r,
+    ];
   }
 
   /// A group's conversation as this station holds it. An open group is
@@ -814,7 +839,8 @@ class WebChatApi {
       return judged[key] ??= g.postStands(group, from, ts);
     }
 
-    final rows = [
+    final mark = cursor?.call();
+    final rows = _filedSince(q, [
       for (final row in rowsOf(
           room: group,
           sinceMs: _when(q['since']),
@@ -822,12 +848,13 @@ class WebChatApi {
           types: types,
           limit: limit))
         if (!removed.contains('${row['id']}') && stands(row)) row,
-    ];
+    ]);
     return WebChatReply(200, {
       'ok': true,
       'count': rows.length,
       'held': rows.length,
       'time': 'synced',
+      if (mark != null) 'cursor': mark,
       'rows': rows,
       if (closed) ...{
         'group': {
@@ -936,15 +963,18 @@ class WebChatApi {
     if (types.isEmpty) types = readable.toList();
     final limit =
         (int.tryParse(q['limit'] ?? '') ?? defaultLimit).clamp(1, maxLimit);
-    var rows = publicRows(
-      sinceMs: _when(q['since']),
-      untilMs: _when(q['until']),
-      types: types,
-      from: (q['call'] ?? '').trim().isEmpty ? null : q['call']!.trim(),
-      visitor: sessionCall(q['session']),
-      room: _room(q['room']),
-      limit: limit,
-    );
+    final mark = cursor?.call();
+    var rows = _filedSince(
+        q,
+        publicRows(
+          sinceMs: _when(q['since']),
+          untilMs: _when(q['until']),
+          types: types,
+          from: (q['call'] ?? '').trim().isEmpty ? null : q['call']!.trim(),
+          visitor: sessionCall(q['session']),
+          room: _room(q['room']),
+          limit: limit,
+        ));
     if (hideLocal) rows = [for (final r in rows) if (!_isLocalRow(r)) r];
     final mod = _moderation();
     if (mod != null) {
@@ -964,6 +994,7 @@ class WebChatApi {
       'count': rows.length,
       'held': held(types),
       'time': 'synced',
+      if (mark != null) 'cursor': mark,
       'rows': rows,
       // What a page already showing should take down (XPRS.md 10.10).
       if (mod != null)
@@ -1505,6 +1536,7 @@ class WebChatApi {
       return !(judged[key] ??= groups!.postStands(room, from, ts));
     }
 
+    final mark = cursor?.call();
     var rows = <Map<String, dynamic>>[];
     for (final row in roomRows!(
         room: room,
@@ -1541,11 +1573,13 @@ class WebChatApi {
 
       rows = rows.where(inThread).toList().reversed.take(limit).toList();
     }
+    rows = _filedSince(q, rows);
     return WebChatReply(200, {
       'ok': true,
       'count': rows.length,
       'held': rows.length,
       'time': 'synced',
+      if (mark != null) 'cursor': mark,
       'rows': rows,
       'moderation': {
         'removed': mod.removed.take(200).toList(),

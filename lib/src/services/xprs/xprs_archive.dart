@@ -902,7 +902,7 @@ class XprsArchive {
               ..add(_roomOf(p))
               ..add(id)
               ..add(toWire);
-          } else if (_rooms.isNotEmpty) {
+          } else {
             _roomsNote(p.type, _roomOf(p), id, toWire);
           }
           if (res['heard'] == 1) {
@@ -1185,11 +1185,11 @@ class XprsArchive {
         _rooms.removeWhere(
             (_, h) => h.types.contains(type) && h.to.contains(toc));
       }
-      final notes = r['notes'] as List? ?? const [];
-      for (var i = 0; i + 3 < notes.length; i += 4) {
-        _roomsNote(notes[i] as String, notes[i + 1] as String,
-            notes[i + 2] as String, notes[i + 3] as String);
-      }
+    }
+    final notes = r['notes'] as List? ?? const [];
+    for (var i = 0; i + 3 < notes.length; i += 4) {
+      _roomsNote(notes[i] as String, notes[i + 1] as String,
+          notes[i + 2] as String, notes[i + 3] as String);
     }
     if (r['names'] == true) CoreState.instance.changed(CoreState.names);
     if (r['typeIndex'] == true) _typeIndex = true;
@@ -3090,7 +3090,49 @@ class XprsArchive {
     return s == 'local' || s == 'regional' ? s : 'global';
   }
 
+  // ── What was filed since an ask (spec/API-HTTP.md, `after` and `cursor`) ──
+  //
+  // A page that asks again every few seconds wants only what this station
+  // took in since its last ask. The sender's timestamp cannot say that (a
+  // packet arrives late, and rows are written behind), and the time a row
+  // was heard is earlier than the moment it can be read. So the rows are
+  // numbered as they are filed, in memory: the last [_filedMax] of them.
+  static const int _filedMax = 1024;
+  final Map<String, int> _filed = <String, int>{};
+  int _filedSeq = 0;
+  final String _filedTag =
+      DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+
+  /// Where the filing stands now: handed to an asker, who gives it back as
+  /// `after` to be told only what was filed since ([filedAfter]). Read it
+  /// BEFORE the rows, so that a row filed in between is told twice, never
+  /// missed.
+  String get cursor => '$_filedTag.$_filedSeq';
+
+  /// The identifiers of the rows filed after [cursor], or null when that
+  /// cannot be said (a cursor of another run, or one older than what is
+  /// remembered): the asker is then answered in full.
+  Set<String>? filedAfter(String cursor) {
+    final dot = cursor.indexOf('.');
+    if (dot < 0 || cursor.substring(0, dot) != _filedTag) return null;
+    final n = int.tryParse(cursor.substring(dot + 1));
+    if (n == null || n < 0 || n > _filedSeq) return null;
+    if (_filedSeq - n > _filed.length) return null;
+    return <String>{
+      for (final e in _filed.entries.skip(_filed.length - (_filedSeq - n)))
+        e.key,
+    };
+  }
+
+  void _filedNote(String id) {
+    // Heard again (another bearer, a relay's copy): it was told already.
+    if (_filed.containsKey(id)) return;
+    _filed[id] = ++_filedSeq;
+    if (_filed.length > _filedMax) _filed.remove(_filed.keys.first);
+  }
+
   void _roomsNote(String type, String room, String id, String toc) {
+    _filedNote(id);
     for (final e in _rooms.entries.toList()) {
       final h = e.value;
       if ((h.room.isNotEmpty && h.room != room) ||

@@ -69,6 +69,8 @@ WebChatApi stationWebChatApi({
     WebChatApi(
       devices: () => XprsMonitor.instance.devicesForApi(),
       publicRows: archivePublicRows,
+      cursor: () => XprsArchive.instance.cursor,
+      filedAfter: XprsArchive.instance.filedAfter,
       held: (t) => XprsArchive.instance.countOf(types: t, undirected: true),
       // A visitor's wire is heard on `lan`, through the API: the bearer is
       // the network it came in on, and that it came through the page is the
