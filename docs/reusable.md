@@ -51,6 +51,16 @@ pairs (`mirrorPairs`) and the serving gate the history server consults
 should keep a bounded record in step between two stations, a category of
 events, a place's notices, is the same shape with a different `only:`.
 
+### `XprsArchive.cursor` / `filedAfter` — what was filed since an ask
+
+The last 1024 rows filed are numbered in memory. `cursor` says where the
+filing stands; `filedAfter(cursor)` gives the identifiers filed since, or
+null when it cannot say (another run, too old), and the caller answers in
+full. `WebChatApi` uses it for `after=` on every history listing
+(spec/API-HTTP.md). Anything that asks the archive again and again and
+wants a row once (a line client, a wapp's poll of a station) is the same
+two calls; read `cursor` before the rows.
+
 ### `XprsArchive.maxGroupBytes` — a ceiling per group
 
 10.9.3's fourth axis on eviction: every twentieth flush, a group whose rows
