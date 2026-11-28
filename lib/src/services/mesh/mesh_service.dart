@@ -325,6 +325,9 @@ class MeshService {
     final archive = XprsArchive.instance;
     return [
       'uptime:${xprsFmtDuration(upSec)}',
+      if (_lifeBaseSec >= 0)
+        'lifetime:${xprsFmtDuration(_lifeBaseSec + upSec)}',
+      'peers:${XprsMonitor.instance.directlyHeard().length}',
       if (archive.ready) 'count:${archive.dataCount}',
       if (archive.ready && media != null)
         'size:${xprsStepBytes(_freeOffered(media))}',
