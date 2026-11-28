@@ -174,7 +174,7 @@ class WappMailbox {
     final db = _db;
     if (db == null) return const [];
     try {
-      final rows = db.select('SELECT DISTINCT tag FROM mail');
+      final rows = db.select('SELECT DISTINCT tag FROM mail LIMIT 64');
       return [for (final r in rows) r['tag'] as String];
     } catch (_) {
       return const [];
@@ -186,8 +186,8 @@ class WappMailbox {
     if (db == null) return 0;
     try {
       final rows = tag == null
-          ? db.select('SELECT COUNT(*) c FROM mail')
-          : db.select('SELECT COUNT(*) c FROM mail WHERE tag = ?', [tag]);
+          ? db.select('SELECT COUNT(*) c FROM mail LIMIT 1')
+          : db.select('SELECT COUNT(*) c FROM mail WHERE tag = ? LIMIT 1', [tag]);
       return (rows.first['c'] as int?) ?? 0;
     } catch (_) {
       return 0;
@@ -198,7 +198,8 @@ class WappMailbox {
     final db = _db;
     if (db == null) return 0;
     try {
-      final rows = db.select('SELECT COALESCE(SUM(LENGTH(payload)),0) b FROM mail');
+      final rows = db.select(
+          'SELECT COALESCE(SUM(LENGTH(payload)),0) b FROM mail LIMIT 1');
       return (rows.first['b'] as int?) ?? 0;
     } catch (_) {
       return 0;
@@ -223,7 +224,7 @@ class WappMailbox {
       // of small messages doesn't run one statement per row.
       var guard = 0;
       while (bytes() > kWappMailboxMaxBytes && guard++ < 64) {
-        final rows = db.select('SELECT COUNT(*) c FROM mail');
+        final rows = db.select('SELECT COUNT(*) c FROM mail LIMIT 1');
         final left = (rows.first['c'] as int?) ?? 0;
         if (left == 0) break;
         final block = (left ~/ 10).clamp(1, 512);

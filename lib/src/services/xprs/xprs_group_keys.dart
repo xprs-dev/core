@@ -102,7 +102,7 @@ class XprsGroupKeys {
     // these characters. Section 26.1: the group is its full public key, and
     // two groups wearing the same characters are two groups -- but this
     // station cannot hold both under one id, so try again for a new key.
-    if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ?', [call])
+    if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ? LIMIT 1', [call])
         .isNotEmpty) {
       return null;
     }
@@ -139,7 +139,7 @@ class XprsGroupKeys {
       final kp = NostrCrypto.generateKeyPair();
       final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
       if (_candidates.containsKey(call)) continue;
-      if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ?', [call])
+      if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ? LIMIT 1', [call])
           .isNotEmpty) {
         continue;
       }
@@ -161,7 +161,7 @@ class XprsGroupKeys {
     final db = _db;
     if (db == null) return null;
     final call = 'X5${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
-    if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ?', [call])
+    if (db.select('SELECT 1 FROM xprs_groups WHERE callsign = ? LIMIT 1', [call])
         .isNotEmpty) {
       return null;
     }
@@ -174,7 +174,8 @@ class XprsGroupKeys {
   BigInt? scalarFor(String callsign) {
     final db = _db;
     if (db == null) return null;
-    final rows = db.select('SELECT nsec FROM xprs_groups WHERE callsign = ?',
+    final rows = db.select(
+        'SELECT nsec FROM xprs_groups WHERE callsign = ? LIMIT 1',
         [callsign.trim().toUpperCase()]);
     if (rows.isEmpty) return null;
     try {

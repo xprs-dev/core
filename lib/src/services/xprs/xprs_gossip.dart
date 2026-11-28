@@ -638,10 +638,10 @@ class XprsGossip {
       'ready': ready,
       'visits': db == null
           ? 0
-          : db.select('SELECT COUNT(*) c FROM gossip_visits').first['c'],
+          : db.select('SELECT COUNT(*) c FROM gossip_visits LIMIT 1').first['c'],
       'live': db == null
           ? 0
-          : db.select('SELECT COUNT(*) c FROM gossip_live').first['c'],
+          : db.select('SELECT COUNT(*) c FROM gossip_live LIMIT 1').first['c'],
       'pointers': db == null
           ? 0
           : db.select('SELECT COUNT(*) c FROM directory_ptr LIMIT 1').first['c'],
