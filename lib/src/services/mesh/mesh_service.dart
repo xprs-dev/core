@@ -1155,8 +1155,9 @@ class MeshService {
           ..sendTo = ((call, wire) async {
             // A station on an open text socket (13.0.2) gets it there: the
             // one lane that is private, immediate and costs no airtime.
-            if (XprsLinePeers.instance.sendTo(call, wire) ||
-                XprsLineLane.instance.sendTo(call, wire)) {
+            final onLine = XprsPublisher.instance.relayedBy(wire);
+            if (XprsLinePeers.instance.sendTo(call, onLine) ||
+                XprsLineLane.instance.sendTo(call, onLine)) {
               return true;
             }
             final hex = RnsService.instance.lxmfDestForCallsign(call);

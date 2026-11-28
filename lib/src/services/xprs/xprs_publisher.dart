@@ -1063,13 +1063,33 @@ class XprsPublisher {
   /// letter (12.8.1), a publication handed on (12.9.8). The forwarder had
   /// the LXMF rung alone, so mail for a person at another SERVER fell back
   /// to a broadcast the internet does not carry, and stayed where it was.
+  /// [wire] as this station passes it on when it is somebody else's: with
+  /// this station's name in `via:` (outside the signature, 4.9). Our own
+  /// packets, and ones that already name us, are returned as they are. On a
+  /// text socket the other end takes a signed line for its AUTHOR being on
+  /// the socket (13.0.2) unless it is marked as relayed.
+  String relayedBy(String wire) {
+    final p = XprsPacket.parse(wire);
+    final me = NostrCrypto.bareCallsign(XprsArchive.instance.selfCallsign)
+        .toUpperCase();
+    if (p == null || me.isEmpty) return wire;
+    final from = NostrCrypto.bareCallsign(p['f'] ?? '').toUpperCase();
+    if (from.isEmpty || from == me || DeviceIdentity.instance.isDevice(from)) {
+      return wire;
+    }
+    if (xprsVia(p).any((c) => c.trim().toUpperCase() == me)) return wire;
+    final carried = xprsAppendVia(p, me);
+    return carried.fits ? carried.encode() : wire;
+  }
+
   Future<bool> handTo(String call, String wire) async {
     // A text socket first (13.0.2), whichever end opened it: the one this
     // station dialled, or the one the other station dialled into this one.
     // An archiver that others dial was reaching them only by a Reticulum
     // route it often did not hold, with their sockets open the whole time.
-    if (XprsLinePeers.instance.sendTo(call, wire) ||
-        XprsLineLane.instance.sendTo(call, wire)) {
+    final onLine = relayedBy(wire);
+    if (XprsLinePeers.instance.sendTo(call, onLine) ||
+        XprsLineLane.instance.sendTo(call, onLine)) {
       return true;
     }
     final bytes = Uint8List.fromList(utf8.encode(wire));
@@ -1134,7 +1154,7 @@ class XprsPublisher {
         // a deposit leaves at all. The deposit used to go straight to LXMF,
         // which on that phone meant a path request on the radio, a failed
         // delivery and a retry ladder, every five minutes.
-        if (XprsLineLane.instance.sendTo(call, w)) {
+        if (XprsLineLane.instance.sendTo(call, relayedBy(w))) {
           deposited++;
           depositedLine++;
           continue;

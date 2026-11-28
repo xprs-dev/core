@@ -65,28 +65,9 @@ class XprsLinePeers {
     }
   }
 
-  /// A station's own name (XPRS.md 3: `X2`, `X3`), as opposed to a person's.
-  static bool _isStation(String c) => c.startsWith('X2') || c.startsWith('X3');
-
-  /// True when a STATION is registered on the socket [label]. Such a socket
-  /// carries that station's traffic, other people's signed packets
-  /// included (a deposit it makes for its visitor, what it hands on as an
-  /// archiver, 12.9.8): their authors are not on the socket, the station
-  /// is. Registering them made this station believe it could deliver their
-  /// mail itself, down a socket that leads to another archiver.
-  bool stationOn(String label) =>
-      _peers.values.any((p) => p.label == label && _isStation(p.callsign));
-
   void register(String callsign, String label, void Function(String) reply) {
     final c = callsign.trim().toUpperCase();
     if (c.isEmpty) return;
-    if (_isStation(c)) {
-      // The people seen on it before the station named itself were its
-      // traffic all along.
-      _peers.removeWhere((k, p) => p.label == label && !_isStation(k));
-    } else if (stationOn(label)) {
-      return;
-    }
     _peers[c] = _LinePeer(c, label, reply, DateTime.now());
     LogService.instance.add('XPRS/tcp: $c is on $label (line peer)');
   }
@@ -183,7 +164,11 @@ class XprsTcp {
       if (from.isNotEmpty &&
           from != selfBase &&
           p.has('sig') &&
-          // A relayed packet says nothing about who is on this socket.
+          // A relayed packet says nothing about who is on this socket: an
+          // archiver handing on its visitor's words (12.9.8) put the visitor
+          // "on" a socket that leads to the archiver, and her mail was kept
+          // here to be delivered down it. What a station relays carries its
+          // name in `via:` (XprsPublisher.relayedBy).
           (p['via'] ?? '').trim().isEmpty &&
           !XprsLinePeers.instance.isConnectedOn(from, label)) {
         final key = XprsArchive.instance.keyResolver?.call(from);
