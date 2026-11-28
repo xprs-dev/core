@@ -1208,6 +1208,7 @@ class MeshService {
           ..verified = _signedByItsAuthor
           ..sendTo = XprsPublisher.instance.handTo
           ..reachable = XprsPublisher.instance.canHandTo
+          ..sendHeld = XprsPublisher.instance.handToOrHold
           ..keyUnknown =
               ((c) => XprsArchive.instance.keyResolver?.call(c) == null)
           ..askKey = ((c, hander) => XprsFetch.instance.requestKey(c,

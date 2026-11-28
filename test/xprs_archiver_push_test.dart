@@ -30,6 +30,8 @@ void main() {
         ..self = (() => 'X3HERE')
         ..peers = (() => ['X3ONE', 'X3TWO', 'X3HERE'])
         ..verified = ((_) => signed)
+        ..reachable = null
+        ..sendHeld = null
         ..sendTo = (call, wire) async {
           sent.add((call, wire));
           return true;
@@ -176,6 +178,25 @@ void main() {
       known.add('X3FARR');
       push.keyLearned('X3FARR', nowMs: now + XprsArchiverPush.parkMs + 1000);
       expect(taken, isEmpty);
+    });
+
+    test('no route now: passed over, unless it is a station that hands on', () {
+      final held = <String>[];
+      push
+        ..reachable = ((c) => c == 'X3ONE')
+        ..sendHeld = (call, wire) async {
+          held.add(call);
+          return true;
+        };
+      expect(offer('t:message f:X1ANNA ts:${at(5)} m:one'), 1);
+      expect(sent.single.$1, 'X3ONE');
+      expect(push.outOfReach, 1, reason: 'X3TWO has no route and is unknown');
+      // X3TWO hands something here: it is alive, so its copy waits for a route.
+      push.offer(xprsAppendVia(pk('t:message f:X1BOBB ts:${at(5)} m:hi'), 'X3TWO'),
+          bearer: 'rns', nowMs: now);
+      sent.clear();
+      expect(offer('t:message f:X1ANNA ts:${at(4)} m:two'), 2);
+      expect(held, ['X3TWO']);
     });
 
     test('the author and this station are not handed their own packet', () {

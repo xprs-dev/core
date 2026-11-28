@@ -1108,6 +1108,19 @@ class XprsPublisher {
     return false;
   }
 
+  /// [handTo], and when no lane has a route now, leave the wire with the
+  /// LXMF router, which asks for the path and sends when it comes. For a
+  /// station known to be alive (it handed this one something a moment
+  /// ago): routes between two archivers behind a hub come and go, and a
+  /// copy skipped for want of one waited for the ten-minute catch-up.
+  Future<bool> handToOrHold(String call, String wire) async {
+    if (await handTo(call, wire)) return true;
+    final hex = RnsService.instance.lxmfDestForCallsign(call);
+    if (hex.isEmpty) return false;
+    return RnsService.instance
+        .wappSendTo('xprs', hex, Uint8List.fromList(utf8.encode(wire)));
+  }
+
   /// Would [handTo] find a lane for [call] now? Table lookups only.
   bool canHandTo(String call) {
     final rns = RnsService.instance;

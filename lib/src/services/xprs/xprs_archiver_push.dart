@@ -71,6 +71,12 @@ class XprsArchiverPush {
   /// Peers passed over because no lane reached them.
   int outOfReach = 0;
 
+  /// Hand [wire] to [call] when a route comes: for a peer with none now.
+  Future<bool> Function(String call, String wire)? sendHeld;
+
+  /// Copies left to wait for a route.
+  int heldFor = 0;
+
   /// Hand [wire] to the station [call] on a directed lane.
   Future<bool> Function(String call, String wire)? sendTo;
 
@@ -159,12 +165,21 @@ class XprsArchiverPush {
       final c = call.trim().toUpperCase();
       if (c.isEmpty || c == me || c == from || hops.contains(c)) continue;
       if (!seen.add(c)) continue;
-      // No route to it now: the copy would go nowhere and take a place.
+      if (n >= maxPeers) break;
       if (!(reachable?.call(c) ?? true)) {
-        outOfReach++;
+        // No route to it now. A station that handed this one something is
+        // alive: the copy is left for when the route comes ([sendHeld]).
+        // For any other the copy would go nowhere and take a place.
+        final held = sendHeld;
+        if (held == null || !_handers.contains(c)) {
+          outOfReach++;
+          continue;
+        }
+        n++;
+        heldFor++;
+        unawaited(held(c, wire).catchError((_) => false));
         continue;
       }
-      if (n >= maxPeers) break;
       n++;
       unawaited(send(c, wire).catchError((_) => false));
     }
@@ -257,6 +272,7 @@ class XprsArchiverPush {
         'noPeer': noPeer,
         'handers': _handers.length,
         'outOfReach': outOfReach,
+        'heldFor': heldFor,
         'parked': parked,
         'unparked': unparked,
       };
@@ -267,7 +283,7 @@ class XprsArchiverPush {
     _identityAt.clear();
     _handers.clear();
     _parked.clear();
-    parked = unparked = outOfReach = 0;
+    parked = unparked = outOfReach = heldFor = 0;
     handed = packets = notArchiver = unverified = noPeer = 0;
   }
 }
