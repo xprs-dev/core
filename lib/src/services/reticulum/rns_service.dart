@@ -7476,13 +7476,30 @@ class RnsService {
     _armLxmfPump();
   }
 
-  /// Start the foreground 1s scan if it is not already running. The early rungs
-  /// are 2-10s apart and a slower scan would overshoot them; the scan is a
-  /// no-op when nothing is due, so the cost is nil. Background delivery rides
-  /// the native heartbeat instead (see [_armLxmfBackground]).
+  /// Wake when the next retry is due, and not before. This was a one-second
+  /// scan for as long as anything was queued: a phone holding one message
+  /// for a peer who left (parked for [_lxmfParkMs]) woke 3,600 times an hour
+  /// to compare one timestamp. One shot at the earliest `at`; each run arms
+  /// the next. Background delivery rides the native heartbeat instead (see
+  /// [_armLxmfBackground]).
   void _armLxmfPump() {
-    _lxmfRetryTimer ??=
-        Timer.periodic(const Duration(seconds: 1), (_) => _runLxmfRetries());
+    _lxmfRetryTimer?.cancel();
+    _lxmfRetryTimer = null;
+    if (_lxmfRetries.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    var next = _lxmfRetries.first['at'] as int;
+    for (final e in _lxmfRetries) {
+      final at = e['at'] as int;
+      if (at < next) next = at;
+    }
+    // Not up yet: nothing can leave, and a due entry would otherwise arm a
+    // timer of zero in a loop. A minute is what bringing the node up costs.
+    final ready = _up && _lxmf != null && _id != null;
+    final wait = ready ? (next - now).clamp(250, 600000) : 60000;
+    _lxmfRetryTimer = Timer(Duration(milliseconds: wait), () {
+      _lxmfRetryTimer = null;
+      unawaited(_runLxmfRetries());
+    });
   }
 
   /// The foreground [Timer] above is throttled to nothing once Android
@@ -7532,19 +7549,20 @@ class RnsService {
   bool _lxmfRetryBusy = false;
 
   Future<void> _runLxmfRetries() async {
-    if (_lxmfRetries.isEmpty) {
-      _lxmfRetryTimer?.cancel();
-      _lxmfRetryTimer = null;
-      return;
-    }
+    if (_lxmfRetries.isEmpty) return;
+    // The run in progress arms the next wake when it ends.
     if (_lxmfRetryBusy) return;
     final r = _lxmf;
-    if (!_up || r == null || _id == null) return;
+    if (!_up || r == null || _id == null) {
+      _armLxmfPump(); // a minute from now (see there)
+      return;
+    }
     _lxmfRetryBusy = true;
     try {
       await _runLxmfRetriesInner(r);
     } finally {
       _lxmfRetryBusy = false;
+      _armLxmfPump();
     }
   }
 
