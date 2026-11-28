@@ -65,6 +65,12 @@ class XprsArchiverPush {
   /// This station's callsign, base form.
   String Function()? self;
 
+  /// Is there a lane to [call] now? Null: every peer is tried.
+  bool Function(String call)? reachable;
+
+  /// Peers passed over because no lane reached them.
+  int outOfReach = 0;
+
   /// Hand [wire] to the station [call] on a directed lane.
   Future<bool> Function(String call, String wire)? sendTo;
 
@@ -153,6 +159,11 @@ class XprsArchiverPush {
       final c = call.trim().toUpperCase();
       if (c.isEmpty || c == me || c == from || hops.contains(c)) continue;
       if (!seen.add(c)) continue;
+      // No route to it now: the copy would go nowhere and take a place.
+      if (!(reachable?.call(c) ?? true)) {
+        outOfReach++;
+        continue;
+      }
       if (n >= maxPeers) break;
       n++;
       unawaited(send(c, wire).catchError((_) => false));
@@ -245,6 +256,7 @@ class XprsArchiverPush {
         'unverified': unverified,
         'noPeer': noPeer,
         'handers': _handers.length,
+        'outOfReach': outOfReach,
         'parked': parked,
         'unparked': unparked,
       };
@@ -255,7 +267,7 @@ class XprsArchiverPush {
     _identityAt.clear();
     _handers.clear();
     _parked.clear();
-    parked = unparked = 0;
+    parked = unparked = outOfReach = 0;
     handed = packets = notArchiver = unverified = noPeer = 0;
   }
 }

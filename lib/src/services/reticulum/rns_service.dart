@@ -5919,6 +5919,16 @@ class RnsService {
   bool isWappStation(String callsign) =>
       _wappStation.containsKey(_bareUpper(callsign));
 
+  /// True when [callsign] is a station on this lane AND a route to it is
+  /// held now: a wire handed to [wireToStation] would leave. A table
+  /// lookup, no request made.
+  bool stationInReach(String callsign) {
+    final t = _transport;
+    final id = _wappStation[_bareUpper(callsign)];
+    if (t == null || id == null) return false;
+    return t.pathFor(RnsDestination.hash(id, _app, _aspectsWapp)) != null;
+  }
+
   /// One XPRS wire to [callsign]'s xprs/wapp destination, in one packet,
   /// encrypted to the identity it announced. False when [callsign] is not a
   /// station on this lane, or when there is no path yet: then the path is

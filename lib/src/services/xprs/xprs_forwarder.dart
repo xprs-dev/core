@@ -161,8 +161,11 @@ class XprsForwarder {
     for (final gateway in gateways) {
       final key = '$id|$gateway';
       if (_sent.containsKey(key)) continue;
-      _remember(key);
       final ok = await _send(gateway, wire2, id: id);
+      // Remembered when it LEFT. A holder with no route at this moment was
+      // remembered all the same, so the one attempt was the only one and
+      // the letter stayed here for good.
+      if (ok) _remember(key);
       // A gateway with no directed lane got a broadcast, and a broadcast
       // reaches every gateway in earshot at once: one is enough. Measured on
       // a phone: one held ask aired five times in 100 ms, once per gateway.
@@ -173,7 +176,56 @@ class XprsForwarder {
       LogService.instance.add('XPRS: held mail for $to forwarded toward '
           '$gateway (${ok ? "carried" : "kept"}) — 12.8.1');
     }
+    if (went.isEmpty) {
+      // Nobody could be handed it now. An archiver this station chose and
+      // can reach is asked to carry it (12.12 step 1: "hand it to any
+      // archiver"): it may hold the route this station lacks. And the
+      // target is tried again on the minute.
+      for (final a in _relays()) {
+        final g = a.trim().toUpperCase();
+        if (g.isEmpty || g == self || g == to || via.contains(g)) continue;
+        if (gateways.contains(g)) continue;
+        final key = '$id|$g';
+        if (_sent.containsKey(key)) continue;
+        if (await _send(g, wire2, id: id)) {
+          _remember(key);
+          forwarded++;
+          went.add(g);
+          LogService.instance.add('XPRS: held mail for $to handed to $g to '
+              'carry (no lane to its holder) — 12.12');
+          break;
+        }
+      }
+      if (_pending.length < pendingMax) _pending.add(to);
+    } else {
+      _pending.remove(to);
+    }
     return went;
+  }
+
+  /// Targets whose mail found no lane, to try again ([retryPending]).
+  final Set<String> _pending = <String>{};
+  static const int pendingMax = 64;
+  int get pending => _pending.length;
+
+  /// The archivers this station chose (its deposit list), for carrying.
+  List<String> Function()? relays;
+  List<String> _relays() =>
+      relays?.call() ??
+      PreferencesService.instanceSync?.xprsArchivers ??
+      const <String>[];
+
+  /// Try again the targets whose mail found no lane. Called on the minute;
+  /// costs nothing while nothing waits, and reads the store only for the
+  /// few targets that do (never for every station mail is held for).
+  Future<int> retryPending({required String selfBase, int? nowMs}) async {
+    if (_pending.isEmpty) return 0;
+    var moved = 0;
+    for (final t in _pending.toList()) {
+      _pending.remove(t);
+      moved += await retry(t, selfBase: selfBase, nowMs: nowMs);
+    }
+    return moved;
   }
 
   /// Somebody just reported hearing [target] (XprsGossip.onSighting): run
@@ -283,6 +335,7 @@ class XprsForwarder {
         'noRoute': noRoute,
         'loops': loops,
         'selfDelivers': selfDelivers,
+        'pending': _pending.length,
         'retries': retries,
       };
 

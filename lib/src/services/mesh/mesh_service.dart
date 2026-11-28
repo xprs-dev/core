@@ -1206,6 +1206,7 @@ class MeshService {
           ..peers = _archiverPeers
           ..verified = _signedByItsAuthor
           ..sendTo = XprsPublisher.instance.handTo
+          ..reachable = XprsPublisher.instance.canHandTo
           ..keyUnknown =
               ((c) => XprsArchive.instance.keyResolver?.call(c) == null)
           ..askKey = ((c, hander) => XprsFetch.instance.requestKey(c,
@@ -1355,6 +1356,9 @@ class MeshService {
       lap('table');
       unawaited(XprsMailbox.instance.sweepHeld());
       lap('held');
+      // 12.8.1: mail that found no lane toward its holder is tried again.
+      unawaited(XprsForwarder.instance
+          .retryPending(selfBase: NostrCrypto.bareCallsign(tableCallsign)));
       // A group's record to this station's archivers (10.9.2): one group
       // and one archiver a minute at most, each pair once a week.
       unawaited(XprsGroupDeposit.instance.tick());

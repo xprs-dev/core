@@ -1066,14 +1066,27 @@ class XprsPublisher {
   Future<bool> handTo(String call, String wire) async {
     if (XprsLineLane.instance.sendTo(call, wire)) return true;
     final bytes = Uint8List.fromList(utf8.encode(wire));
-    final hex = RnsService.instance.lxmfDestForCallsign(call);
-    if (hex.isNotEmpty) {
-      return RnsService.instance.wappSendTo('xprs', hex, bytes);
+    final rns = RnsService.instance;
+    // A lane with a route NOW. An LXMF address with no path took the wire,
+    // said yes and kept it "for relay": to the caller it had left, and the
+    // station never saw it (measured with the live station: most of what
+    // was handed on went to addresses nothing had a route to).
+    if (rns.isWappStation(call) && await rns.wireToStation(call, bytes)) {
+      return true;
     }
-    if (RnsService.instance.isWappStation(call)) {
-      return RnsService.instance.wireToStation(call, bytes);
+    final hex = rns.lxmfDestForCallsign(call);
+    if (hex.isNotEmpty && rns.hasPathTo(hex)) {
+      return rns.wappSendTo('xprs', hex, bytes);
     }
     return false;
+  }
+
+  /// Would [handTo] find a lane for [call] now? Table lookups only.
+  bool canHandTo(String call) {
+    final rns = RnsService.instance;
+    return XprsLineLane.instance.connectedTo(call) ||
+        rns.stationInReach(call) ||
+        rns.reachableByCallsign(call);
   }
 
   /// Hand a COPY of our own publication to the archivers this operator chose
