@@ -1064,7 +1064,14 @@ class XprsPublisher {
   /// the LXMF rung alone, so mail for a person at another SERVER fell back
   /// to a broadcast the internet does not carry, and stayed where it was.
   Future<bool> handTo(String call, String wire) async {
-    if (XprsLineLane.instance.sendTo(call, wire)) return true;
+    // A text socket first (13.0.2), whichever end opened it: the one this
+    // station dialled, or the one the other station dialled into this one.
+    // An archiver that others dial was reaching them only by a Reticulum
+    // route it often did not hold, with their sockets open the whole time.
+    if (XprsLinePeers.instance.sendTo(call, wire) ||
+        XprsLineLane.instance.sendTo(call, wire)) {
+      return true;
+    }
     final bytes = Uint8List.fromList(utf8.encode(wire));
     final rns = RnsService.instance;
     // A lane with a route NOW. An LXMF address with no path took the wire,
@@ -1084,7 +1091,8 @@ class XprsPublisher {
   /// Would [handTo] find a lane for [call] now? Table lookups only.
   bool canHandTo(String call) {
     final rns = RnsService.instance;
-    return XprsLineLane.instance.connectedTo(call) ||
+    return XprsLinePeers.instance.isConnected(call) ||
+        XprsLineLane.instance.connectedTo(call) ||
         rns.stationInReach(call) ||
         rns.reachableByCallsign(call);
   }

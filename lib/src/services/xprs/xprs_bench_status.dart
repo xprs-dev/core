@@ -19,6 +19,7 @@ import 'package:reticulum/reticulum.dart' show NostrCrypto;
 import '../mesh/mesh_bulk_spool.dart';
 import '../mesh/mesh_service.dart';
 import '../preferences_service.dart';
+import '../reticulum/rns_service.dart';
 import 'xprs_archive.dart';
 import 'xprs_archiver_push.dart';
 import 'xprs_file_index.dart';
@@ -175,6 +176,15 @@ Map<String, dynamic> _whereIs(String call) {
   return {
     'call': c,
     'holders_of': XprsArchive.instance.holdersFor(c),
+    // The lanes a wire to it could take now (XprsPublisher.handTo).
+    'lanes': {
+      'linePeer': XprsLinePeers.instance.isConnected(c),
+      'lineLane': XprsLineLane.instance.connectedTo(c),
+      'station': RnsService.instance.isWappStation(c),
+      'stationRoute': RnsService.instance.stationInReach(c),
+      'lxmf': RnsService.instance.lxmfDestForCallsign(c).isNotEmpty,
+      'lxmfRoute': RnsService.instance.reachableByCallsign(c),
+    },
     'heard_by': [
       for (final s in XprsGossip.instance.whereIs(c))
         {'gateway': s.gateway, 'bearer': s.bearer, 'ts': s.tsMs, 'live': s.live},
