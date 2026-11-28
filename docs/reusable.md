@@ -934,6 +934,22 @@ XPRS.md 12.9.8 and 12.9.2. Three pieces, each reusable on its own:
   callsign). Use it for anything directed; the forwarder and the mailbox each
   had their own shorter ladder, and mail for a person at another server went
   nowhere.
+- **`XprsPublisher.canHandTo(call)`** says whether `handTo` has a lane NOW
+  (table lookups). `handTo` uses only a lane with a route: a text socket
+  either end opened, the station lane, an LXMF address that has a path. An
+  LXMF address with no path took the wire and kept it. `handToOrHold` leaves
+  it with the LXMF router instead, for a station known to be alive.
+- **`XprsPublisher.relayedBy(wire)`**: somebody else's packet with this
+  station's name added to `via:`; our own unchanged. Everything a station
+  passes on for another goes through it (`handTo`, `depositArchivers`, the
+  mailbox's send), because the receiver reads a line with no `via:` as its
+  author being there (`XprsMonitor.noteRemote`, `XprsLinePeers.register`).
+- **`XprsForwarder.retryPending`**: mail that found no lane is tried again
+  on the minute, for the few targets that wait and nobody else.
+- **`XprsArchiverPush.keyLearned(call)`**: a packet whose author's key is
+  unknown is parked two minutes, the key asked of the hander, and offered
+  again from `XprsIngest.onKeyLearned`. Reuse for anything that must be
+  verified before it is acted on and may arrive before its key.
 - **`XprsArchiverPush.offer(packet, bearer:)`** (`xprs_archiver_push.dart`):
   the funnel feeds it every accepted packet; it hands the ones that are this
   archiver's to hand on (a publication of global scope, fresh, first-hand,
