@@ -44,6 +44,7 @@ import 'xprs_ingest.dart';
 import 'xprs_owned_stations.dart';
 import 'xprs_packet.dart';
 import 'xprs_archive_policy.dart';
+import 'xprs_device_admin.dart';
 import 'xprs_publisher.dart';
 import 'xprs_sig.dart';
 import 'xprs_vocab.dart';
@@ -285,6 +286,13 @@ class XprsHistoryServer {
     // before, for the stations that chose it before the move.
     final dev = DeviceIdentity.instance;
     final person = selfBase;
+    // An owner's `cmd:set` to the device (11.9): the station being
+    // administered, on whatever lane the command arrived (XprsDeviceAdmin).
+    if (dev.ready &&
+        dev.isDevice(p['d'] ?? '') &&
+        _onAdminCommand(p, bearer: bearer)) {
+      return;
+    }
     if (dev.ready &&
         dev.callsign != selfBase &&
         dev.isDevice(p['d'] ?? '')) {
@@ -1017,6 +1025,67 @@ class XprsHistoryServer {
     // window, so thirty seconds is at most one window and a card that missed
     // it never hears the answer (measured, 2026-10-07).
     await _air('xprs-pos', ans.encode(), const Duration(seconds: 150), to: to);
+  }
+
+  /// Say who owns this device to [to], unasked: the signed `s:policy` an
+  /// owner who was just added needs to hear (XprsDeviceAdmin.onOwnerAdded).
+  void tellOwner(String to) {
+    final dev = DeviceIdentity.instance;
+    final key = dev.scalar;
+    final wire = xprsPolicyReportWire(
+        dev.callsign, _base(to), XprsDeviceAdmin.instance.policy());
+    final parsed = wire == null ? null : XprsPacket.parse(wire);
+    if (parsed == null || key == null) return;
+    // Long enough to cross a phone's advert window (see _airPos).
+    unawaited(_air('xprs-policy:$to', xprsSign(parsed, key).encode(),
+        const Duration(seconds: 150), to: _base(to)));
+  }
+
+  /// The results already given to policy commands, by the command's
+  /// identifier: a repeat (the courier airs the same bytes until it is
+  /// answered) is answered again and acted on once (11.4).
+  final Map<String, String> _adminAnswers = {};
+
+  /// A policy `cmd:set` addressed to the device. True when it was one,
+  /// whether or not it was answered.
+  bool _onAdminCommand(XprsPacket p, {required String bearer}) {
+    if (!XprsDeviceAdmin.handles(p)) return false;
+    final dev = DeviceIdentity.instance;
+    final from = _base(p['f'] ?? '');
+    final key = dev.scalar;
+    if (from.isEmpty || from == dev.callsign || key == null) return true;
+    final id = xprsIdentifier(p);
+    final again = _adminAnswers[id];
+    if (again != null) {
+      unawaited(_air('xprs-admin:$id', again, const Duration(seconds: 30),
+          to: from));
+      return true;
+    }
+    if (!_budgetAllows(from, DateTime.now().millisecondsSinceEpoch)) {
+      return true;
+    }
+    final verified = p.has('sig') &&
+        xprsVerify(p, XprsArchive.instance.keyResolver?.call(from)) ==
+            XprsSigState.verified;
+    final wire = XprsDeviceAdmin.instance
+        .onCommand(p, verified: verified, bearer: bearer);
+    if (wire == null) {
+      LogService.instance.add('XPRS: policy command from $from on $bearer '
+          'dropped (${verified ? 'carried or not for a distant lane' : 'not verified'})');
+      return true;
+    }
+    final parsed = XprsPacket.parse(wire);
+    if (parsed == null) return true;
+    final signed = xprsSign(parsed, key).encode();
+    if (_adminAnswers.length >= 16) {
+      _adminAnswers.remove(_adminAnswers.keys.first);
+    }
+    _adminAnswers[id] = signed;
+    LogService.instance.add('XPRS: owner command ${p['cmd']} from $from on '
+        '$bearer: ${parsed['code']}');
+    unawaited(
+        _air('xprs-admin:$id', signed, const Duration(seconds: 30), to: from));
+    return true;
   }
 
   /// A question to the device's X3, answered as the X3 and signed with its

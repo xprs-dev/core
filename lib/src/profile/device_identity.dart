@@ -67,10 +67,15 @@ class DeviceIdentity {
     return NostrCrypto.bareCallsign(call).trim().toUpperCase() == _callsign;
   }
 
-  /// The device's owners: the profiles on it, active first, at most four
-  /// (XPRS.md 11.9 `owner:` holds up to four). Their wire callsigns, so a
-  /// licensed operator owns it under the name they air.
-  List<String> owners() {
+  /// Owners added on the wire by an owner's `cmd:set owner:` (XPRS.md 11.9):
+  /// the accounts that administer this device from somewhere else. Kept and
+  /// restored by `XprsDeviceAdmin`.
+  List<String> addedOwners = const [];
+
+  /// The profiles on this device, active first: owners by holding the
+  /// machine, whatever any command says. Their wire callsigns, so a licensed
+  /// operator owns it under the name they air.
+  List<String> localOwners() {
     final svc = ProfileService.instance;
     final active = svc.activeProfile;
     final out = <String>[];
@@ -85,6 +90,18 @@ class DeviceIdentity {
       add(p.wireCallsign);
     }
     return out.length > 4 ? out.sublist(0, 4) : out;
+  }
+
+  /// The device's owners: the profiles on it, then the ones added on the
+  /// wire, at most four (XPRS.md 11.9 `owner:` holds up to four).
+  List<String> owners() {
+    final out = localOwners();
+    for (final c in addedOwners) {
+      if (out.length >= 4) break;
+      final b = c.trim().toUpperCase();
+      if (b.isNotEmpty && b != _callsign && !out.contains(b)) out.add(b);
+    }
+    return out;
   }
 
   /// Load the device key, making it on the first start. Idempotent.

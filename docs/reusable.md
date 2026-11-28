@@ -947,3 +947,15 @@ XPRS.md 12.9.8 and 12.9.2. Three pieces, each reusable on its own:
   stations and plays visitors at each. Add a scenario there for anything two
   archivers owe each other.
 
+## A device as a station its owners administer (2026-11-28)
+
+`XprsDeviceAdmin` (`lib/src/services/xprs/xprs_device_admin.dart`): the
+station side of XPRS.md 11.9 for a phone, a desktop or a server. It decides
+an owner's `cmd:set` (`owner:`, `serve:`) with the pure rules already in
+`xprs_station_policy.dart` (`xprsPolicyCode`, `xprsClaimCode`,
+`xprsPolicyReplayCode`) and returns the unsigned `t:result`; persistence and
+the archiver switch are injected. Reuse it, and those three functions, for
+any new settable station fact rather than writing another gate.
+`DeviceIdentity.localOwners()` is the profiles on the device,
+`owners()` adds the ones named on the wire. `XprsCommandCourier.toSelf` is
+the hook for a command addressed to the device it was written on.

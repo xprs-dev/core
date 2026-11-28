@@ -84,6 +84,10 @@ class XprsCommandCourier {
   @visibleForTesting
   int Function() nowMs = () => DateTime.now().millisecondsSinceEpoch;
 
+  /// Set by the core (mesh_service): takes a command addressed to this
+  /// device's own station and returns true when it was one it answered.
+  bool Function(XprsPacket cmd)? toSelf;
+
   final Map<String, _Pending> _pending = {};
   bool _armed = false;
   Timer? _timer;
@@ -98,6 +102,9 @@ class XprsCommandCourier {
     if (p == null || p.type != 'command') return false;
     final dest = (p['d'] ?? '').trim().toUpperCase();
     if (dest.isEmpty || !xprsAddressesStation(dest)) return false;
+    // A command to this very device is acted on here: there is no air
+    // between a phone and itself.
+    if (toSelf?.call(p) ?? false) return true;
     final id = xprsIdentifier(p);
     final slot = 'command:$id';
     final known = _pending[id];

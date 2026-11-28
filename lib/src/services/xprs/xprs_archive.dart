@@ -540,6 +540,9 @@ class XprsArchive {
   /// The wire bytes the spool holds (what the byte cap measures).
   int get dataBytes => _counts.values.fold(0, (a, c) => a + c[1]);
 
+  /// How many records the spool holds (the `count:` of 13.0.1).
+  int get dataCount => _counts.values.fold(0, (a, c) => a + c[0]);
+
   void close() {
     // What is still here is written here: a profile switch or an exit.
     flush();

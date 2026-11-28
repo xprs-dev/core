@@ -96,7 +96,7 @@ void main() {
     };
     addTearDown(() => srv.txOverride = null);
     final ask = XprsPacket.parse('t:command f:X3ASKR d:${dev.callsign} '
-        'ts:2026-11-14_14:26:08 cmd:zdiag')!;
+        'ts:2026-11-14_14:26:08 cmd:reboot')!;
     XprsIngest.onCommand!(ask, selfBase: 'X1OWNR', bearer: 'lan');
     await Future<void>.delayed(Duration.zero);
     expect(aired, hasLength(1));

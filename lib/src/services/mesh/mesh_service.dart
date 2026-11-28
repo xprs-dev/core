@@ -14,6 +14,7 @@
  */
 import '../../profile/iwi_profile.dart';
 import '../../profile/device_identity.dart';
+import '../xprs/xprs_device_admin.dart';
 import '../xprs/xprs_owned_stations.dart';
 import 'package:xprs_core/src/util/compat.dart' show setEquals;
 import 'dart:async';
@@ -313,6 +314,48 @@ class MeshService {
     return out.isEmpty ? const {} : out;
   }
 
+  Map<String, dynamic>? _deviceAdminJson;
+
+  /// How this station is doing, for its owner (XprsDeviceAdmin.status): the
+  /// figures its public announcements would carry, said to the owner whether
+  /// or not it announces anything.
+  String _deviceStatus() {
+    final upSec = DateTime.now().difference(_startedAt).inSeconds;
+    final media = _media;
+    final archive = XprsArchive.instance;
+    return [
+      'uptime:${xprsFmtDuration(upSec)}',
+      if (archive.ready) 'count:${archive.dataCount}',
+      if (archive.ready && media != null)
+        'size:${xprsStepBytes(_freeOffered(media))}',
+      'mail:${_archiverFields().mail}',
+    ].join(' ');
+  }
+
+  /// A policy command one of this device's own profiles gave its own
+  /// station (the Devices wapp, on the device it is administering): decided
+  /// by the same rules as one off the air, and the signed result handed to
+  /// the wapps the way a heard one is.
+  bool _commandToOwnDevice(XprsPacket cmd) {
+    final dev = DeviceIdentity.instance;
+    final key = dev.scalar;
+    if (key == null ||
+        !dev.isDevice(cmd['d'] ?? '') ||
+        !XprsDeviceAdmin.handles(cmd)) {
+      return false;
+    }
+    final from = NostrCrypto.bareCallsign(cmd['f'] ?? '').trim().toUpperCase();
+    if (!dev.localOwners().contains(from)) return false;
+    final wire = XprsDeviceAdmin.instance
+        .onCommand(cmd, verified: true, bearer: 'lan');
+    final parsed = wire == null ? null : XprsPacket.parse(wire);
+    if (parsed == null) return false;
+    final signed = xprsSign(parsed, key);
+    scheduleMicrotask(() => WappDelivery.instance
+        .deliverPacket(signed, bearer: 'lan', forUs: true));
+    return true;
+  }
+
   /// The profile owns its own device: a local fact, so it is written down
   /// rather than learned from a packet (XprsOwnedStations).
   void _noteDeviceOwned() {
@@ -561,9 +604,30 @@ class MeshService {
         unawaited(_restoreFromDisk());
         // The admission snapshot the receive funnel reads (12's three tiers).
         XprsIngest.reloadPolicy();
+        // The device as a station its owners administer (11.9): who they
+        // added, and the last policy command accepted, outlive a restart.
+        XprsDeviceAdmin.instance
+          ..load = (() => _deviceAdminJson)
+          ..save = ((j) {
+            _deviceAdminJson = j;
+            unawaited(xprsRootStorage()
+                .writeJson('station/admin.json', j)
+                .catchError((_) {}));
+          })
+          ..serveClaim = _serveClaim
+          ..setPublicArchiver = ((on) => unawaited(prefs.setXprsPublicArchiver(on)))
+          ..status = _deviceStatus
+          ..onOwnersChanged = _noteDeviceOwned
+          ..onOwnerAdded = XprsHistoryServer.instance.tellOwner;
+        unawaited(xprsRootStorage().readJson('station/admin.json').then((j) {
+          _deviceAdminJson = j;
+          XprsDeviceAdmin.instance.restore();
+          _noteDeviceOwned();
+        }).catchError((_) {}));
         XprsHistoryServer.instance
           ..serveClaim = _serveClaim
           ..install();
+        XprsCommandCourier.instance.toSelf = _commandToOwnDevice;
         XprsGossip.instance
             .init(wappsDataStorage(prefs).getAbsolutePath('xprs_gossip.zx'));
         // Who each key is and how its holder is reached (XprsPeople): inside

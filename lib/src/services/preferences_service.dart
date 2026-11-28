@@ -996,17 +996,14 @@ class PreferencesService {
     // wakes only on `xprs.status` / `xprs.reaction`.
     'social',
     'torrents',
-    // A freshly flashed station asks, over Bluetooth, to be claimed, and the
-    // person who flashed it is standing there with the phone in a pocket.
-    // Headless and clockless like social: `module_tick_interval_ms()` is 0 and
-    // it wakes only on `xprs.request`, `xprs.identity` and `xprs.result`.
-    'firmwares',
-    // A doorbell rings while the phone is in a pocket, which is the only time
-    // it matters. Things raises that notification, and it can only do so with
-    // an engine running. Clockless too (`module_tick_interval_ms()` is 0 with
-    // no page) and it subscribes to nothing at all until a thing is watched,
-    // so the cost of it for somebody who watches nothing is its memory.
-    'things',
+    // Devices (Firmwares and Things, merged): a freshly flashed station asks,
+    // over Bluetooth, to be claimed while the person who flashed it stands
+    // there with the phone in a pocket, and a doorbell rings while it is in a
+    // pocket too. Headless and clockless (`module_tick_interval_ms()` is 0
+    // with no page): it wakes on `xprs.request`, on answers only while it has
+    // asked something, and on `xprs.observation` only while a thing is
+    // watched.
+    'devices',
     // A warning about the place you just walked into (XPRS.md 25.3) is given
     // once, by the station there, while the phone is in a pocket. Clockless
     // (`module_tick_interval_ms()` is 0) and it wakes only on `xprs.warning`
