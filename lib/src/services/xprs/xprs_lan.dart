@@ -138,6 +138,10 @@ class XprsLan {
   /// tick for the same fact (docs/performance.md 6.5, 8.5).
   Timer? _reopen;
   int _reopenDelayS = 5;
+
+  /// When the socket now open was bound: a socket that dies within a minute
+  /// of opening did not come back, it only bound.
+  int _openedMs = 0;
   int reopened = 0;
 
   /// Our own addresses, so our own broadcast loopback is never ingested as if
@@ -176,7 +180,14 @@ class XprsLan {
       s.listen(_onEvent,
           onError: (Object e) => _lost('error: $e'),
           onDone: () => _lost('stream done'));
-      _reopenDelayS = 5;
+      // The backoff is NOT reset here. On a phone with no network the bind
+      // always succeeds and the first send fails ("Network is unreachable"),
+      // so resetting at the bind made this a five-second loop for as long
+      // as the phone was off WiFi: a socket opened, closed and logged three
+      // lines about it every 5.5 s (TANK2 on the bench, 2026-11-28, 55
+      // reopens in five minutes). It is reset when a socket has lasted
+      // ([_lost]).
+      _openedMs = DateTime.now().millisecondsSinceEpoch;
       LogService.instance
           .add('XPRS: LAN bearer on UDP $port (broadcast, ${_directed.length} '
               'subnet${_directed.length == 1 ? "" : "s"})');
@@ -199,6 +210,13 @@ class XprsLan {
   /// The socket is gone. Forget it -- `up` must not lie -- and come back.
   void _lost(String why) {
     if (_socket == null) return;
+    final lived = DateTime.now().millisecondsSinceEpoch - _openedMs;
+    if (lived >= 60000) {
+      _reopenDelayS = 5; // it worked for a while: this is a new loss
+    } else {
+      // It never worked: wait longer each time, up to the beacon's cadence.
+      _reopenDelayS = _reopenDelayS < 300 ? _reopenDelayS * 2 : 300;
+    }
     LogService.instance.add('XPRS: LAN bearer socket closed ($why) — '
         'reopening in ${_reopenDelayS}s');
     _socket = null;
