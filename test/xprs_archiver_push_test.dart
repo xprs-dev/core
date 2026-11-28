@@ -7,6 +7,7 @@ import 'package:xprs_core/src/services/xprs/xprs_folder.dart' show xprsFileRefOf
 import 'package:xprs_core/src/services/xprs/xprs_monitor.dart';
 import 'package:xprs_core/src/services/xprs/xprs_packet.dart';
 import 'package:xprs_core/src/services/xprs/xprs_sig.dart';
+import 'package:xprs_core/src/services/xprs/xprs_tcp.dart';
 import 'package:xprs_core/src/services/xprs/xprs_vocab.dart';
 
 final _key = BigInt.parse('1234567890abcdef1234567890abcdef', radix: 16);
@@ -248,6 +249,27 @@ void main() {
           isFalse,
           reason: 'an unsigned claim names nobody');
       expect(holders[sha], ['X3ONE']);
+    });
+  });
+
+  group('who is on a socket', () {
+    test("a station's socket carries the station, not the people it relays for", () {
+      final peers = XprsLinePeers.instance;
+      void reply(String _) {}
+      // A phone dials for itself: its person is on the socket.
+      peers.register('X1PHON', 'sock-1', reply);
+      expect(peers.isConnected('X1PHON'), isTrue);
+      // An archiver dials: a visitor it relays for is not on its socket,
+      // whichever of the two is seen first.
+      peers.register('X1EARL', 'sock-2', reply);
+      peers.register('X3ARCH', 'sock-2', reply);
+      peers.register('X1LATE', 'sock-2', reply);
+      expect(peers.isConnected('X3ARCH'), isTrue);
+      expect(peers.isConnected('X1EARL'), isFalse);
+      expect(peers.isConnected('X1LATE'), isFalse);
+      expect(peers.isConnected('X1PHON'), isTrue, reason: 'another socket');
+      peers.unregister('sock-1');
+      peers.unregister('sock-2');
     });
   });
 
