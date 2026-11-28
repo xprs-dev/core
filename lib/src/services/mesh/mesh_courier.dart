@@ -320,15 +320,34 @@ class MeshCourier {
     _armed.add(_Armed(destHex, text, DateTime.now().millisecondsSinceEpoch,
         waitFirst: waitFirst, private: private));
     MeshCourierCounters.armed++;
-    _pump ??= Timer.periodic(const Duration(seconds: 5), (_) => _tick());
+    _armPump();
+  }
+
+  /// Wake when the next armed message is due to be handed on: at once for
+  /// one that does not wait, after [wait] for one that gives the direct
+  /// path its chance first. This was a five-second clock for as long as
+  /// anything was armed; an entry waiting out [wait] was looked at a dozen
+  /// times before it could do anything.
+  void _armPump() {
+    _pump?.cancel();
+    _pump = null;
+    if (_armed.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    var due = now + giveUp.inMilliseconds;
+    for (final a in _armed) {
+      final at = a.waitFirst ? a.armedMs + wait.inMilliseconds : a.armedMs;
+      if (at < due) due = at;
+    }
+    // A second at least: several parts of one message arm in one breath.
+    final ms = (due - now).clamp(1000, giveUp.inMilliseconds);
+    _pump = Timer(Duration(milliseconds: ms), () {
+      _pump = null;
+      _tick();
+      _armPump();
+    });
   }
 
   void _tick() {
-    if (_armed.isEmpty) {
-      _pump?.cancel();
-      _pump = null;
-      return;
-    }
     if (_armed.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     _armed.removeWhere((a) {
