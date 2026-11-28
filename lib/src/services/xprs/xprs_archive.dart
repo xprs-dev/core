@@ -273,6 +273,24 @@ class XprsArchive {
   static const int _flushEarlyAt = 64;
   static const int _flushNowAt = 192;
   Timer? _flushTimer;
+
+  /// How long a heard packet may wait in memory before it is written.
+  static const Duration _writeBehind = Duration(seconds: 20);
+
+  /// Write-behind, armed by the first row queued and by nothing else: this
+  /// was a twenty-second clock that ran for as long as the store was open,
+  /// 4,320 wake-ups a day to find an empty queue on a quiet phone
+  /// (performance.md 8.31, shape 5). One shot; it arms itself again only
+  /// while rows are still waiting (a batch was out with the writer thread
+  /// when it fired).
+  void _armFlush() {
+    if (_flushTimer != null || _db == null) return;
+    _flushTimer = Timer(_writeBehind, () async {
+      _flushTimer = null;
+      await flushInSlices();
+      if (_pending.isNotEmpty) _armFlush();
+    });
+  }
   bool _prunedThisSession = false;
   int _flushesSinceCap = 0;
 
@@ -411,8 +429,10 @@ class XprsArchive {
       _loadCounts(db);
       _prunedThisSession = false;
       _flushTimer?.cancel();
-      _flushTimer =
-          Timer.periodic(const Duration(seconds: 20), (_) => unawaited(flushInSlices()));
+      _flushTimer = null;
+      // Once at open, for the session's housekeeping (a flush with nothing
+      // pending prunes); after that only a queued row arms it.
+      _armFlush();
       final gen = ++_gen;
       if (offThreadWrites && !_isWriter) {
         // The schema exists now; the thread only writes rows into it.
@@ -603,6 +623,7 @@ class XprsArchive {
     _pending.add(_Pending(p, bearer, rssi, own,
         nowMs ?? DateTime.now().millisecondsSinceEpoch,
         tier ?? (own ? Tier.self : Tier.stranger)));
+    _armFlush();
     // In slices too: a full queue on a busy channel is exactly when one
     // long write hurts most. But a burst admitted in one turn of the event
     // loop (a replay, an import) gives the slices no turn to run in, and
